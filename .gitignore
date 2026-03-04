@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+
+# Local env/secrets
+app/.env
+.env
+
+# macOS
+.DS_Store
