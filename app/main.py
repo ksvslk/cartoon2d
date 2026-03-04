@@ -22,7 +22,10 @@ load_dotenv(Path(__file__).parent / ".env")
 
 # Import agent after loading environment variables
 # pylint: disable=wrong-import-position
-from google_search_agent.agent import agent  # noqa: E402
+try:
+    from cartoon_director_v1.agent import agent  # noqa: E402
+except ModuleNotFoundError:  # pragma: no cover - package mode fallback
+    from app.cartoon_director_v1.agent import agent  # noqa: E402
 
 # Configure logging
 logging.basicConfig(

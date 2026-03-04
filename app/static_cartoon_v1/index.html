@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cartoon Director V1</title>
+    <link rel="stylesheet" href="/static_cartoon_v1/css/style.css">
+    <script src="/static_cartoon_v1/js/app.js" type="module"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Cartoon Director V1</h1>
+      <div class="controls">
+        <label>Session
+          <select id="sessionSelect"></select>
+        </label>
+        <button id="createSessionBtn" type="button">New Session</button>
+        <button id="deleteSessionBtn" type="button" class="danger">Delete Session</button>
+        <label><input type="checkbox" id="voiceReply"> Voice Reply</label>
+        <label><input type="checkbox" id="enableProactivity"> Proactivity</label>
+        <label><input type="checkbox" id="enableAffectiveDialog"> Affective</label>
+        <button id="micButton" type="button">Start Mic</button>
+        <span id="status">Disconnected</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="left">
+        <section class="panel">
+          <h2>Stage</h2>
+          <svg id="stage" viewBox="0 0 1280 720"></svg>
+        </section>
+
+        <section class="panel">
+          <h2>Timeline</h2>
+          <div class="playback-row">
+            <span id="timeLabel">0ms</span>
+            <input id="scrubber" type="range" min="0" max="10000" step="10" value="0">
+            <span id="durationLabel">10000ms</span>
+            <button id="playButton" type="button">Play</button>
+            <button id="refreshButton" type="button">Refresh</button>
+          </div>
+          <div class="timeline-grid">
+            <div>
+              <h3>Scenes</h3>
+              <div id="sceneList"></div>
+            </div>
+            <div>
+              <h3>Events</h3>
+              <div id="eventList"></div>
+            </div>
+          </div>
+          <pre id="sceneState"></pre>
+        </section>
+
+        <section class="panel">
+          <h2>Assets</h2>
+          <div id="assetList" class="asset-list"></div>
+        </section>
+      </section>
+
+      <section class="right">
+        <section class="panel">
+          <h2>Director Log</h2>
+          <div id="preview">Listening...</div>
+          <div id="log" class="log"></div>
+          <form id="textForm">
+            <input id="textInput" type="text" placeholder="Type command...">
+            <button type="submit">Send</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <h2>Stream Console</h2>
+          <label><input type="checkbox" id="showAudio"> Show audio events</label>
+          <button id="clearConsole" type="button">Clear</button>
+          <div id="console" class="console"></div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>
