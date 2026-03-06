@@ -1,7 +1,30 @@
 "use server";
 
-import { generateStorySequence } from "@/lib/ai/director";
+import { generateStorySequence, streamStorySequence } from "@/lib/ai/director";
 import { StoryGenerationData } from "@/lib/schema/story";
+
+export type StreamResult = 
+    | { type: 'story', data: StoryGenerationData }
+    | { type: 'image', index: number, data: string }
+    | { type: 'error', error: string };
+
+export async function* processScenePromptStream(prompt: string): AsyncGenerator<StreamResult, void, unknown> {
+    if (!prompt || prompt.trim() === "") {
+        yield { type: 'error', error: "Prompt cannot be empty." };
+        return;
+    }
+
+    try {
+        const stream = streamStorySequence(prompt);
+        for await (const chunk of stream) {
+            yield chunk;
+        }
+    } catch (error: unknown) {
+        console.error("Server Action Stream Error:", error);
+        const message = error instanceof Error ? error.message : String(error);
+        yield { type: 'error', error: `Gemini API/Parse Error: ${message}` };
+    }
+}
 
 export async function processScenePrompt(prompt: string): Promise<StoryGenerationData | { error: string }> {
     if (!prompt || prompt.trim() === "") {
@@ -10,13 +33,10 @@ export async function processScenePrompt(prompt: string): Promise<StoryGeneratio
 
     try {
         const data = await generateStorySequence(prompt);
-        if (!data) {
-            return { error: "Failed to parse a valid storyboard sequence from the AI." };
-        }
-        return data;
+        return data as StoryGenerationData;
     } catch (error: unknown) {
         console.error("Server Action Error:", error);
-        const message = error instanceof Error ? error.message : "An unexpected error occurred during generation.";
-        return { error: message };
+        const message = error instanceof Error ? error.message : String(error);
+        return { error: `Gemini API/Parse Error: ${message}` };
     }
 }

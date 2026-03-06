@@ -4,7 +4,7 @@ import { useState } from "react";
 import Stage from "@/components/Stage";
 import { Send, Play, Image as ImageIcon, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, Loader2 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { processScenePrompt } from "@/app/actions/scene";
+import { processScenePromptStream } from "@/app/actions/scene";
 import { StoryGenerationData } from "@/lib/schema/story";
 
 export default function Home() {
@@ -18,16 +18,31 @@ export default function Home() {
 
     setIsGenerating(true);
     setError(null);
+    setStoryData(null);
 
     try {
-      const result = await processScenePrompt(prompt);
-      if ('error' in result) {
-        setError(result.error);
-      } else {
-        setStoryData(result);
+      const stream = await processScenePromptStream(prompt);
+      for await (const chunk of stream) {
+        if (chunk.type === 'error') {
+          setError(chunk.error);
+          break;
+        } else if (chunk.type === 'story') {
+          setStoryData(chunk.data);
+        } else if (chunk.type === 'image') {
+          setStoryData(prev => {
+            if (!prev) return prev;
+            const newBeats = [...prev.beats];
+            if (newBeats[chunk.index]) {
+              newBeats[chunk.index] = { ...newBeats[chunk.index], image_data: chunk.data };
+            }
+            return { ...prev, beats: newBeats };
+          });
+        }
       }
-    } catch (_err) {
-      setError("Failed to connect to generation service.");
+    } catch (err: unknown) {
+      console.error("Generation failed:", err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setError(`Failed to connect to generation service: ${errorMessage}`);
     } finally {
       setIsGenerating(false);
     }
@@ -148,16 +163,23 @@ export default function Home() {
                           <div className="absolute left-0 top-6 w-3 h-3 rounded-full bg-[#111] border-2 border-cyan-700 z-10 shadow-[0_0_10px_rgba(34,211,238,0.4)]" />
 
                           <div className="ml-6 p-1 rounded-2xl bg-gradient-to-br from-neutral-800/40 to-neutral-900/40 border border-neutral-800/60 backdrop-blur-md shadow-lg transition-all hover:border-neutral-700/80 hover:shadow-[0_8px_30px_rgba(0,0,0,0.12)] group/card">
-                            <div className="bg-[#0f0f0f] rounded-xl p-4 flex gap-5 h-full relative overflow-hidden">
+                            <div className="bg-[#0f0f0f] rounded-xl flex flex-col h-full relative overflow-hidden">
                               {/* Subtle card glow */}
-                              <div className="absolute right-0 top-0 w-32 h-32 bg-cyan-500/5 rounded-full blur-[40px] opacity-0 group-hover/card:opacity-100 transition-opacity" />
+                              <div className="absolute right-0 top-0 w-32 h-32 bg-cyan-500/5 rounded-full blur-[40px] opacity-0 group-hover/card:opacity-100 transition-opacity pointer-events-none" />
 
-                              <div className="w-28 h-28 bg-[#1a1a1a] rounded-xl flex-shrink-0 flex items-center justify-center border border-neutral-800/80 shadow-inner group-hover/card:border-neutral-700 transition-colors flex-col gap-2">
-                                <ImageIcon className="text-neutral-700" size={24} />
-                                <span className="text-[9px] text-neutral-600 uppercase font-mono tracking-widest">Scene {beat.scene_number}</span>
+                              <div className="w-full aspect-video bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center border-b border-neutral-800/80 shadow-inner group-hover/card:border-neutral-700 transition-colors flex-col gap-2 overflow-hidden relative">
+                                {beat.image_data ? (
+                                  /* eslint-disable-next-line @next/next/no-img-element */
+                                  <img src={beat.image_data} alt={`Scene ${beat.scene_number}`} className="w-full h-full object-cover" />
+                                ) : (
+                                  <div className="w-full h-full flex flex-col items-center justify-center animate-pulse bg-neutral-900/40">
+                                    <ImageIcon className="text-neutral-700 mb-2" size={32} />
+                                    <span className="text-xs text-neutral-500 uppercase font-mono tracking-widest text-center px-1">Drawing Scene {beat.scene_number}...</span>
+                                  </div>
+                                )}
                               </div>
-                              <div className="flex-1 flex flex-col py-1">
-                                <p className="text-sm text-neutral-300 leading-relaxed">
+                              <div className="flex-1 flex flex-col p-4 pt-3">
+                                <p className="text-sm text-neutral-300 leading-relaxed mb-4">
                                   {beat.narrative}
                                 </p>
 

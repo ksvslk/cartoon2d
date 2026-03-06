@@ -33,7 +33,8 @@ export const StoryBeatSchema = z.object({
     camera: CameraSchema,
     audio: z.array(AudioSchema).describe("Expected audio cues to play during this beat."),
     actions: z.array(ActionSchema).describe("Semantic motions that actors perform during this beat."),
-    comic_panel_prompt: z.string().describe("A highly optimized text prompt suitable for an Image Generation model to draw a static comic panel of this specific beat.")
+    comic_panel_prompt: z.string().describe("A highly optimized text prompt suitable for an Image Generation model to draw a static comic panel of this specific beat."),
+    image_data: z.string().optional().describe("Base64 data URL of the generated comic panel image.")
 });
 
 export const StoryGenerationSchema = z.object({
@@ -42,6 +43,11 @@ export const StoryGenerationSchema = z.object({
     beats: z.array(StoryBeatSchema).describe("The sequence of animated scenes/beats.")
 });
 
+export const StorySceneSchema = StoryGenerationSchema.extend({
+    id: z.string()
+});
+
 export type StoryGenerationData = z.infer<typeof StoryGenerationSchema>;
+export type StoryScene = z.infer<typeof StorySceneSchema>;
 export type StoryBeatData = z.infer<typeof StoryBeatSchema>;
 export type ActorData = z.infer<typeof ActorSchema>;
