@@ -1,31 +1,47 @@
 import { z } from "zod";
-import { MotionActionSchema } from "./motion";
 
-// Defines a single frame or moment in the comic scene
+export const ActorSchema = z.object({
+    id: z.string().describe("A unique identifier for this actor, e.g., 'actor-john'"),
+    name: z.string().describe("The character's name, e.g., 'John'"),
+    species: z.string().describe("The base species or type, e.g., 'cat', 'dog', 'human'"),
+    attributes: z.array(z.string()).describe("Specific visual traits, e.g., ['blue hat', 'orange tabby']"),
+    visual_description: z.string().describe("A concise paragraph summarizing the actor's visual appearance for an image prompt.")
+});
+
+export const AudioSchema = z.object({
+    type: z.enum(["sfx", "dialogue", "music"]),
+    actor_id: z.string().optional().describe("If type is dialogue, the ID of the speaking actor."),
+    text: z.string().optional().describe("If type is dialogue, the exact words spoken."),
+    description: z.string().optional().describe("If type is sfx or music, a description of the sound (e.g., 'birds chirping in park')")
+});
+
+export const CameraSchema = z.object({
+    zoom: z.number().default(1.0).describe("Camera zoom level. 1.0 is default, >1.0 is zooming in."),
+    pan: z.enum(["static", "pan_right", "pan_left", "pan_up", "pan_down", "tracking"]).default("static")
+});
+
+export const ActionSchema = z.object({
+    actor_id: z.string().describe("The ID of the actor performing the action."),
+    motion: z.string().describe("A semantic action verb, e.g., 'walk', 'idle', 'run', 'tip_hat'"),
+    style: z.string().describe("An adverb or modifier describing how the action is performed, e.g., 'casual', 'panic', 'polite'"),
+    duration_seconds: z.number().describe("The estimated duration of this specific action clip.")
+});
+
 export const StoryBeatSchema = z.object({
-    id: z.string(),
-    // The narrative description or dialog text shown to the user on the comic view
-    narrativeText: z.string(),
-    // The visual description for rendering the panel image
-    panelDescription: z.string(),
-    // The audio/narration cues or dialog to be played
-    audioCues: z.array(z.string()).optional(),
-
-    // The semantic actions that this beat maps to for the animation layer
-    actions: z.array(z.object({
-        actorId: z.string(),
-        motion: MotionActionSchema
-    })).optional()
+    scene_number: z.number().describe("Sequential index of the scene."),
+    narrative: z.string().describe("A human-readable summary of what happens in this scene."),
+    camera: CameraSchema,
+    audio: z.array(AudioSchema).describe("Expected audio cues to play during this beat."),
+    actions: z.array(ActionSchema).describe("Semantic motions that actors perform during this beat."),
+    comic_panel_prompt: z.string().describe("A highly optimized text prompt suitable for an Image Generation model to draw a static comic panel of this specific beat.")
 });
 
-// A complete scene composed of ordered beats
-export const StorySceneSchema = z.object({
-    id: z.string(),
-    title: z.string(),
-    beats: z.array(StoryBeatSchema),
-    // Environmental context like time of day or background image
-    environment: z.string().optional()
+export const StoryGenerationSchema = z.object({
+    title: z.string().describe("A generated title for the entire sequence."),
+    actors_detected: z.array(ActorSchema).describe("A roster of all unique characters identified in the prompt."),
+    beats: z.array(StoryBeatSchema).describe("The sequence of animated scenes/beats.")
 });
 
-export type StoryBeat = z.infer<typeof StoryBeatSchema>;
-export type StoryScene = z.infer<typeof StorySceneSchema>;
+export type StoryGenerationData = z.infer<typeof StoryGenerationSchema>;
+export type StoryBeatData = z.infer<typeof StoryBeatSchema>;
+export type ActorData = z.infer<typeof ActorSchema>;

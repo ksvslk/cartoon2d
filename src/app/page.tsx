@@ -2,11 +2,36 @@
 
 import { useState } from "react";
 import Stage from "@/components/Stage";
-import { Send, Play, Image as ImageIcon, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown } from "lucide-react";
+import { Send, Play, Image as ImageIcon, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, Loader2 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { processScenePrompt } from "@/app/actions/scene";
+import { StoryGenerationData } from "@/lib/schema/story";
 
 export default function Home() {
   const [prompt, setPrompt] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [storyData, setStoryData] = useState<StoryGenerationData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleGenerate = async () => {
+    if (!prompt.trim()) return;
+
+    setIsGenerating(true);
+    setError(null);
+
+    try {
+      const result = await processScenePrompt(prompt);
+      if ('error' in result) {
+        setError(result.error);
+      } else {
+        setStoryData(result);
+      }
+    } catch (_err) {
+      setError("Failed to connect to generation service.");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
 
   return (
     <div className="h-screen h-[100dvh] w-screen bg-[#050505] text-neutral-200 flex flex-col font-sans selection:bg-cyan-500/30 relative overflow-hidden">
@@ -42,13 +67,13 @@ export default function Home() {
           <div className="flex-1 overflow-y-auto px-3 space-y-1 custom-scrollbar">
             {/* Asset Categories */}
             <div className="px-2 py-2 flex items-center gap-3 text-sm text-cyan-400 font-medium bg-cyan-900/10 rounded-lg cursor-pointer hover:bg-cyan-900/20 transition-colors">
-              <LayoutList size={14} /> Scenes <span className="ml-auto text-xs bg-cyan-900/40 px-1.5 rounded-md">2</span>
+              <LayoutList size={14} /> Scenes <span className="ml-auto text-xs bg-cyan-900/40 px-1.5 rounded-md">{storyData?.beats.length || 0}</span>
             </div>
             <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-400 font-medium hover:text-neutral-200 hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
-              <ImageIcon size={14} /> Actors <span className="ml-auto text-xs bg-neutral-800 px-1.5 rounded-md">4</span>
+              <ImageIcon size={14} /> Actors <span className="ml-auto text-xs bg-neutral-800 px-1.5 rounded-md">{storyData?.actors_detected.length || 0}</span>
             </div>
             <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-400 font-medium hover:text-neutral-200 hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
-              <Volume2 size={14} /> Audio <span className="ml-auto text-xs bg-neutral-800 px-1.5 rounded-md">12</span>
+              <Volume2 size={14} /> Audio <span className="ml-auto text-xs bg-neutral-800 px-1.5 rounded-md">0</span>
             </div>
           </div>
 
@@ -70,22 +95,36 @@ export default function Home() {
                 </h2>
 
                 <div className="relative group shrink-0">
-                  <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 rounded-2xl blur opacity-0 group-hover:opacity-100 transition duration-500" />
+                  <div className={`absolute -inset-0.5 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 rounded-2xl blur transition duration-500 ${isGenerating ? 'opacity-100 animate-pulse' : 'opacity-0 group-hover:opacity-100'}`} />
                   <div className="relative bg-[#111] border border-neutral-800/80 rounded-xl overflow-hidden shadow-inner">
                     <textarea
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
                       className="w-full h-36 bg-transparent p-5 text-sm resize-none focus:outline-none placeholder-neutral-600 text-neutral-200"
-                      placeholder="Describe a scene... e.g., 'A robot cat runs in panic from a loud vacuum cleaner.'"
+                      placeholder="Describe a sequence... e.g., 'A robot cat runs in panic from a loud vacuum cleaner. Then it hides under the couch.'"
+                      disabled={isGenerating}
                     />
                     <div className="absolute bottom-3 right-3 flex items-center gap-2">
-                      <button className="bg-white hover:bg-neutral-200 text-black px-4 py-2 rounded-lg transition-all duration-300 flex items-center gap-2 hover:shadow-[0_0_15px_rgba(255,255,255,0.4)] transform hover:-translate-y-0.5 font-medium text-sm">
-                        <span>Generate Scene</span>
-                        <Send size={14} className="group-hover:translate-x-0.5 transition-transform" />
+                      <button
+                        onClick={handleGenerate}
+                        disabled={isGenerating || !prompt.trim()}
+                        className="bg-white disabled:bg-neutral-600 disabled:text-neutral-400 hover:bg-neutral-200 text-black px-4 py-2 rounded-lg transition-all duration-300 flex items-center gap-2 hover:shadow-[0_0_15px_rgba(255,255,255,0.4)] disabled:shadow-none transform hover:-translate-y-0.5 disabled:transform-none font-medium text-sm"
+                      >
+                        {isGenerating ? (
+                          <><Loader2 size={14} className="animate-spin" /> <span>Directing...</span></>
+                        ) : (
+                          <><span>Generate Sequence</span><Send size={14} className="group-hover:translate-x-0.5 transition-transform" /></>
+                        )}
                       </button>
                     </div>
                   </div>
                 </div>
+
+                {error && (
+                  <div className="mt-4 p-3 rounded bg-red-900/20 border border-red-500/30 text-xs text-red-400">
+                    {error}
+                  </div>
+                )}
 
                 <div className="mt-10 flex-1 flex flex-col min-h-0 overflow-hidden">
                   <h2 className="text-sm font-semibold text-neutral-400 uppercase tracking-widest mb-4 flex items-center gap-2.5 shrink-0">
@@ -98,36 +137,48 @@ export default function Home() {
                     {/* Timeline Connector Line */}
                     <div className="absolute left-8 top-4 bottom-0 w-px bg-gradient-to-b from-neutral-800 via-neutral-800/50 to-transparent -z-10" />
 
-                    {/* Example Placeholder Beat */}
-                    <div className="relative pl-1">
-                      <div className="absolute left-0 top-6 w-3 h-3 rounded-full bg-[#111] border-2 border-neutral-700 z-10" />
+                    {!storyData ? (
+                      <div className="text-center text-xs justify-center items-center h-full flex flex-col text-neutral-600 italic">
+                        Awaiting Director&apos;s Prompt...
+                      </div>
+                    ) : (
+                      storyData.beats.map((beat, index) => (
+                        <div key={index} className="relative pl-1">
+                          {/* Node Dot */}
+                          <div className="absolute left-0 top-6 w-3 h-3 rounded-full bg-[#111] border-2 border-cyan-700 z-10 shadow-[0_0_10px_rgba(34,211,238,0.4)]" />
 
-                      <div className="ml-6 p-1 rounded-2xl bg-gradient-to-br from-neutral-800/40 to-neutral-900/40 border border-neutral-800/60 backdrop-blur-md shadow-lg transition-all hover:border-neutral-700/80 hover:shadow-[0_8px_30px_rgba(0,0,0,0.12)] group/card">
-                        <div className="bg-[#0f0f0f] rounded-xl p-4 flex gap-5 h-full relative overflow-hidden">
-                          {/* Subtle card glow */}
-                          <div className="absolute right-0 top-0 w-32 h-32 bg-cyan-500/5 rounded-full blur-[40px] opacity-0 group-hover/card:opacity-100 transition-opacity" />
+                          <div className="ml-6 p-1 rounded-2xl bg-gradient-to-br from-neutral-800/40 to-neutral-900/40 border border-neutral-800/60 backdrop-blur-md shadow-lg transition-all hover:border-neutral-700/80 hover:shadow-[0_8px_30px_rgba(0,0,0,0.12)] group/card">
+                            <div className="bg-[#0f0f0f] rounded-xl p-4 flex gap-5 h-full relative overflow-hidden">
+                              {/* Subtle card glow */}
+                              <div className="absolute right-0 top-0 w-32 h-32 bg-cyan-500/5 rounded-full blur-[40px] opacity-0 group-hover/card:opacity-100 transition-opacity" />
 
-                          <div className="w-28 h-28 bg-[#1a1a1a] rounded-xl flex-shrink-0 flex items-center justify-center border border-neutral-800/80 shadow-inner group-hover/card:border-neutral-700 transition-colors">
-                            <ImageIcon className="text-neutral-700" size={28} />
-                          </div>
-                          <div className="flex-1 flex flex-col py-1">
-                            <p className="text-sm text-neutral-300 leading-relaxed">
-                              The robot cat&apos;s eyes widen as the vacuum roars to life. It scrambles backward.
-                            </p>
+                              <div className="w-28 h-28 bg-[#1a1a1a] rounded-xl flex-shrink-0 flex items-center justify-center border border-neutral-800/80 shadow-inner group-hover/card:border-neutral-700 transition-colors flex-col gap-2">
+                                <ImageIcon className="text-neutral-700" size={24} />
+                                <span className="text-[9px] text-neutral-600 uppercase font-mono tracking-widest">Scene {beat.scene_number}</span>
+                              </div>
+                              <div className="flex-1 flex flex-col py-1">
+                                <p className="text-sm text-neutral-300 leading-relaxed">
+                                  {beat.narrative}
+                                </p>
 
-                            <div className="mt-auto flex flex-wrap gap-2 pt-3 border-t border-neutral-800/50">
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-[11px] font-medium text-cyan-400">
-                                <Volume2 size={12} /> vacuum_roar.wav
-                              </span>
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-neutral-800/80 border border-neutral-700 text-[11px] font-mono text-neutral-400">
-                                run(panic)
-                              </span>
+                                <div className="mt-auto flex flex-wrap gap-2 pt-3 border-t border-neutral-800/50">
+                                  {beat.audio.map((audio, i) => (
+                                    <span key={`audio-${i}`} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' : 'bg-cyan-500/10 border-cyan-500/20 text-cyan-400'}`}>
+                                      <Volume2 size={10} /> {audio.type === 'dialogue' ? `"${audio.text}"` : audio.description}
+                                    </span>
+                                  ))}
+                                  {beat.actions.map((act, i) => (
+                                    <span key={`act-${i}`} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-neutral-800/80 border border-neutral-700 text-[10px] font-mono text-neutral-400">
+                                      {act.actor_id}:{act.motion}({act.style})
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
                             </div>
                           </div>
                         </div>
-                      </div>
-                    </div>
-
+                      ))
+                    )}
                   </div>
                 </div>
               </section>
