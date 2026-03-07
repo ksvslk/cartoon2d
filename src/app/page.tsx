@@ -243,14 +243,23 @@ export default function Home() {
             if (currentBeat) {
               currentBeat.image_data = compressedIncomingImage;
 
-              // If this beat has actions, see if any actors are missing reference portraits
-              if (currentBeat.actions && currentProjectId) {
-                currentBeat.actions.forEach(action => {
+              // Save reference for ALL detected actors that don't have one yet
+              if (currentProjectId) {
+                // Collect actor IDs from this beat's actions
+                const beatActorIds = new Set(
+                  (currentBeat.actions || []).map(a => a.actor_id)
+                );
+
+                // Also check all globally detected actors
+                prev.actors_detected.forEach(actor => {
+                  beatActorIds.add(actor.id);
+                });
+
+                beatActorIds.forEach(actorId => {
                   setActorReferences(prevRefs => {
-                    if (!prevRefs[action.actor_id]) {
-                      // Save this new image as the permanent Identity Lock for this actor
-                      saveActorIdentity(currentProjectId, action.actor_id, compressedIncomingImage);
-                      return { ...prevRefs, [action.actor_id]: compressedIncomingImage };
+                    if (!prevRefs[actorId]) {
+                      saveActorIdentity(currentProjectId, actorId, compressedIncomingImage);
+                      return { ...prevRefs, [actorId]: compressedIncomingImage };
                     }
                     return prevRefs;
                   });
@@ -362,12 +371,19 @@ export default function Home() {
             if (currentBeat) {
               currentBeat.image_data = compressedIncomingImage;
 
-              if (currentBeat.actions && currentProjectId) {
-                currentBeat.actions.forEach(action => {
+              // Save reference for ALL detected actors that don't have one yet
+              if (currentProjectId) {
+                const beatActorIds = new Set(
+                  (currentBeat.actions || []).map(a => a.actor_id)
+                );
+                prev.actors_detected.forEach(actor => {
+                  beatActorIds.add(actor.id);
+                });
+                beatActorIds.forEach(actorId => {
                   setActorReferences(prevRefs => {
-                    if (!prevRefs[action.actor_id]) {
-                      saveActorIdentity(currentProjectId, action.actor_id, compressedIncomingImage);
-                      return { ...prevRefs, [action.actor_id]: compressedIncomingImage };
+                    if (!prevRefs[actorId]) {
+                      saveActorIdentity(currentProjectId, actorId, compressedIncomingImage);
+                      return { ...prevRefs, [actorId]: compressedIncomingImage };
                     }
                     return prevRefs;
                   });
@@ -479,8 +495,8 @@ export default function Home() {
                         <button
                           onClick={(e) => handleDeleteProject(proj.id, e)}
                           className={`p-1 transition-all ${confirmDeleteId === proj.id
-                              ? 'text-red-500 scale-110 animate-pulse'
-                              : 'text-neutral-400 hover:text-red-400'
+                            ? 'text-red-500 scale-110 animate-pulse'
+                            : 'text-neutral-400 hover:text-red-400'
                             }`}
                           title={confirmDeleteId === proj.id ? "Click again to delete" : "Delete Cartoon"}
                         >
@@ -525,8 +541,41 @@ export default function Home() {
               )}
               <span className="min-w-[1.5rem] text-center text-xs bg-cyan-200/60 dark:bg-cyan-900/40 px-1.5 py-0.5 rounded-md text-cyan-800 dark:text-cyan-300">{storyData?.beats.length || 0}</span>
             </div>
-            <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
-              <ImageIcon size={14} /> <span className="flex-1">Actors</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">{storyData?.actors_detected.length || 0}</span>
+            {/* Actors Section */}
+            <div>
+              <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
+                <ImageIcon size={14} /> <span className="flex-1">Actors</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">{storyData?.actors_detected.length || 0}</span>
+              </div>
+              {storyData && storyData.actors_detected.length > 0 && (
+                <div className="mt-1 space-y-1 pl-2 pr-1">
+                  {storyData.actors_detected.map(actor => (
+                    <div
+                      key={actor.id}
+                      className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-800/50 transition-colors group"
+                    >
+                      {/* Actor Thumbnail */}
+                      <div className="w-8 h-8 rounded-md overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
+                        {actorReferences[actor.id] ? (
+                          <img
+                            src={actorReferences[actor.id]}
+                            alt={actor.name}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
+                            <ImageIcon size={12} />
+                          </div>
+                        )}
+                      </div>
+                      {/* Actor Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">{actor.name}</div>
+                        <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">{actor.species}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
               <Volume2 size={14} /> <span className="flex-1">Audio</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">0</span>
@@ -712,18 +761,59 @@ export default function Home() {
 
                             {/* Narrative + metadata */}
                             <div className="p-3 pt-2">
-                              <p className="text-xs text-neutral-700 dark:text-neutral-300 leading-relaxed mb-2">
+                              <p
+                                className="text-xs text-neutral-700 dark:text-neutral-300 leading-relaxed mb-2 cursor-text hover:bg-neutral-100/50 dark:hover:bg-neutral-800/30 rounded px-1 -mx-1 transition-colors focus:outline-none focus:ring-1 focus:ring-cyan-500/30"
+                                contentEditable
+                                suppressContentEditableWarning
+                                onBlur={(e) => {
+                                  const newText = e.currentTarget.textContent || '';
+                                  if (newText !== beat.narrative) {
+                                    setStoryData(prev => {
+                                      if (!prev) return prev;
+                                      const newBeats = [...prev.beats];
+                                      newBeats[index] = { ...newBeats[index], narrative: newText };
+                                      return { ...prev, beats: newBeats };
+                                    });
+                                  }
+                                }}
+                              >
                                 {beat.narrative}
                               </p>
                               <div className="flex flex-wrap gap-1.5">
                                 {beat.audio.map((audio, i) => (
-                                  <span key={`audio-${i}`} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[9px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
+                                  <span key={`audio-${i}`} className={`group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[9px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
                                     <Volume2 size={8} /> {audio.type === 'dialogue' ? `"${audio.text}"` : audio.description}
+                                    <button
+                                      className="opacity-0 group-hover/tag:opacity-100 ml-0.5 hover:text-red-500 transition-all"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setStoryData(prev => {
+                                          if (!prev) return prev;
+                                          const newBeats = [...prev.beats];
+                                          newBeats[index] = { ...newBeats[index], audio: newBeats[index].audio.filter((_, ai) => ai !== i) };
+                                          return { ...prev, beats: newBeats };
+                                        });
+                                      }}
+                                      title="Remove this audio cue"
+                                    >×</button>
                                   </span>
                                 ))}
                                 {beat.actions.map((act, i) => (
-                                  <span key={`act-${i}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-neutral-100 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 text-[9px] font-mono text-neutral-600 dark:text-neutral-400">
+                                  <span key={`act-${i}`} className="group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-neutral-100 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 text-[9px] font-mono text-neutral-600 dark:text-neutral-400">
                                     {act.actor_id}:{act.motion}({act.style})
+                                    <button
+                                      className="opacity-0 group-hover/tag:opacity-100 ml-0.5 hover:text-red-500 transition-all"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setStoryData(prev => {
+                                          if (!prev) return prev;
+                                          const newBeats = [...prev.beats];
+                                          newBeats[index] = { ...newBeats[index], actions: newBeats[index].actions.filter((_, ai) => ai !== i) };
+                                          return { ...prev, beats: newBeats };
+                                        });
+                                      }}
+                                      title="Remove this action"
+                                    >×</button>
                                   </span>
                                 ))}
                               </div>
