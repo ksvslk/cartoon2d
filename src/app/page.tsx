@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Stage from "@/components/Stage";
-import { Send, Play, Image as ImageIcon, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, Loader2, Film } from "lucide-react";
+import { Send, Play, Image as ImageIcon, ImageOff, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, Loader2, Film, Trash2, Pencil, Plus } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { processScenePromptStream } from "@/app/actions/scene";
+import { processScenePromptStream, processSceneImageEdit } from "@/app/actions/scene";
 import { StoryGenerationData } from "@/lib/schema/story";
+import { loadStoryFromStorage, saveStoryToStorage, clearStoryStorage, getProjectsList, createProject, deleteProject, updateProjectTitle, ProjectMetadata, loadActorIdentities, saveActorIdentity } from "@/lib/storage/db";
 
 import { ThemeToggle } from "@/components/ThemeToggle";
 
@@ -14,28 +15,247 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [storyData, setStoryData] = useState<StoryGenerationData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  // Actor Identity State (projectId -> actorId -> base64Image)
+  const [actorReferences, setActorReferences] = useState<Record<string, string>>({});
+
+  // Project Management State
+  const [projects, setProjects] = useState<ProjectMetadata[]>([]);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  const [isProjectDropdownOpen, setIsProjectDropdownOpen] = useState(false);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editProjectTitle, setEditProjectTitle] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  // Generation Mode: 'sequence' = 3-5 panels, 'single' = exactly 1 panel
+  const [generateMode, setGenerateMode] = useState<'sequence' | 'single'>('single');
+
+  // Panel Editing State
+  const [editingBeatIndex, setEditingBeatIndex] = useState<number | null>(null);
+  const [editPrompt, setEditPrompt] = useState("");
+  const [isEditingImage, setIsEditingImage] = useState(false);
+
+  // Panel Insertion State
+  const [insertAtIndex, setInsertAtIndex] = useState<number | null>(null);
+  const [insertPrompt, setInsertPrompt] = useState("");
+
+  // Load from local IndexedDB on mount
+  useEffect(() => {
+    const initializeApp = async () => {
+      let activeProjectId = null;
+      try {
+        const loadedProjects = await getProjectsList();
+
+        if (loadedProjects.length === 0) {
+          // First time user: create default project
+          const newProj = await createProject("My First Cartoon");
+          setProjects([newProj]);
+          activeProjectId = newProj.id;
+        } else {
+          setProjects(loadedProjects);
+          // Load most recently updated project
+          const recent = [...loadedProjects].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+          activeProjectId = recent.id;
+        }
+
+        setCurrentProjectId(activeProjectId);
+
+        // Load the actual story data for the active project
+        const data = await loadStoryFromStorage(activeProjectId);
+        setStoryData(data || { title: "", actors_detected: [], beats: [] });
+
+        // Load project's actor ID registry
+        const actors = await loadActorIdentities(activeProjectId);
+        setActorReferences(actors);
+      } catch (err) {
+        console.error("Failed to initialize projects:", err);
+      } finally {
+        setIsLoaded(true);
+      }
+    };
+    initializeApp();
+  }, []);
+
+  // Save to local IndexedDB whenever storyData changes
+  useEffect(() => {
+    if (isLoaded && storyData && currentProjectId) {
+      saveStoryToStorage(currentProjectId, storyData).then(() => {
+        // Silently refresh project list to get updated timestamps
+        getProjectsList().then(setProjects);
+      });
+    }
+  }, [storyData, isLoaded, currentProjectId]);
+
+  // Utility to compress context images before sending to API to save tokens/payload
+  const downscaleBase64Image = (base64Str: string, maxWidth: number = 512): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.src = base64Str;
+      img.onload = () => {
+        if (img.width <= maxWidth) {
+          return resolve(base64Str);
+        }
+        const scaleSize = maxWidth / img.width;
+        const canvas = document.createElement('canvas');
+        canvas.width = maxWidth;
+        canvas.height = img.height * scaleSize;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.8));
+      };
+      img.onerror = () => resolve(base64Str); // fallback if it fails
+    });
+  };
+
+  // --- Project Management Handlers ---
+
+  const handleCreateProject = async () => {
+    try {
+      const newProj = await createProject(`New Cartoon ${projects.length + 1}`);
+      setProjects(prev => [...prev, newProj]);
+      setCurrentProjectId(newProj.id);
+      setStoryData({ title: "", actors_detected: [], beats: [] });
+      setActorReferences({});
+      setIsProjectDropdownOpen(false);
+    } catch (err) {
+      console.error("Failed to create project", err);
+    }
+  };
+
+  const handleSwitchProject = async (id: string) => {
+    if (id === currentProjectId) return;
+    try {
+      setCurrentProjectId(id);
+      const data = await loadStoryFromStorage(id);
+      setStoryData(data || { title: "", actors_detected: [], beats: [] });
+
+      const actors = await loadActorIdentities(id);
+      setActorReferences(actors);
+
+      setIsProjectDropdownOpen(false);
+    } catch (err) {
+      console.error("Failed to switch project", err);
+    }
+  };
+
+  const handleDeleteProject = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    // Inline Confirmation Flow
+    if (confirmDeleteId !== id) {
+      setConfirmDeleteId(id);
+
+      // Auto-cancel confirmation after 3 seconds
+      setTimeout(() => {
+        setConfirmDeleteId(current => current === id ? null : current);
+      }, 3000);
+      return;
+    }
+
+    try {
+      await deleteProject(id);
+      const remaining = projects.filter(p => p.id !== id);
+      setProjects(remaining);
+
+      if (currentProjectId === id) {
+        if (remaining.length > 0) {
+          handleSwitchProject(remaining[0].id);
+        } else {
+          // Explicitly wipe the screen before creating a new dummy project
+          setStoryData({ title: "", actors_detected: [], beats: [] });
+          setActorReferences({});
+          handleCreateProject();
+        }
+      }
+      setConfirmDeleteId(null);
+    } catch (err) {
+      console.error("Failed to delete project", err);
+      setConfirmDeleteId(null);
+    }
+  };
+
+  const handleUpdateProjectTitle = async (id: string, newTitle: string) => {
+    if (!newTitle.trim()) return;
+    try {
+      await updateProjectTitle(id, newTitle);
+      setProjects(prev => prev.map(p => p.id === id ? { ...p, title: newTitle } : p));
+      setEditingProjectId(null);
+    } catch (err) {
+      console.error("Failed to update project title", err);
+    }
+  };
+
+  // --- Generation Handlers ---
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
 
     setIsGenerating(true);
     setError(null);
-    setStoryData(null);
+
+    // We do NOT clear storyData here anymore, because we are appending!
+    const initialBeatsLength = storyData ? storyData.beats.length : 0;
+
+    let contextBeats;
+    if (storyData && storyData.beats.length > 0) {
+      // Deep copy the last two beats to avoid mutating React state
+      contextBeats = JSON.parse(JSON.stringify(storyData.beats.slice(-2)));
+      // Downscale images for API payload to save tokens/MB limits
+      for (const beat of contextBeats) {
+        if (beat.image_data) {
+          beat.image_data = await downscaleBase64Image(beat.image_data, 512);
+        }
+      }
+    }
 
     try {
-      const stream = await processScenePromptStream(prompt);
+      const stream = await processScenePromptStream(prompt, contextBeats, { singleBeat: generateMode === 'single' }, actorReferences);
       for await (const chunk of stream) {
         if (chunk.type === 'error') {
           setError(chunk.error);
           break;
         } else if (chunk.type === 'story') {
-          setStoryData(chunk.data);
+          setStoryData(prev => {
+            if (!prev) return chunk.data;
+
+            // Merge actors seamlessly
+            const newActors = chunk.data.actors_detected.filter(
+              newActor => !prev.actors_detected.some(old => old.id === newActor.id)
+            );
+
+            return {
+              title: prev.title || chunk.data.title, // Keep original title
+              actors_detected: [...prev.actors_detected, ...newActors],
+              beats: [...prev.beats, ...chunk.data.beats]
+            };
+          });
         } else if (chunk.type === 'image') {
+          const compressedIncomingImage = await downscaleBase64Image(chunk.data, 512);
+
+          // ACTOR IDENTITY LOCK: Intercept First Appearances
           setStoryData(prev => {
             if (!prev) return prev;
             const newBeats = [...prev.beats];
-            if (newBeats[chunk.index]) {
-              newBeats[chunk.index] = { ...newBeats[chunk.index], image_data: chunk.data };
+            const targetIndex = initialBeatsLength + chunk.index;
+            const currentBeat = newBeats[targetIndex];
+
+            if (currentBeat) {
+              currentBeat.image_data = compressedIncomingImage;
+
+              // If this beat has actions, see if any actors are missing reference portraits
+              if (currentBeat.actions && currentProjectId) {
+                currentBeat.actions.forEach(action => {
+                  setActorReferences(prevRefs => {
+                    if (!prevRefs[action.actor_id]) {
+                      // Save this new image as the permanent Identity Lock for this actor
+                      saveActorIdentity(currentProjectId, action.actor_id, compressedIncomingImage);
+                      return { ...prevRefs, [action.actor_id]: compressedIncomingImage };
+                    }
+                    return prevRefs;
+                  });
+                });
+              }
             }
             return { ...prev, beats: newBeats };
           });
@@ -45,6 +265,126 @@ export default function Home() {
       console.error("Generation failed:", err);
       const errorMessage = err instanceof Error ? err.message : String(err);
       setError(`Failed to connect to generation service: ${errorMessage}`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleEditImageSubmit = async (index: number) => {
+    if (!storyData || !storyData.beats[index] || !storyData.beats[index].image_data || !editPrompt.trim() || isEditingImage) return;
+
+    setIsEditingImage(true);
+    setError(null);
+
+    try {
+      const originalImage = storyData.beats[index].image_data as string;
+
+      // CRITICAL: Next.js Server Actions choke on massive base64 strings (array nesting error)
+      // We MUST compress the image on the client before sending it over the network to the server function.
+      const compressedImage = await downscaleBase64Image(originalImage, 512);
+
+      const result = await processSceneImageEdit(compressedImage, editPrompt);
+
+      if (result.error) {
+        setError(result.error);
+      } else if (result.data) {
+        // Automatically append the edited image data to the story state
+        setStoryData(prev => {
+          if (!prev) return prev;
+          const newBeats = [...prev.beats];
+          newBeats[index] = { ...newBeats[index], image_data: result.data };
+          return { ...prev, beats: newBeats };
+        });
+
+        // Close the edit prompt overlay
+        setEditingBeatIndex(null);
+        setEditPrompt("");
+      }
+    } catch (error: unknown) {
+      console.error("Image editing failed:", error);
+      setError(error instanceof Error ? error.message : "Failed to edit image");
+    } finally {
+      setIsEditingImage(false);
+    }
+  };
+
+  const handleInsertScene = async (insertIndex: number) => {
+    if (!insertPrompt.trim() || isGenerating) return;
+
+    setIsGenerating(true);
+    setError(null);
+
+    // Build context from surrounding beats (the one before and one after the insertion point)
+    let contextBeats;
+    if (storyData && storyData.beats.length > 0) {
+      const surroundingBeats = [];
+      if (insertIndex > 0) surroundingBeats.push(storyData.beats[insertIndex - 1]);
+      if (insertIndex < storyData.beats.length) surroundingBeats.push(storyData.beats[insertIndex]);
+      contextBeats = JSON.parse(JSON.stringify(surroundingBeats));
+      for (const beat of contextBeats) {
+        if (beat.image_data) {
+          beat.image_data = await downscaleBase64Image(beat.image_data, 512);
+        }
+      }
+    }
+
+    try {
+      const stream = await processScenePromptStream(insertPrompt, contextBeats, { singleBeat: true }, actorReferences);
+      for await (const chunk of stream) {
+        if (chunk.type === 'error') {
+          setError(chunk.error);
+          break;
+        } else if (chunk.type === 'story') {
+          setStoryData(prev => {
+            if (!prev) return chunk.data;
+            const newActors = chunk.data.actors_detected.filter(
+              newActor => !prev.actors_detected.some(old => old.id === newActor.id)
+            );
+            const newBeats = [...prev.beats];
+            // Splice the new beat(s) at the insertion point
+            newBeats.splice(insertIndex, 0, ...chunk.data.beats);
+            return {
+              title: prev.title || chunk.data.title,
+              actors_detected: [...prev.actors_detected, ...newActors],
+              beats: newBeats
+            };
+          });
+        } else if (chunk.type === 'image') {
+          const compressedIncomingImage = await downscaleBase64Image(chunk.data, 512);
+
+          // ACTOR IDENTITY LOCK for Scene Insertions
+          setStoryData(prev => {
+            if (!prev) return prev;
+            const newBeats = [...prev.beats];
+            const targetIdx = insertIndex + chunk.index;
+            const currentBeat = newBeats[targetIdx];
+
+            if (currentBeat) {
+              currentBeat.image_data = compressedIncomingImage;
+
+              if (currentBeat.actions && currentProjectId) {
+                currentBeat.actions.forEach(action => {
+                  setActorReferences(prevRefs => {
+                    if (!prevRefs[action.actor_id]) {
+                      saveActorIdentity(currentProjectId, action.actor_id, compressedIncomingImage);
+                      return { ...prevRefs, [action.actor_id]: compressedIncomingImage };
+                    }
+                    return prevRefs;
+                  });
+                });
+              }
+            }
+            return { ...prev, beats: newBeats };
+          });
+        }
+      }
+      // Close the insert prompt
+      setInsertAtIndex(null);
+      setInsertPrompt("");
+    } catch (err: unknown) {
+      console.error("Insert scene failed:", err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setError(`Failed to insert scene: ${errorMessage}`);
     } finally {
       setIsGenerating(false);
     }
@@ -80,18 +420,116 @@ export default function Home() {
 
         {/* Far Left Column: Project Assets Sidebar */}
         <aside className="w-16 md:w-48 lg:w-64 border-r border-neutral-200/50 dark:border-neutral-800/50 bg-white/60 dark:bg-[#070707]/60 backdrop-blur-md flex flex-col pt-4 hidden sm:flex shrink-0 transition-colors duration-300">
-          <div className="px-5 mb-4 text-[10px] font-bold text-neutral-500 dark:text-neutral-500 uppercase tracking-widest">Project Assets</div>
+          {/* Project Switcher Dropdown */}
+          <div className="px-3 mb-4 relative z-50">
+            <button
+              onClick={() => setIsProjectDropdownOpen(!isProjectDropdownOpen)}
+              className="w-full bg-white dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700/50 rounded-lg px-3 py-2 flex items-center justify-between shadow-sm hover:border-cyan-500/50 transition-colors group"
+            >
+              <div className="flex flex-col items-start truncate">
+                <span className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest mb-0.5">Current Draft</span>
+                <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 truncate pr-2">
+                  {projects.find(p => p.id === currentProjectId)?.title || "Loading..."}
+                </span>
+              </div>
+              <ChevronDown size={14} className="text-neutral-400 group-hover:text-cyan-500 transition-colors" />
+            </button>
 
+            {isProjectDropdownOpen && (
+              <div className="absolute top-full left-3 right-3 mt-1 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200 z-50">
+                <div className="max-h-60 overflow-y-auto custom-scrollbar">
+                  {projects.map(proj => (
+                    <div
+                      key={proj.id}
+                      className={`group flex items-center justify-between px-3 py-2 text-sm cursor-pointer transition-colors border-l-2 ${proj.id === currentProjectId ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/10' : 'border-transparent hover:bg-neutral-50 dark:hover:bg-neutral-800/50'}`}
+                      onClick={() => handleSwitchProject(proj.id)}
+                    >
+                      {editingProjectId === proj.id ? (
+                        <input
+                          autoFocus
+                          value={editProjectTitle}
+                          onChange={(e) => setEditProjectTitle(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleUpdateProjectTitle(proj.id, editProjectTitle);
+                            if (e.key === 'Escape') setEditingProjectId(null);
+                          }}
+                          onBlur={() => handleUpdateProjectTitle(proj.id, editProjectTitle)}
+                          className="flex-1 bg-white dark:bg-neutral-800 border-b border-cyan-500 focus:outline-none text-xs px-1 py-0.5"
+                          onClick={e => e.stopPropagation()}
+                        />
+                      ) : (
+                        <span className="truncate text-xs font-medium text-neutral-700 dark:text-neutral-300 pr-2">
+                          {proj.title}
+                        </span>
+                      )}
+
+                      <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingProjectId(proj.id);
+                            setEditProjectTitle(proj.title);
+                            setConfirmDeleteId(null);
+                          }}
+                          className="p-1 hover:text-cyan-600 dark:hover:text-cyan-400 text-neutral-400"
+                          title="Rename Cartoon"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          onClick={(e) => handleDeleteProject(proj.id, e)}
+                          className={`p-1 transition-all ${confirmDeleteId === proj.id
+                              ? 'text-red-500 scale-110 animate-pulse'
+                              : 'text-neutral-400 hover:text-red-400'
+                            }`}
+                          title={confirmDeleteId === proj.id ? "Click again to delete" : "Delete Cartoon"}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="p-2 border-t border-neutral-100 dark:border-neutral-800">
+                  <button
+                    onClick={handleCreateProject}
+                    className="w-full py-1.5 flex items-center justify-center gap-1.5 text-xs font-semibold text-neutral-600 dark:text-neutral-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 rounded transition-colors"
+                  >
+                    <Plus size={12} /> New Cartoon
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
           <div className="flex-1 overflow-y-auto px-3 space-y-1 custom-scrollbar">
             {/* Asset Categories */}
-            <div className="px-2 py-2 flex items-center gap-3 text-sm text-cyan-700 dark:text-cyan-400 font-medium bg-cyan-100 dark:bg-cyan-900/10 rounded-lg cursor-pointer hover:bg-cyan-200 dark:hover:bg-cyan-900/20 transition-colors">
-              <LayoutList size={14} /> Scenes <span className="ml-auto text-xs bg-cyan-200 dark:bg-cyan-900/40 px-1.5 rounded-md text-cyan-800 dark:text-cyan-300">{storyData?.beats.length || 0}</span>
+            <div className="px-2 py-2 flex items-center gap-3 text-sm text-cyan-700 dark:text-cyan-400 font-medium bg-cyan-100/60 dark:bg-cyan-900/10 rounded-lg cursor-pointer hover:bg-cyan-200/60 dark:hover:bg-cyan-900/20 transition-colors group">
+              <LayoutList size={14} /> <span className="flex-1">Scenes</span>
+              {storyData && (
+                <button
+                  title="Clear Story Database"
+                  className="opacity-0 group-hover:opacity-100 focus:outline-none"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirm("Are you sure you want to clear the current story and wipe local storage?")) {
+                      if (currentProjectId) clearStoryStorage(currentProjectId);
+                      setStoryData(null);
+                    }
+                  }}
+                >
+                  <Trash2
+                    size={12}
+                    className="text-cyan-700/50 hover:text-red-500 transition-colors"
+                  />
+                </button>
+              )}
+              <span className="min-w-[1.5rem] text-center text-xs bg-cyan-200/60 dark:bg-cyan-900/40 px-1.5 py-0.5 rounded-md text-cyan-800 dark:text-cyan-300">{storyData?.beats.length || 0}</span>
             </div>
             <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
-              <ImageIcon size={14} /> Actors <span className="ml-auto text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 rounded-md text-neutral-700 dark:text-neutral-300">{storyData?.actors_detected.length || 0}</span>
+              <ImageIcon size={14} /> <span className="flex-1">Actors</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">{storyData?.actors_detected.length || 0}</span>
             </div>
             <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
-              <Volume2 size={14} /> Audio <span className="ml-auto text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 rounded-md text-neutral-700 dark:text-neutral-300">0</span>
+              <Volume2 size={14} /> <span className="flex-1">Audio</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">0</span>
             </div>
           </div>
 
@@ -118,11 +556,26 @@ export default function Home() {
                     <textarea
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
-                      className="w-full h-36 bg-transparent p-5 text-sm resize-none focus:outline-none placeholder-neutral-400 dark:placeholder-neutral-600 text-neutral-800 dark:text-neutral-200"
-                      placeholder="Describe a sequence... e.g., 'A robot cat runs in panic from a loud vacuum cleaner. Then it hides under the couch.'"
+                      className="w-full h-28 bg-transparent p-5 pb-2 text-sm resize-none focus:outline-none placeholder-neutral-400 dark:placeholder-neutral-600 text-neutral-800 dark:text-neutral-200"
+                      placeholder={generateMode === 'single' ? "Describe a single scene... e.g., 'A robot cat stares at a vacuum cleaner suspiciously.'" : "Describe a sequence... e.g., 'A robot cat runs in panic from a loud vacuum cleaner. Then it hides under the couch.'"}
                       disabled={isGenerating}
                     />
-                    <div className="absolute bottom-3 right-3 flex items-center gap-2">
+                    <div className="flex items-center justify-between px-3 pb-3 pt-1">
+                      {/* Mode Toggle */}
+                      <div className="flex items-center bg-neutral-100 dark:bg-neutral-800/80 rounded-lg p-0.5 border border-neutral-200/80 dark:border-neutral-700/50">
+                        <button
+                          onClick={() => setGenerateMode('single')}
+                          className={`px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all duration-200 ${generateMode === 'single' ? 'bg-white dark:bg-neutral-700 text-cyan-700 dark:text-cyan-300 shadow-sm' : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'}`}
+                        >
+                          Single Scene
+                        </button>
+                        <button
+                          onClick={() => setGenerateMode('sequence')}
+                          className={`px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all duration-200 ${generateMode === 'sequence' ? 'bg-white dark:bg-neutral-700 text-cyan-700 dark:text-cyan-300 shadow-sm' : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'}`}
+                        >
+                          Sequence
+                        </button>
+                      </div>
                       <button
                         onClick={handleGenerate}
                         disabled={isGenerating || !prompt.trim()}
@@ -131,7 +584,7 @@ export default function Home() {
                         {isGenerating ? (
                           <><Loader2 size={14} className="animate-spin" /> <span>Directing...</span></>
                         ) : (
-                          <><span>Generate Sequence</span><Send size={14} className="group-hover:translate-x-0.5 transition-transform" /></>
+                          <><span>{generateMode === 'single' ? 'Generate Scene' : 'Generate Sequence'}</span><Send size={14} /></>
                         )}
                       </button>
                     </div>
@@ -150,10 +603,7 @@ export default function Home() {
                   </h2>
 
                   {/* Timeline Scroll Area */}
-                  <div className="flex-1 overflow-y-auto space-y-4 pr-3 pb-8 custom-scrollbar relative">
-
-                    {/* Timeline Connector Line */}
-                    <div className="absolute left-8 top-4 bottom-0 w-px bg-gradient-to-b from-neutral-300 dark:from-neutral-800 via-neutral-300/50 dark:via-neutral-800/50 to-transparent -z-10" />
+                  <div className="flex-1 overflow-y-auto space-y-2 pr-1 pb-8 custom-scrollbar">
 
                     {!storyData ? (
                       <div className="flex flex-col items-center justify-center h-full max-w-xs mx-auto text-center px-4">
@@ -167,45 +617,150 @@ export default function Home() {
                       </div>
                     ) : (
                       storyData.beats.map((beat, index) => (
-                        <div key={index} className="relative pl-1">
-                          {/* Node Dot */}
-                          <div className="absolute left-0 top-6 w-3 h-3 rounded-full bg-white dark:bg-[#111] border-2 border-cyan-500 dark:border-cyan-700 z-10 shadow-[0_0_10px_rgba(34,211,238,0.2)] dark:shadow-[0_0_10px_rgba(34,211,238,0.4)] transition-colors duration-300" />
+                        <div key={index}>
 
-                          <div className="ml-6 p-1 rounded-2xl bg-gradient-to-br from-neutral-100 dark:from-neutral-800/40 to-neutral-50 dark:to-neutral-900/40 border border-neutral-200 dark:border-neutral-800/60 backdrop-blur-md shadow-md dark:shadow-lg transition-all hover:border-neutral-300 dark:hover:border-neutral-700/80 hover:shadow-[0_8px_30px_rgba(0,0,0,0.05)] dark:hover:shadow-[0_8px_30px_rgba(0,0,0,0.12)] group/card">
-                            <div className="bg-white dark:bg-[#0f0f0f] rounded-xl flex flex-col h-full relative overflow-hidden transition-colors duration-300">
-                              {/* Subtle card glow */}
-                              <div className="absolute right-0 top-0 w-32 h-32 bg-cyan-500/10 dark:bg-cyan-500/5 rounded-full blur-[40px] opacity-0 group-hover/card:opacity-100 transition-opacity pointer-events-none" />
-
-                              <div className="w-full aspect-video bg-neutral-100 dark:bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center border-b border-neutral-200 dark:border-neutral-800/80 shadow-inner group-hover/card:border-neutral-300 dark:group-hover/card:border-neutral-700 transition-colors flex-col gap-2 overflow-hidden relative">
-                                {beat.image_data ? (
-                                  /* eslint-disable-next-line @next/next/no-img-element */
-                                  <img src={beat.image_data} alt={`Scene ${beat.scene_number}`} className="w-full h-full object-cover" />
-                                ) : (
-                                  <div className="w-full h-full flex flex-col items-center justify-center animate-pulse bg-neutral-200/50 dark:bg-neutral-900/40">
-                                    <ImageIcon className="text-neutral-400 dark:text-neutral-700 mb-2" size={32} />
-                                    <span className="text-xs text-neutral-500 uppercase font-mono tracking-widest text-center px-1">Drawing Scene {beat.scene_number}...</span>
-                                  </div>
+                          <div className="rounded-xl bg-white dark:bg-[#0f0f0f] border border-neutral-200 dark:border-neutral-800/60 shadow-sm dark:shadow-md overflow-hidden transition-colors duration-300 group/card">
+                            {/* Always-visible header with scene number + controls */}
+                            <div className="flex items-center justify-between px-3 py-1.5 bg-neutral-50 dark:bg-[#0a0a0a] border-b border-neutral-200/80 dark:border-neutral-800/50">
+                              <span className="text-[10px] font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Scene {index + 1}</span>
+                              <div className="flex items-center gap-1">
+                                {editingBeatIndex !== index && (
+                                  <button
+                                    className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors"
+                                    title="Edit Panel"
+                                    onClick={() => {
+                                      setEditingBeatIndex(index);
+                                      setEditPrompt("");
+                                    }}
+                                  >
+                                    <Pencil size={12} />
+                                  </button>
                                 )}
-                              </div>
-                              <div className="flex-1 flex flex-col p-4 pt-3">
-                                <p className="text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed mb-4">
-                                  {beat.narrative}
-                                </p>
-
-                                <div className="mt-auto flex flex-wrap gap-2 pt-3 border-t border-neutral-100 dark:border-neutral-800/50">
-                                  {beat.audio.map((audio, i) => (
-                                    <span key={`audio-${i}`} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
-                                      <Volume2 size={10} /> {audio.type === 'dialogue' ? `"${audio.text}"` : audio.description}
-                                    </span>
-                                  ))}
-                                  {beat.actions.map((act, i) => (
-                                    <span key={`act-${i}`} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-neutral-100 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 text-[10px] font-mono text-neutral-600 dark:text-neutral-400">
-                                      {act.actor_id}:{act.motion}({act.style})
-                                    </span>
-                                  ))}
-                                </div>
+                                <button
+                                  className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500 transition-colors"
+                                  title="Delete Scene"
+                                  onClick={() => {
+                                    if (confirm("Delete this scene from the timeline?")) {
+                                      setStoryData(prev => {
+                                        if (!prev) return prev;
+                                        const newBeats = [...prev.beats];
+                                        newBeats.splice(index, 1);
+                                        return { ...prev, beats: newBeats };
+                                      });
+                                    }
+                                  }}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
                               </div>
                             </div>
+
+                            {/* Image area */}
+                            <div className="w-full aspect-video bg-neutral-100 dark:bg-[#1a1a1a] flex items-center justify-center overflow-hidden relative">
+                              {beat.image_data ? (
+                                /* eslint-disable-next-line @next/next/no-img-element */
+                                <img src={beat.image_data} alt={`Scene ${beat.scene_number}`} className="w-full h-full object-cover" />
+                              ) : isGenerating ? (
+                                <div className="w-full h-full flex flex-col items-center justify-center animate-pulse bg-neutral-200/50 dark:bg-neutral-900/40">
+                                  <ImageIcon className="text-neutral-400 dark:text-neutral-700 mb-2" size={32} />
+                                  <span className="text-xs text-neutral-500 uppercase font-mono tracking-widest text-center px-1">Drawing Scene {beat.scene_number}...</span>
+                                </div>
+                              ) : (
+                                <div className="w-full h-full flex flex-col items-center justify-center bg-red-50/50 dark:bg-red-950/20 text-red-500 border border-red-100 dark:border-red-900/50">
+                                  <ImageOff className="text-red-400 dark:text-red-600 mb-2" size={32} />
+                                  <span className="text-xs font-semibold text-center px-1">Image Generation Failed</span>
+                                  <span className="text-[10px] text-red-400 mt-1 px-4 text-center">No image was returned. You can try editing the prompt or deleting this scene.</span>
+                                </div>
+                              )}
+
+                              {/* Image Inpainting Edit Overlay */}
+                              {editingBeatIndex === index && (
+                                <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-30 flex flex-col p-3 transition-all">
+                                  <div className="flex-1 flex flex-col">
+                                    <label className="text-[10px] uppercase tracking-wider font-semibold text-white/70 mb-1 flex items-center gap-1.5"><Pencil size={10} /> Redraw Instructions</label>
+                                    <textarea
+                                      autoFocus
+                                      value={editPrompt}
+                                      onChange={(e) => setEditPrompt(e.target.value)}
+                                      placeholder="e.g. Make it raining, give them a blue hat, add a car in the background..."
+                                      className="w-full flex-1 bg-black/40 border border-white/20 rounded p-2 text-xs text-white placeholder-white/40 resize-none focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 transition-all custom-scrollbar"
+                                      disabled={isEditingImage}
+                                    />
+                                  </div>
+                                  <div className="flex items-center justify-end gap-2 mt-2">
+                                    <button
+                                      className="px-3 py-1.5 text-[10px] font-semibold text-white/70 hover:text-white hover:bg-white/10 rounded transition-colors"
+                                      onClick={() => {
+                                        setEditingBeatIndex(null);
+                                        setEditPrompt("");
+                                      }}
+                                      disabled={isEditingImage}
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      className="px-3 py-1.5 text-[10px] font-semibold bg-cyan-600 hover:bg-cyan-500 text-white rounded transition-colors flex items-center gap-1.5 disabled:bg-cyan-800 disabled:text-white/50"
+                                      onClick={() => handleEditImageSubmit(index)}
+                                      disabled={isEditingImage || !editPrompt.trim()}
+                                    >
+                                      {isEditingImage ? <><Loader2 size={10} className="animate-spin" /> Rendering...</> : "Apply Edit"}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Narrative + metadata */}
+                            <div className="p-3 pt-2">
+                              <p className="text-xs text-neutral-700 dark:text-neutral-300 leading-relaxed mb-2">
+                                {beat.narrative}
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {beat.audio.map((audio, i) => (
+                                  <span key={`audio-${i}`} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[9px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
+                                    <Volume2 size={8} /> {audio.type === 'dialogue' ? `"${audio.text}"` : audio.description}
+                                  </span>
+                                ))}
+                                {beat.actions.map((act, i) => (
+                                  <span key={`act-${i}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-neutral-100 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 text-[9px] font-mono text-neutral-600 dark:text-neutral-400">
+                                    {act.actor_id}:{act.motion}({act.style})
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Insert After Button (between this panel and the next, or at end) */}
+                          <div className="my-1">
+                            {insertAtIndex === index + 1 ? (
+                              <div className="p-3 rounded-xl bg-cyan-50 dark:bg-cyan-950/30 border border-cyan-200 dark:border-cyan-800/60 border-dashed">
+                                <label className="text-[10px] uppercase tracking-wider font-semibold text-cyan-600 dark:text-cyan-400 mb-1.5 flex items-center gap-1.5">
+                                  <Plus size={10} /> {index + 1 < storyData.beats.length ? `Insert Scene Between ${index + 1} & ${index + 2}` : `Add New Scene at End`}
+                                </label>
+                                <textarea
+                                  autoFocus
+                                  value={insertPrompt}
+                                  onChange={(e) => setInsertPrompt(e.target.value)}
+                                  placeholder="Describe what happens in this new scene..."
+                                  className="w-full bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-700 rounded-lg p-2.5 text-xs text-neutral-800 dark:text-neutral-200 placeholder-neutral-400 dark:placeholder-neutral-500 resize-none focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 h-20"
+                                  disabled={isGenerating}
+                                />
+                                <div className="flex items-center justify-end gap-2 mt-2">
+                                  <button className="px-3 py-1.5 text-[10px] font-semibold text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-200 rounded transition-colors" onClick={() => { setInsertAtIndex(null); setInsertPrompt(""); }} disabled={isGenerating}>Cancel</button>
+                                  <button className="px-3 py-1.5 text-[10px] font-semibold bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50" onClick={() => handleInsertScene(index + 1)} disabled={isGenerating || !insertPrompt.trim()}>
+                                    {isGenerating ? <><Loader2 size={10} className="animate-spin" /> Generating...</> : <><Plus size={10} /> Generate Scene</>}
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => { setInsertAtIndex(index + 1); setInsertPrompt(""); }}
+                                className="w-full py-1 border border-dashed border-neutral-300/60 dark:border-neutral-700/40 hover:border-cyan-400 dark:hover:border-cyan-600 rounded-lg text-[10px] font-medium text-neutral-400 dark:text-neutral-600 hover:text-cyan-600 dark:hover:text-cyan-400 transition-all flex items-center justify-center gap-1.5 hover:bg-cyan-50/50 dark:hover:bg-cyan-950/20"
+                                disabled={isGenerating}
+                              >
+                                <Plus size={10} /> Insert Scene
+                              </button>
+                            )}
                           </div>
                         </div>
                       ))
