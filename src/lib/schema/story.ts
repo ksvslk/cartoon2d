@@ -31,7 +31,8 @@ export const ActionSchema = z.object({
     spatial_transform: z.object({
         x: z.number().default(500).describe("The starting X center coordinate on the 1000x1000 stage. E.g. 500 is center, 200 is left."),
         y: z.number().default(800).describe("The starting Y center coordinate on the 1000x1000 stage. Usually around 700-900 to be on the floor."),
-        scale: z.number().default(1.0).describe("The scale of the actor. 1.0 is default size. Use smaller values if they are far away.")
+        scale: z.number().default(1.0).describe("The scale of the actor. 1.0 is default size. Use smaller values if they are far away."),
+        z_index: z.number().default(10).describe("The z-index layering order. Higher numbers are closer to the camera/in front.")
     }).optional()
 });
 

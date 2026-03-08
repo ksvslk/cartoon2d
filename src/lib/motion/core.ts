@@ -1,10 +1,12 @@
 import gsap from "gsap";
 import { StoryBeatData } from "../schema/story";
+import { DraftsmanData } from "../schema/rig";
 
 // Base interface for the context we pass to the animation engine
 export interface AnimationContext {
   container: HTMLElement;
   beat: StoryBeatData;
+  availableRigs: Record<string, DraftsmanData>;
 }
 
 /**
@@ -12,7 +14,7 @@ export interface AnimationContext {
  * Parses a scene's semantic actions and dispatches them to GSAP.
  */
 export function animateScene(context: AnimationContext) {
-  const { container, beat } = context;
+  const { container, beat, availableRigs } = context;
 
   // We use gsap.context to ensure all animations created here are scope-bound
   // to this specific React component, preventing memory leaks when unmounting.
@@ -36,13 +38,14 @@ export function animateScene(context: AnimationContext) {
     beat.actions.forEach(action => {
       const actorId = action.actor_id;
       const motion = action.motion.toLowerCase();
+      const rig = availableRigs[actorId];
       
       console.log(`[Motion Engine] Dispatching '${motion}' for ${actorId}`);
 
       switch (motion) {
         case 'run':
         case 'walk':
-          applyRunCycle(actorId, action.duration_seconds || 2);
+          applyRunCycle(actorId, action.duration_seconds || 2, rig);
           break;
         case 'panic':
           applyPanicShake(actorId);
@@ -75,7 +78,7 @@ function applyIdleBreathing(actorId: string) {
   });
 }
 
-function applyRunCycle(actorId: string, duration: number) {
+function applyRunCycle(actorId: string, duration: number, rig?: DraftsmanData) {
   // 1. Switch to Side View for running
   gsap.set(`#actor_group_${actorId} #view_front`, { display: "none" });
   gsap.set(`#actor_group_${actorId} #view_side_right`, { display: "inline" });
@@ -96,22 +99,36 @@ function applyRunCycle(actorId: string, duration: number) {
     ease: "sine.inOut"
   });
 
-  // 4. Scissor the legs (using wildcard selectors to grab the side view legs)
-  gsap.to(`#actor_group_${actorId} [id$="_leg_left"]`, {
+  // 4. Scissor the legs using actual mathematical pivot points if available
+  
+  // Find leg bones in the side view to extract precise pivot coordinates
+  const leftLegBone = rig?.rig_data.bones.find(b => b.id.includes("side_") && b.id.includes("leg_l"));
+  const rightLegBone = rig?.rig_data.bones.find(b => b.id.includes("side_") && b.id.includes("leg_r"));
+  
+  const leftPivot = leftLegBone?.pivot ? `${leftLegBone.pivot.x} ${leftLegBone.pivot.y}` : "top center";
+  const rightPivot = rightLegBone?.pivot ? `${rightLegBone.pivot.x} ${rightLegBone.pivot.y}` : "top center";
+
+  // Use the exact side view IDs if possible, or fallback to wildcard
+  const leftLegSelector = leftLegBone ? `#actor_group_${actorId} #${leftLegBone.id}` : `#actor_group_${actorId} [id$="_leg_left"]`;
+  const rightLegSelector = rightLegBone ? `#actor_group_${actorId} #${rightLegBone.id}` : `#actor_group_${actorId} [id$="_leg_right"]`;
+
+  gsap.to(leftLegSelector, {
     rotation: 45,
     duration: 0.2,
     yoyo: true,
     repeat: -1,
-    transformOrigin: "top center", // Basic fallback if JSON pivot fails
+    svgOrigin: leftLegBone?.pivot ? leftPivot : undefined, // svgOrigin is specifically for absolute SVG coordinates
+    transformOrigin: !leftLegBone?.pivot ? leftPivot : undefined, // fallback for CSS transforms
     ease: "sine.inOut"
   });
 
-  gsap.to(`#actor_group_${actorId} [id$="_leg_right"]`, {
+  gsap.to(rightLegSelector, {
     rotation: -45,
     duration: 0.2,
     yoyo: true,
     repeat: -1,
-    transformOrigin: "top center",
+    svgOrigin: rightLegBone?.pivot ? rightPivot : undefined,
+    transformOrigin: !rightLegBone?.pivot ? rightPivot : undefined,
     ease: "sine.inOut"
   });
 }

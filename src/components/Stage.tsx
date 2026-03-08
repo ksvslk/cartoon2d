@@ -61,11 +61,18 @@ export default function Stage({ beat, availableRigs, isPlaying = false }: StageP
             masterSvgElement.appendChild(actorLayer);
         }
 
-        // 3. Inject rigs for actors present in the scene
-        const actorsInScene = new Set(beat.actions.map(a => a.actor_id));
+        // 3. Inject rigs for actors present in the scene, sorted by Z-Index
+        const actorsInScene = Array.from(new Set(beat.actions.map(a => a.actor_id))).map(actorId => {
+            const actionData = beat.actions.find(a => a.actor_id === actorId);
+            return {
+                actorId,
+                zIndex: actionData?.spatial_transform?.z_index ?? 10
+            };
+        }).sort((a, b) => a.zIndex - b.zIndex);
+
         let actorIndex = 0;
         
-        actorsInScene.forEach(actorId => {
+        actorsInScene.forEach(({ actorId }) => {
             const rig = availableRigs[actorId];
             if (rig) {
                 const rigDoc = parser.parseFromString(rig.svg_data, "image/svg+xml");
@@ -106,7 +113,7 @@ export default function Stage({ beat, availableRigs, isPlaying = false }: StageP
         // 5. GSAP Context Setup (For later animation)
         const ctx = gsap.context(() => {
             if (isPlaying) {
-                animateScene({ container: containerRef.current!, beat });
+                animateScene({ container: containerRef.current!, beat, availableRigs });
             }
         }, containerRef);
 

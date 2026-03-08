@@ -58,6 +58,7 @@ export default function Home() {
 
   // Stage Selection State
   const [selectedSceneIndex, setSelectedSceneIndex] = useState<number>(0);
+  const [selectedActionIndex, setSelectedActionIndex] = useState<number | null>(null);
 
   // Panel Editing State
   const [editingBeatIndex, setEditingBeatIndex] = useState<number | null>(null);
@@ -1042,7 +1043,15 @@ export default function Home() {
                                   </span>
                                 ))}
                                 {beat.actions.map((act, i) => (
-                                  <span key={`act-${i}`} className="group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-neutral-100 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 text-[9px] font-mono text-neutral-600 dark:text-neutral-400">
+                                  <span 
+                                    key={`act-${i}`} 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedSceneIndex(index);
+                                      setSelectedActionIndex(i);
+                                    }}
+                                    className={`group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full border cursor-pointer text-[9px] font-mono transition-colors ${selectedSceneIndex === index && selectedActionIndex === i ? 'bg-cyan-500 text-white border-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)]' : 'bg-neutral-100 dark:bg-neutral-800/80 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:border-cyan-400 dark:hover:border-cyan-500/50'}`}
+                                  >
                                     {act.actor_id}:{act.motion}({act.style})
                                     <button
                                       className="opacity-0 group-hover/tag:opacity-100 ml-0.5 hover:text-red-500 transition-all"
@@ -1054,6 +1063,9 @@ export default function Home() {
                                           newBeats[index] = { ...newBeats[index], actions: newBeats[index].actions.filter((_, ai) => ai !== i) };
                                           return { ...prev, beats: newBeats };
                                         });
+                                        if (selectedSceneIndex === index && selectedActionIndex === i) {
+                                          setSelectedActionIndex(null);
+                                        }
                                       }}
                                       title="Remove this action"
                                     >×</button>
@@ -1380,25 +1392,144 @@ export default function Home() {
               </div>
 
               <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
-                {/* Placeholder Property content */}
-                <div className="flex flex-col gap-5 opacity-70 dark:opacity-50 transition-opacity">
-                  <div>
-                    <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-1 uppercase tracking-wider">Selected Clip</div>
-                    <div className="w-full h-8 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 flex items-center px-3 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-sm dark:shadow-none transition-colors">run(panic)</div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-2 uppercase tracking-wider">Speed Multiplier</div>
-                    <div className="w-full h-1.5 bg-neutral-200 dark:bg-neutral-800 rounded-full overflow-hidden transition-colors">
-                      <div className="w-[60%] h-full bg-cyan-500 rounded-full"></div>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-1 uppercase tracking-wider">Blend Mode</div>
-                    <div className="w-full h-8 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 flex items-center px-3 text-xs text-neutral-600 dark:text-neutral-400 shadow-sm dark:shadow-none transition-colors">Smooth</div>
-                  </div>
-                </div>
+                {(() => {
+                  if (!storyData || storyData.beats.length === 0) {
+                    return <div className="mt-8 text-center text-[10px] text-neutral-400 dark:text-neutral-600 font-mono transition-colors">Awaiting story data...</div>;
+                  }
+                  
+                  const beat = storyData.beats[selectedSceneIndex];
+                  if (!beat || selectedActionIndex === null || !beat.actions[selectedActionIndex]) {
+                    return <div className="mt-8 text-center text-[10px] text-neutral-400 dark:text-neutral-600 font-mono transition-colors">Click an action tag on a scene to edit its properties.</div>;
+                  }
 
-                <div className="mt-8 text-center text-[10px] text-neutral-400 dark:text-neutral-600 font-mono transition-colors">Click a timeline block to edit properties.</div>
+                  const action = beat.actions[selectedActionIndex];
+                  const transform = action.spatial_transform || { x: 500, y: 800, scale: 1.0, z_index: 10 };
+
+                  const updateTransform = (key: keyof typeof transform, value: number) => {
+                    setStoryData(prev => {
+                      if (!prev) return prev;
+                      const newBeats = [...prev.beats];
+                      const newActions = [...newBeats[selectedSceneIndex].actions];
+                      newActions[selectedActionIndex] = {
+                        ...newActions[selectedActionIndex],
+                        spatial_transform: { ...transform, [key]: value }
+                      };
+                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions };
+                      return { ...prev, beats: newBeats };
+                    });
+                  };
+
+                  const updateDuration = (value: number) => {
+                     setStoryData(prev => {
+                      if (!prev) return prev;
+                      const newBeats = [...prev.beats];
+                      const newActions = [...newBeats[selectedSceneIndex].actions];
+                      newActions[selectedActionIndex] = {
+                        ...newActions[selectedActionIndex],
+                        duration_seconds: value
+                      };
+                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions };
+                      return { ...prev, beats: newBeats };
+                    });
+                  };
+
+                  return (
+                    <div className="flex flex-col gap-5 transition-opacity">
+                      <div>
+                        <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-1 uppercase tracking-wider flex justify-between">
+                          <span>Selected Action</span>
+                          <span className="text-cyan-500">{action.actor_id}</span>
+                        </div>
+                        <div className="w-full h-8 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 flex items-center px-3 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-sm dark:shadow-none transition-colors">
+                          {action.motion}({action.style})
+                        </div>
+                      </div>
+
+                      <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
+                        <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex items-center gap-2">
+                          <Mountain size={12} /> Spatial Transform
+                        </div>
+                        
+                        <div className="space-y-4">
+                          {/* X Position */}
+                          <div>
+                            <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
+                              <span>X Position</span>
+                              <span>{transform.x}px</span>
+                            </div>
+                            <input 
+                              type="range" min="-200" max="1200" step="10" 
+                              value={transform.x} 
+                              onChange={e => updateTransform('x', parseInt(e.target.value))}
+                              className="w-full accent-cyan-500" 
+                            />
+                          </div>
+
+                          {/* Y Position */}
+                          <div>
+                            <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
+                              <span>Y Position (Floor)</span>
+                              <span>{transform.y}px</span>
+                            </div>
+                            <input 
+                              type="range" min="-200" max="1200" step="10" 
+                              value={transform.y} 
+                              onChange={e => updateTransform('y', parseInt(e.target.value))}
+                              className="w-full accent-cyan-500" 
+                            />
+                          </div>
+
+                          {/* Scale */}
+                          <div>
+                            <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
+                              <span>Scale (Depth)</span>
+                              <span>{transform.scale.toFixed(2)}x</span>
+                            </div>
+                            <input 
+                              type="range" min="0.1" max="3" step="0.05" 
+                              value={transform.scale} 
+                              onChange={e => updateTransform('scale', parseFloat(e.target.value))}
+                              className="w-full accent-cyan-500" 
+                            />
+                          </div>
+                          
+                          {/* Z-Index */}
+                          <div>
+                            <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
+                              <span>Z-Index (Layer)</span>
+                              <span>{transform.z_index}</span>
+                            </div>
+                            <input 
+                              type="range" min="0" max="100" step="1" 
+                              value={transform.z_index} 
+                              onChange={e => updateTransform('z_index', parseInt(e.target.value))}
+                              className="w-full accent-cyan-500" 
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
+                        <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex items-center gap-2">
+                          <Play size={12} /> Animation Timing
+                        </div>
+                        <div>
+                            <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
+                              <span>Duration</span>
+                              <span>{action.duration_seconds}s</span>
+                            </div>
+                            <input 
+                              type="range" min="0.5" max="10" step="0.5" 
+                              value={action.duration_seconds} 
+                              onChange={e => updateDuration(parseFloat(e.target.value))}
+                              className="w-full accent-emerald-500" 
+                            />
+                        </div>
+                      </div>
+
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           </Panel>
