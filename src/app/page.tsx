@@ -48,7 +48,7 @@ export default function Home() {
 
   // Auto-Animate Macro State
   const [animatingSceneIndex, setAnimatingSceneIndex] = useState<number | null>(null);
-  const [animatingStatus, setAnimatingStatus] = useState<string>("");
+  const [animatingLogs, setAnimatingLogs] = useState<string[]>([]);
 
   // Generation Mode: 'sequence' | 'single'
   const [generateMode, setGenerateMode] = useState<'sequence' | 'single'>('single');
@@ -436,13 +436,15 @@ export default function Home() {
     if (!storyData || !storyData.beats[index]) return;
     
     setAnimatingSceneIndex(index);
+    setAnimatingLogs(["Initializing automation macro..."]);
     setSelectedSceneIndex(index);
     const beat = storyData.beats[index];
 
     try {
       // 1. Generate Background if missing
       if (!beat.drafted_background && beat.image_data) {
-        setAnimatingStatus("Drafting background...");
+        setAnimatingLogs(prev => [...prev, "> Starting Set Designer AI..."]);
+        setAnimatingLogs(prev => [...prev, "> Extracting 3-layer parallax environment..."]);
         const result = await processSetDesignerPrompt(beat.image_data, beat.narrative);
         setStoryData(prev => {
           if (!prev) return prev;
@@ -450,37 +452,46 @@ export default function Home() {
           newBeats[index] = { ...newBeats[index], drafted_background: result };
           return { ...prev, beats: newBeats };
         });
+        setAnimatingLogs(prev => [...prev, "✓ Environment vector rig compiled."]);
+      } else {
+        setAnimatingLogs(prev => [...prev, "✓ Environment rig found in cache."]);
       }
 
       // 2. Generate Actors if missing
       const actorIdsInScene = new Set(beat.actions.map(a => a.actor_id));
       for (const actorId of Array.from(actorIdsInScene)) {
         const actor = storyData.actors_detected.find(a => a.id === actorId);
-        if (actor && !actor.drafted_rig && actorReferences[actorId]) {
-          setAnimatingStatus(`Drafting ${actor.name}...`);
-          const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}`;
-          const result = await processDraftsmanPrompt(actorReferences[actorId], description);
-          setStoryData(prev => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              actors_detected: prev.actors_detected.map(a =>
-                a.id === actorId ? { ...a, drafted_rig: result } : a
-              )
-            };
-          });
+        if (actor) {
+          if (!actor.drafted_rig && actorReferences[actorId]) {
+            setAnimatingLogs(prev => [...prev, `> Starting Draftsman AI for '${actor.name}'...`]);
+            setAnimatingLogs(prev => [...prev, `> Rigging A-Pose skeleton & visemes...`]);
+            const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}`;
+            const result = await processDraftsmanPrompt(actorReferences[actorId], description);
+            setStoryData(prev => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                actors_detected: prev.actors_detected.map(a =>
+                  a.id === actorId ? { ...a, drafted_rig: result } : a
+                )
+              };
+            });
+            setAnimatingLogs(prev => [...prev, `✓ '${actor.name}' SVG rig assembled.`]);
+          } else if (actor.drafted_rig) {
+             setAnimatingLogs(prev => [...prev, `✓ '${actor.name}' rig found in cache.`]);
+          }
         }
       }
 
-      setAnimatingStatus("Ready!");
+      setAnimatingLogs(prev => [...prev, "✓ Stage ready. Dispatching GSAP context..."]);
     } catch (err: any) {
       console.error("Animation prep failed", err);
-      setAnimatingStatus("Error!");
+      setAnimatingLogs(prev => [...prev, `❌ Error: ${err.message || 'Pipeline failed'}`]);
     } finally {
       setTimeout(() => {
         setAnimatingSceneIndex(null);
-        setAnimatingStatus("");
-      }, 2000);
+        setAnimatingLogs([]);
+      }, 2500);
     }
   };
 
@@ -1004,21 +1015,30 @@ export default function Home() {
                             </div>
                             
                             {/* Auto-Animate Macro Button */}
-                            <div className="p-2 border-t border-neutral-200/80 dark:border-neutral-800/50 bg-neutral-50/50 dark:bg-[#0a0a0a]/50">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleAnimateScene(index);
-                                }}
-                                disabled={animatingSceneIndex === index || isGenerating || !beat.image_data}
-                                className="w-full py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm flex items-center justify-center gap-2 transition-all group/animate"
-                              >
-                                {animatingSceneIndex === index ? (
-                                  <><Loader2 size={14} className="animate-spin" /> {animatingStatus}</>
-                                ) : (
-                                  <><Play size={14} className="fill-white group-hover/animate:scale-110 transition-transform" /> Animate Scene</>
-                                )}
-                              </button>
+                            <div className="border-t border-neutral-200/80 dark:border-neutral-800/50 bg-neutral-50/50 dark:bg-[#0a0a0a]/50">
+                              {animatingSceneIndex === index ? (
+                                <div className="p-3 bg-neutral-900 font-mono text-[10px] text-emerald-400 h-24 overflow-y-auto flex flex-col gap-1 rounded-b-xl shadow-inner relative custom-scrollbar">
+                                  <div className="absolute top-2 right-2">
+                                    <Loader2 size={12} className="animate-spin text-emerald-500 opacity-50" />
+                                  </div>
+                                  {animatingLogs.map((log, i) => (
+                                    <div key={i} className="animate-in fade-in slide-in-from-bottom-1">{log}</div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="p-2">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleAnimateScene(index);
+                                    }}
+                                    disabled={isGenerating || !beat.image_data}
+                                    className="w-full py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm flex items-center justify-center gap-2 transition-all group/animate"
+                                  >
+                                    <Play size={14} className="fill-white group-hover/animate:scale-110 transition-transform" /> Animate Scene
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </div>
 
