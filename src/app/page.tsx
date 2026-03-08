@@ -488,12 +488,23 @@ export default function Home() {
         const actor = storyData.actors_detected.find(a => a.id === actorId);
         if (actor) {
           if (!actor.drafted_rig && actorReferences[actorId]) {
+            // Determine required views based on actions
+            const actorActions = beat.actions.filter(a => a.actor_id === actorId);
+            const requiredViews = new Set<string>();
+            actorActions.forEach(a => {
+              const m = a.motion.toLowerCase();
+              if (m === 'run' || m === 'walk') requiredViews.add('view_side_right');
+              else requiredViews.add('view_front');
+            });
+            if (requiredViews.size === 0) requiredViews.add('view_front');
+            const viewsArray = Array.from(requiredViews);
+
             setAnimatingLogs(prev => [...prev, `> Starting Draftsman AI for '${actor.name}'...`]);
-            setAnimatingLogs(prev => [...prev, `> Rigging A-Pose skeleton & visemes...`]);
+            setAnimatingLogs(prev => [...prev, `> Rigging A-Pose skeleton & visemes (${viewsArray.join(', ')})...`]);
             
             apiCalls++;
             const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}`;
-            const result = await processDraftsmanPrompt(actorReferences[actorId], description);
+            const result = await processDraftsmanPrompt(actorReferences[actorId], description, viewsArray);
             
             setStoryData(prev => {
               if (!prev) return prev;
