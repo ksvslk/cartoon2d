@@ -75,10 +75,15 @@ export default function Stage({ beat, availableRigs, isPlaying = false }: StageP
                     const actorGroup = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "g");
                     actorGroup.setAttribute("id", `actor_group_${actorId}`);
                     
-                    // For now, space them out slightly horizontally
-                    const xOffset = 300 + (actorIndex * 200); 
-                    const yOffset = 300; 
-                    actorGroup.setAttribute("transform", `translate(${xOffset}, ${yOffset}) scale(0.6)`);
+                    // Parse any scale/position tweaks from the action, default to basic layout
+                    const actionData = beat.actions.find(a => a.actor_id === actorId);
+                    // Use a slightly smarter base placement (y=500 is the floor of a 1000x1000 viewBox)
+                    const baseY = 500;
+                    const baseX = 300 + (actorIndex * 200);
+                    
+                    // We can add logic here later to read a 'transform' object from actionData
+                    // For now, we inject a generic starting transform
+                    actorGroup.setAttribute("transform", `translate(${baseX}, ${baseY}) scale(0.6)`);
 
                     // Move all children from the rig SVG into this group
                     while (rigSvg.firstChild) {
