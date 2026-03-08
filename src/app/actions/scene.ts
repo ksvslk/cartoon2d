@@ -1,6 +1,6 @@
 "use server";
 
-import { generateStorySequence, streamStorySequence, editSceneImage } from "@/lib/ai/director";
+import { streamStorySequence, editSceneImage } from "@/lib/ai/director";
 import { StoryGenerationData } from "@/lib/schema/story";
 
 export type StreamResult =
@@ -38,20 +38,5 @@ export async function processSceneImageEdit(base64Image: string, editPrompt: str
         console.error("Server Action Image Edit Error:", error);
         const message = error instanceof Error ? error.message : String(error);
         return { error: `Image Edit Failed: ${message}` };
-    }
-}
-
-export async function processScenePrompt(prompt: string): Promise<StoryGenerationData | { error: string }> {
-    if (!prompt || prompt.trim() === "") {
-        return { error: "Prompt cannot be empty." };
-    }
-
-    try {
-        const data = await generateStorySequence(prompt);
-        return data as StoryGenerationData;
-    } catch (error: unknown) {
-        console.error("Server Action Error:", error);
-        const message = error instanceof Error ? error.message : String(error);
-        return { error: `Gemini API/Parse Error: ${message}` };
     }
 }
