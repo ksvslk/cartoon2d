@@ -18,66 +18,82 @@ export default function Stage({ beat, availableRigs }: StageProps) {
         if (!containerRef.current || !beat) return;
 
         // Assembly Phase: Combine Background and Actors into a single SVG Document
+        let masterSvgElement: SVGSVGElement;
+        const parser = new DOMParser();
 
-        let compositeSvgContent = "";
-
-        // 1. Base Layer: The Environment Set
         if (beat.drafted_background) {
-            // We strip the wrapping <svg> tag from the background so we can inject into a master SVG
-            const bgSvgContent = beat.drafted_background.svg_data
-                .replace(/^<svg[^>]*>/i, '') // Remove opening <svg> tag
-                .replace(/<\/svg>$/i, '');   // Remove closing </svg> tag
-            
-            compositeSvgContent += `<g id="environment_layer">${bgSvgContent}</g>`;
+            // Parse the deterministic background SVG
+            const bgDoc = parser.parseFromString(beat.drafted_background.svg_data, "image/svg+xml");
+            masterSvgElement = bgDoc.querySelector("svg") as SVGSVGElement;
         } else {
             // Fallback grid if no background is generated yet
-            compositeSvgContent += `
+            const fallbackStr = `
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" class="w-full h-full max-w-none max-h-none">
               <rect width="1000" height="1000" fill="#111" />
-              <g id="grid_layer" stroke="#222" stroke-width="2">
-                ${Array.from({length: 10}).map((_, i) => `
-                  <line x1="0" y1="${i*100}" x2="1000" y2="${i*100}" />
-                  <line x1="${i*100}" y1="0" x2="${i*100}" y2="1000" />
-                `).join('')}
+              <g id="bg_sky"></g>
+              <g id="bg_midground">
+                <g id="grid_layer" stroke="#222" stroke-width="2">
+                  ${Array.from({length: 10}).map((_, i) => `
+                    <line x1="0" y1="${i*100}" x2="1000" y2="${i*100}" />
+                    <line x1="${i*100}" y1="0" x2="${i*100}" y2="1000" />
+                  `).join('')}
+                </g>
               </g>
-            `;
+              <g id="bg_foreground"></g>
+            </svg>`;
+            const fallbackDoc = parser.parseFromString(fallbackStr, "image/svg+xml");
+            masterSvgElement = fallbackDoc.querySelector("svg") as SVGSVGElement;
         }
 
-        // 2. Actor Layer: Inject rigs for actors present in the scene
+        // 2. Create the Actor Layer
+        // We want actors to stand IN FRONT of the midground, but BEHIND the foreground.
+        const actorLayer = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "g");
+        actorLayer.setAttribute("id", "stage_actors");
+
+        const foregroundLayer = masterSvgElement.querySelector("#bg_foreground");
+        if (foregroundLayer && foregroundLayer.parentNode) {
+            // Insert exactly before foreground
+            foregroundLayer.parentNode.insertBefore(actorLayer, foregroundLayer);
+        } else {
+            // Fallback to end
+            masterSvgElement.appendChild(actorLayer);
+        }
+
+        // 3. Inject rigs for actors present in the scene
         const actorsInScene = new Set(beat.actions.map(a => a.actor_id));
         let actorIndex = 0;
         
         actorsInScene.forEach(actorId => {
             const rig = availableRigs[actorId];
             if (rig) {
-                // Extract inner SVG content
-                const rigSvgContent = rig.svg_data
-                    .replace(/^<svg[^>]*>/i, '')
-                    .replace(/<\/svg>$/i, '');
+                const rigDoc = parser.parseFromString(rig.svg_data, "image/svg+xml");
+                const rigSvg = rigDoc.querySelector("svg");
                 
-                // For now, space them out slightly horizontally to avoid perfect overlap
-                const xOffset = 300 + (actorIndex * 200); 
-                const yOffset = 300; // Place them roughly in the lower middle
-                
-                // Scale actors down slightly so they fit in the scene.
-                // In the future, this scale and offset will be calculated dynamically based on background interaction nulls.
-                compositeSvgContent += `
-                    <g id="actor_group_${actorId}" transform="translate(${xOffset}, ${yOffset}) scale(0.6)">
-                        ${rigSvgContent}
-                    </g>
-                `;
-                actorIndex++;
+                if (rigSvg) {
+                    const actorGroup = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "g");
+                    actorGroup.setAttribute("id", `actor_group_${actorId}`);
+                    
+                    // For now, space them out slightly horizontally
+                    const xOffset = 300 + (actorIndex * 200); 
+                    const yOffset = 300; 
+                    actorGroup.setAttribute("transform", `translate(${xOffset}, ${yOffset}) scale(0.6)`);
+
+                    // Move all children from the rig SVG into this group
+                    while (rigSvg.firstChild) {
+                        actorGroup.appendChild(rigSvg.firstChild);
+                    }
+
+                    actorLayer.appendChild(actorGroup);
+                    actorIndex++;
+                }
             }
         });
 
-        // 3. Wrap in a Master SVG Viewport
-        const masterSvgStr = `
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" class="w-full h-full max-w-none max-h-none">
-                ${compositeSvgContent}
-            </svg>
-        `;
+        // Ensure master classes are set for styling
+        masterSvgElement.setAttribute("class", "w-full h-full max-w-none max-h-none");
 
         // 4. Safely render to the DOM
-        const cleanSvg = DOMPurify.sanitize(masterSvgStr, { USE_PROFILES: { svg: true } });
+        const cleanSvg = DOMPurify.sanitize(masterSvgElement.outerHTML, { USE_PROFILES: { svg: true } });
         containerRef.current.innerHTML = cleanSvg;
 
         // 5. GSAP Context Setup (For later animation)
@@ -86,7 +102,7 @@ export default function Stage({ beat, availableRigs }: StageProps) {
             /*
             beat.actions.forEach(action => {
                if (action.motion === "run") {
-                 gsap.to(\`#actor_group_${action.actor_id}\", { x: "+=200", duration: action.duration_seconds });
+                 gsap.to(\`#actor_group_${action.actor_id}\`, { x: "+=200", duration: action.duration_seconds });
                }
             });
             */
