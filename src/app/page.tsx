@@ -2,11 +2,15 @@
 
 import { useState, useEffect } from "react";
 import Stage from "@/components/Stage";
-import { Send, Play, Image as ImageIcon, ImageOff, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, Loader2, Film, Trash2, Pencil, Plus } from "lucide-react";
+import { Send, Play, Image as ImageIcon, ImageOff, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, ChevronUp, Loader2, Film, Trash2, Pencil, Plus, Copy, Check, Mountain } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { processScenePromptStream, processSceneImageEdit } from "@/app/actions/scene";
 import { StoryGenerationData } from "@/lib/schema/story";
 import { loadStoryFromStorage, saveStoryToStorage, clearStoryStorage, getProjectsList, createProject, deleteProject, updateProjectTitle, ProjectMetadata, loadActorIdentities, saveActorIdentity } from "@/lib/storage/db";
+import { processDraftsmanPrompt } from "@/app/actions/draftsman";
+import { processSetDesignerPrompt } from "@/app/actions/set_designer";
+import { DraftsmanData } from "@/lib/schema/rig";
+import { RigViewer } from "@/components/RigViewer";
 
 import { ThemeToggle } from "@/components/ThemeToggle";
 
@@ -27,9 +31,26 @@ export default function Home() {
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [editProjectTitle, setEditProjectTitle] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteBeatIndex, setConfirmDeleteBeatIndex] = useState<number | null>(null);
+  const [confirmClearStory, setConfirmClearStory] = useState(false);
+  const [isStoryApproved, setIsStoryApproved] = useState(false);
 
-  // Generation Mode: 'sequence' = 3-5 panels, 'single' = exactly 1 panel
+  // Draftsman / Rigging State
+  const [draftingActorId, setDraftingActorId] = useState<string | null>(null);
+  const [isDrafting, setIsDrafting] = useState(false);
+  const [draftedRig, setDraftedRig] = useState<DraftsmanData | null>(null);
+  const [draftError, setDraftError] = useState<string | null>(null);
+
+  // Set Designer State
+  const [draftingBackgroundSceneIndex, setDraftingBackgroundSceneIndex] = useState<number | null>(null);
+  const [isDraftingBackground, setIsDraftingBackground] = useState(false);
+  const [draftBackgroundError, setDraftBackgroundError] = useState<string | null>(null);
+
+  // Generation Mode: 'sequence' | 'single'
   const [generateMode, setGenerateMode] = useState<'sequence' | 'single'>('single');
+
+  // Stage Selection State
+  const [selectedSceneIndex, setSelectedSceneIndex] = useState<number>(0);
 
   // Panel Editing State
   const [editingBeatIndex, setEditingBeatIndex] = useState<number | null>(null);
@@ -189,6 +210,7 @@ export default function Home() {
   // --- Generation Handlers ---
 
   const handleGenerate = async () => {
+    // ... existing function remains unchanged
     if (!prompt.trim()) return;
 
     setIsGenerating(true);
@@ -523,19 +545,24 @@ export default function Home() {
               <LayoutList size={14} /> <span className="flex-1">Scenes</span>
               {storyData && (
                 <button
-                  title="Clear Story Database"
-                  className="opacity-0 group-hover:opacity-100 focus:outline-none"
+                  title={confirmClearStory ? "Click again to confirm" : "Clear Story Database"}
+                  className={`focus:outline-none transition-all ${confirmClearStory ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (confirm("Are you sure you want to clear the current story and wipe local storage?")) {
+                    if (confirmClearStory) {
                       if (currentProjectId) clearStoryStorage(currentProjectId);
                       setStoryData(null);
+                      setIsStoryApproved(false);
+                      setConfirmClearStory(false);
+                    } else {
+                      setConfirmClearStory(true);
+                      setTimeout(() => setConfirmClearStory(false), 3000);
                     }
                   }}
                 >
                   <Trash2
                     size={12}
-                    className="text-cyan-700/50 hover:text-red-500 transition-colors"
+                    className={`transition-colors ${confirmClearStory ? 'text-red-500 animate-pulse' : 'text-cyan-700/50 hover:text-red-500'}`}
                   />
                 </button>
               )}
@@ -567,11 +594,37 @@ export default function Home() {
                           </div>
                         )}
                       </div>
-                      {/* Actor Info */}
+                      {/* Actor Info & Draft Button */}
                       <div className="flex-1 min-w-0">
                         <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">{actor.name}</div>
                         <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">{actor.species}</div>
                       </div>
+
+                      {/* Draft Vector Rig Button */}
+                      {actorReferences[actor.id] && (
+                        <button
+                          onClick={() => {
+                            setDraftingActorId(actor.id);
+                            // Load cached rig if it exists, otherwise prepare for new generation
+                            setDraftedRig(actor.drafted_rig || null);
+                            setDraftError(null);
+                          }}
+                          className={`p-1.5 rounded transition-colors group-hover:opacity-100 ${actor.drafted_rig
+                            ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 opacity-100 border border-emerald-200 dark:border-emerald-700/50"
+                            : "text-neutral-400 hover:text-cyan-500 opacity-0 bg-transparent"
+                            }`}
+                          title={actor.drafted_rig ? "View Vector Rig" : "Generate SVG Vector Rig"}
+                        >
+                          {actor.drafted_rig ? (
+                            <div className="relative">
+                              <Sparkles size={14} />
+                              <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border border-white dark:border-neutral-900"></div>
+                            </div>
+                          ) : (
+                            <Sparkles size={14} />
+                          )}
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -666,13 +719,82 @@ export default function Home() {
                       </div>
                     ) : (
                       storyData.beats.map((beat, index) => (
-                        <div key={index}>
+                        <div key={index} onClick={() => setSelectedSceneIndex(index)} className="cursor-pointer relative pl-1">
+                          {/* Node Dot */}
+                          <div className={`absolute left-0 top-6 w-3 h-3 rounded-full border-2 z-10 transition-all ${selectedSceneIndex === index ? 'bg-cyan-500 border-white shadow-[0_0_15px_rgba(34,211,238,0.8)] scale-125' : 'bg-white dark:bg-[#111] border-neutral-300 dark:border-neutral-700'}`} />
 
-                          <div className="rounded-xl bg-white dark:bg-[#0f0f0f] border border-neutral-200 dark:border-neutral-800/60 shadow-sm dark:shadow-md overflow-hidden transition-colors duration-300 group/card">
+                          <div className={`ml-6 p-1 rounded-2xl border backdrop-blur-md shadow-lg transition-all duration-300 group/card ${selectedSceneIndex === index ? 'bg-cyan-50/50 dark:bg-cyan-900/20 border-cyan-400 dark:border-cyan-500/50 shadow-[0_8px_30px_rgba(34,211,238,0.15)]' : 'bg-white dark:bg-[#0f0f0f] border-neutral-200 dark:border-neutral-800/60 hover:border-cyan-300 dark:hover:border-neutral-700/80'}`}>
                             {/* Always-visible header with scene number + controls */}
                             <div className="flex items-center justify-between px-3 py-1.5 bg-neutral-50 dark:bg-[#0a0a0a] border-b border-neutral-200/80 dark:border-neutral-800/50">
                               <span className="text-[10px] font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Scene {index + 1}</span>
-                              <div className="flex items-center gap-1">
+                              <div className="flex items-center gap-0.5">
+                                {/* Move Up */}
+                                <button
+                                  className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title="Move Up"
+                                  disabled={index === 0}
+                                  onClick={() => {
+                                    setStoryData(prev => {
+                                      if (!prev) return prev;
+                                      const newBeats = [...prev.beats];
+                                      [newBeats[index - 1], newBeats[index]] = [newBeats[index], newBeats[index - 1]];
+                                      return { ...prev, beats: newBeats };
+                                    });
+                                  }}
+                                >
+                                  <ChevronUp size={12} />
+                                </button>
+                                {/* Move Down */}
+                                <button
+                                  className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title="Move Down"
+                                  disabled={index === storyData.beats.length - 1}
+                                  onClick={() => {
+                                    setStoryData(prev => {
+                                      if (!prev) return prev;
+                                      const newBeats = [...prev.beats];
+                                      [newBeats[index], newBeats[index + 1]] = [newBeats[index + 1], newBeats[index]];
+                                      return { ...prev, beats: newBeats };
+                                    });
+                                  }}
+                                >
+                                  <ChevronDown size={12} />
+                                </button>
+                                {/* Duplicate */}
+                                <button
+                                  className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors"
+                                  title="Duplicate Scene"
+                                  onClick={() => {
+                                    setStoryData(prev => {
+                                      if (!prev) return prev;
+                                      const newBeats = [...prev.beats];
+                                      const clone = JSON.parse(JSON.stringify(prev.beats[index]));
+                                      newBeats.splice(index + 1, 0, clone);
+                                      return { ...prev, beats: newBeats };
+                                    });
+                                  }}
+                                >
+                                  <Copy size={12} />
+                                </button>
+                                {/* Draft Background */}
+                                <button
+                                  className={`p-1 rounded transition-colors ${beat.drafted_background ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700/50" : "text-neutral-400 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-neutral-200 dark:hover:bg-neutral-800"}`}
+                                  title={beat.drafted_background ? "View Vector Background" : "Generate SVG Background"}
+                                  onClick={() => {
+                                    setDraftingBackgroundSceneIndex(index);
+                                    setDraftBackgroundError(null);
+                                  }}
+                                >
+                                  {beat.drafted_background ? (
+                                    <div className="relative">
+                                      <Mountain size={12} />
+                                      <div className="absolute -top-0.5 -right-0.5 w-[5px] h-[5px] bg-emerald-500 rounded-full"></div>
+                                    </div>
+                                  ) : (
+                                    <Mountain size={12} />
+                                  )}
+                                </button>
+                                {/* Edit */}
                                 {editingBeatIndex !== index && (
                                   <button
                                     className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors"
@@ -685,17 +807,22 @@ export default function Home() {
                                     <Pencil size={12} />
                                   </button>
                                 )}
+                                {/* Delete (inline confirm) */}
                                 <button
-                                  className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500 transition-colors"
-                                  title="Delete Scene"
+                                  className={`p-1 rounded transition-all ${confirmDeleteBeatIndex === index ? 'bg-red-100 dark:bg-red-950/30 text-red-500 animate-pulse' : 'hover:bg-red-100 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500'}`}
+                                  title={confirmDeleteBeatIndex === index ? "Click again to delete" : "Delete Scene"}
                                   onClick={() => {
-                                    if (confirm("Delete this scene from the timeline?")) {
+                                    if (confirmDeleteBeatIndex === index) {
                                       setStoryData(prev => {
                                         if (!prev) return prev;
                                         const newBeats = [...prev.beats];
                                         newBeats.splice(index, 1);
                                         return { ...prev, beats: newBeats };
                                       });
+                                      setConfirmDeleteBeatIndex(null);
+                                    } else {
+                                      setConfirmDeleteBeatIndex(index);
+                                      setTimeout(() => setConfirmDeleteBeatIndex(curr => curr === index ? null : curr), 3000);
                                     }
                                   }}
                                 >
@@ -855,6 +982,33 @@ export default function Home() {
                         </div>
                       ))
                     )}
+
+                    {/* Approve Storyboard Button */}
+                    {storyData && storyData.beats.length > 0 && (
+                      <div className="mt-4 mb-2">
+                        {isStoryApproved ? (
+                          <div className="flex items-center justify-between p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/50">
+                            <div className="flex items-center gap-2">
+                              <Check size={16} className="text-emerald-600 dark:text-emerald-400" />
+                              <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">Storyboard Approved</span>
+                            </div>
+                            <button
+                              onClick={() => setIsStoryApproved(false)}
+                              className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:text-emerald-800 dark:hover:text-emerald-200 underline transition-colors"
+                            >
+                              Edit Again
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setIsStoryApproved(true)}
+                            className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-md hover:shadow-lg hover:-translate-y-0.5 transform"
+                          >
+                            <Check size={14} /> Approve Storyboard
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </section>
@@ -923,8 +1077,15 @@ export default function Home() {
 
                       <div className="absolute inset-0 flex items-center justify-center">
                         <Stage
-                          // A simple placeholder SVG box for now
-                          actorSvgData="<svg viewBox='0 0 100 100' class='w-32 h-32 fill-cyan-500/10 dark:fill-cyan-500/20 stroke-cyan-500 dark:stroke-cyan-400 stroke-[1.5] drop-shadow-[0_0_15px_rgba(34,211,238,0.3)] transition-transform duration-1000 group-hover/stage:scale-110'><rect x='25' y='25' width='50' height='50' rx='12' /></svg>"
+                          beat={storyData && storyData.beats.length > 0 ? storyData.beats[selectedSceneIndex] : null}
+                          availableRigs={
+                            storyData 
+                            ? storyData.actors_detected.reduce((acc, actor) => {
+                                if (actor.drafted_rig) acc[actor.id] = actor.drafted_rig;
+                                return acc;
+                              }, {} as Record<string, DraftsmanData>)
+                            : {}
+                          }
                         />
                       </div>
 
@@ -994,7 +1155,7 @@ export default function Home() {
                         <div className="w-48 border-r border-neutral-200 dark:border-neutral-800/60 h-full flex items-center px-4 bg-neutral-50 dark:bg-[#0a0a0a] shrink-0 transition-colors">
                           <span className="text-[10px] text-neutral-500 dark:text-neutral-600 font-bold uppercase tracking-wider">Tracks</span>
                         </div>
-                        <div className="flex-1 h-full relative bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iMTAwJSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJyZ2JhKDE1MCwxNTAsMTUwLDAuMikiIHg9IjAiIHk9IjAiLz48L3N2Zz4=')] dark:bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iMTAwJSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuMDUpIiB4PSIwIiB5PSIwIi8+PC9zdmc+')] bg-repeat-x transition-colors">
+                        <div className="flex-1 h-full relative bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iMTAwJSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJyZ2JhKDE1MCwxNTAsMTUwLDAuMikiIHg9IjAiIHk9IjAiLz48L3N2Zz4=')] dark:bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iMTAwJSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuMDUpIiB5PSIwIi8+PC9zdmc+')] bg-repeat-x transition-colors">
 
                           {/* Playhead Time Ruler & Beautiful Knob */}
                           <div className="absolute left-[20%] top-0 bottom-[-500px] w-[1px] bg-emerald-500/80 z-50 pointer-events-none dark:mix-blend-screen shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.8)] transition-shadow">
@@ -1023,7 +1184,7 @@ export default function Home() {
                             {/* Audio Waveform Clip */}
                             <div className="absolute left-[10%] w-[15%] h-full top-0 py-1.5">
                               <div className="w-full h-full bg-cyan-100 dark:bg-cyan-900/40 border border-cyan-200 dark:border-cyan-800/50 rounded flex items-center justify-center overflow-hidden transition-colors">
-                                <div className="w-full h-2/3 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAiIGhlaWdodD0iMTAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3QgeD0iMCIgeT0iMiIgd2lkdGg9IjIiIGhlaWdodD0iNiIgZmlsbD0icmdiYSg4LCAxNDUsIDE3OCLCAwLjQpIi8+PHJlY3QgeD0iNCIgeT0iMCIgd2lkdGg9IjIiIGhlaWdodD0iMTAiIGZpbGw9InJnYmEoOCwgMTQ1LCAxNzgsIDAuNCkiLz48cmVjdCB4PSI4IiB5PSI0IiB3aWR0aD0iMiIgaGVpZ2h0PSI0IiBmaWxsPSJyZ2JhKDgsIDE0NSwgMTc4LCAwLjQpIi8+PC9zdmc+')] dark:bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAiIGhlaWdodD0iMTAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3QgeD0iMCIgeT0iMiIgd2lkdGg9IjIiIGhlaWdodD0iNiIgZmlsbD0icmdiYSgzNCwgMjExLCAyMzgsIDAuNCkiLz48cmVjdCB4PSI0IiB5PSIwIiB3aWR0aD0iMiIgaGVpZ2h0PSIxMCIgZmlsbD0icmdiYSgzNCwgMjExLCAyMzgsIDAuNCkiLz48cmVjdCB4PSI4IiB5PSI0IiB3aWR0aD0iMiIgaGVpZ2h0PSI0IiBmaWxsPSJyZ2JhKDM0LCAyMTEsIDIzOCwgMC40KSIvPjwvc3ZnPg==')] bg-repeat-x opacity-60"></div>
+                                <div className="w-full h-2/3 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAiIGhlaWdodD0iMTAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3QgeD0iMCI yeD0iMiIgd2lkdGg9IjIiIGhlaWdodD0iNiIgZmlsbD0icmdiYSg4LCAxNDUsIDE3OCLCAwLjQpIi8+PHJlY3QgeD0iNCIgeT0iMCIgd2lkdGg9IjIiIGhlaWdodD0iMTAiIGZpbGw9InJnYmEoOCwgMTQ1LCAxNzgsIDAuNCkiLz48cmVjdCB4PSI4IiB5PSI0IiB3aWR0aD0iMiIgaGVpZ2h0PSI0IiBmaWxsPSJyZ2JhKDgsIDE0NSwgMTc4LCAwLjQpIi8+PC9zdmc+')] dark:bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAiIGhlaWdodD0iMTAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3QgeD0iMCIgeT0iMiIgd2lkdGg9IjIiIGhlaWdodD0iNiIgZmlsbD0icmdiYSgzNCwgMjExLCAyMzgsIDAuNCkiLz48cmVjdCB4PSI0IiB5PSIwIiB3aWR0aD0iMiIgaGVpZ2h0PSIxMCIgZmlsbD0icmdiYSgzNCwgMjExLCAyMzgsIDAuNCkiLz48cmVjdCB4PSI4IiB5PSI0IiB3aWR0aD0iMiIgaGVpZ2h0PSI0IiBmaWxsPSJyZ2JhKDM0LCAyMTEsIDIzOCwgMC40KSIvPjwvc3ZnPg==')] bg-repeat-x opacity-60"></div>
                               </div>
                             </div>
                           </div>
@@ -1097,9 +1258,235 @@ export default function Home() {
               </div>
             </div>
           </Panel>
-
         </PanelGroup>
       </main>
+
+      {/* Set Designer Modal */}
+      {draftingBackgroundSceneIndex !== null && storyData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden max-h-[90vh]">
+
+            <div className="px-6 py-4 border-b border-neutral-100 dark:border-neutral-800/60 flex items-center justify-between bg-neutral-50/50 dark:bg-[#0a0a0a]/50">
+              <h3 className="font-semibold text-neutral-800 dark:text-neutral-200 flex items-center gap-2">
+                <Mountain size={16} className="text-cyan-500" />
+                Scene {draftingBackgroundSceneIndex + 1} - Vector Environment
+              </h3>
+              <button
+                onClick={() => {
+                  setDraftingBackgroundSceneIndex(null);
+                  setDraftBackgroundError(null);
+                }}
+                className="p-2 -mr-2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
+                disabled={isDraftingBackground}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+              </button>
+            </div>
+
+            <div className="p-6 flex-1 overflow-y-auto flex flex-col items-center justify-center min-h-[400px]">
+              {(() => {
+                const beat = storyData.beats[draftingBackgroundSceneIndex];
+                if (!beat) return null;
+
+                return (
+                  <>
+                    {!beat.drafted_background && !isDraftingBackground && (
+                      <div className="flex flex-col items-center max-w-sm text-center">
+                        <div className="w-48 aspect-video mb-6 rounded-xl overflow-hidden shadow-lg border-2 border-cyan-500/30">
+                          {beat.image_data ? (
+                            /* eslint-disable-next-line @next/next/no-img-element */
+                            <img src={beat.image_data} alt="Reference" className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full bg-neutral-200 dark:bg-neutral-800" />
+                          )}
+                        </div>
+                        <h4 className="text-lg font-bold text-neutral-800 dark:text-neutral-200 mb-2">Build Environment Set</h4>
+                        <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-8">
+                          The Set Designer AI will extract the scenery from this panel and recreate it as a 3-layer parallax SVG (sky, midground, foreground).
+                        </p>
+                        <button
+                          onClick={async () => {
+                            if (!beat.image_data) {
+                              setDraftBackgroundError("No image data available for this scene.");
+                              return;
+                            }
+                            setIsDraftingBackground(true);
+                            setDraftBackgroundError(null);
+                            try {
+                              const result = await processSetDesignerPrompt(beat.image_data, beat.narrative);
+
+                              setStoryData(prev => {
+                                if (!prev) return prev;
+                                const newBeats = [...prev.beats];
+                                newBeats[draftingBackgroundSceneIndex] = {
+                                  ...newBeats[draftingBackgroundSceneIndex],
+                                  drafted_background: result,
+                                };
+                                return { ...prev, beats: newBeats };
+                              });
+                            } catch (err: any) {
+                              setDraftBackgroundError(err.message || "Failed to generate background.");
+                            } finally {
+                              setIsDraftingBackground(false);
+                            }
+                          }}
+                          className="w-full py-3 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-xl transition-all shadow-md shadow-cyan-900/20 flex items-center justify-center gap-2"
+                        >
+                          <Mountain size={16} /> Begin Set Design
+                        </button>
+                      </div>
+                    )}
+
+                    {isDraftingBackground && (
+                      <div className="flex flex-col items-center">
+                        <div className="relative mb-6">
+                          <div className="w-48 aspect-video rounded-xl overflow-hidden opacity-50 blur-sm">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            {beat.image_data && <img src={beat.image_data} alt="Reference" className="w-full h-full object-cover" />}
+                          </div>
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <Loader2 size={32} className="text-cyan-500 animate-spin" />
+                          </div>
+                        </div>
+                        <h4 className="text-neutral-800 dark:text-neutral-200 font-medium">Painting Parallax Layers...</h4>
+                        <p className="text-xs text-neutral-500 mt-2">This may take 15-20 seconds.</p>
+                      </div>
+                    )}
+
+                    {draftBackgroundError && (
+                      <div className="p-4 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-lg max-w-md text-center text-sm">
+                        {draftBackgroundError}
+                      </div>
+                    )}
+
+                    {beat.drafted_background && (
+                      <div className="w-full h-full flex flex-col">
+                        <div className="bg-emerald-100/50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 text-xs px-4 py-2 rounded-lg mb-4 text-center border border-emerald-200 dark:border-emerald-800/50">
+                          Set Designer Success: Found {beat.drafted_background.rig_data.interactionNulls.length} interaction props. Hover points to inspect anchor nulls.
+                        </div>
+                        <div className="flex-1 min-h-0 bg-neutral-100 dark:bg-neutral-900 rounded-xl overflow-hidden relative shadow-inner">
+                          <RigViewer data={beat.drafted_background} />
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Draftsman Modal */}
+      {draftingActorId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden max-h-[90vh]">
+
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-neutral-100 dark:border-neutral-800/60 flex items-center justify-between bg-neutral-50/50 dark:bg-[#0a0a0a]/50">
+              <h3 className="font-semibold text-neutral-800 dark:text-neutral-200 flex items-center gap-2">
+                <Sparkles size={16} className="text-cyan-500" />
+                {storyData?.actors_detected.find(a => a.id === draftingActorId)?.name} - Vector Drafting
+              </h3>
+              <button
+                onClick={() => {
+                  setDraftingActorId(null);
+                  setDraftedRig(null);
+                  setDraftError(null);
+                }}
+                className="p-2 -mr-2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
+                disabled={isDrafting}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 flex-1 overflow-y-auto flex flex-col items-center justify-center min-h-[400px]">
+
+              {!draftedRig && !isDrafting && (
+                <div className="flex flex-col items-center max-w-sm text-center">
+                  <div className="w-24 h-24 mb-6 rounded-xl overflow-hidden shadow-lg border-2 border-cyan-500/30">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={actorReferences[draftingActorId]} alt="Reference" className="w-full h-full object-cover" />
+                  </div>
+                  <h4 className="text-lg font-bold text-neutral-800 dark:text-neutral-200 mb-2">Generate Animatable Rig</h4>
+                  <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-8">
+                    The Draftsman AI will analyze this character and redraw them as a structured SVG vector puppet, complete with interaction pivot points.
+                  </p>
+                  <button
+                    onClick={async () => {
+                      setIsDrafting(true);
+                      setDraftError(null);
+                      try {
+                        const actor = storyData?.actors_detected.find(a => a.id === draftingActorId);
+                        if (!actor || !actorReferences[draftingActorId]) throw new Error("Missing actor data");
+                        const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}`;
+
+                        const result = await processDraftsmanPrompt(actorReferences[draftingActorId], description);
+
+                        // Cache the generated rig into the global story data
+                        setStoryData(prev => {
+                          if (!prev) return prev;
+                          return {
+                            ...prev,
+                            actors_detected: prev.actors_detected.map(a =>
+                              a.id === draftingActorId ? { ...a, drafted_rig: result } : a
+                            )
+                          };
+                        });
+
+                        setDraftedRig(result);
+                      } catch (err: any) {
+                        setDraftError(err.message || "Failed to generate rig.");
+                      } finally {
+                        setIsDrafting(false);
+                      }
+                    }}
+                    className="w-full py-3 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-xl transition-all shadow-md shadow-cyan-900/20 flex items-center justify-center gap-2"
+                  >
+                    <Sparkles size={16} /> Begin Drafting Phase
+                  </button>
+                </div>
+              )}
+
+              {isDrafting && (
+                <div className="flex flex-col items-center">
+                  <div className="relative mb-6">
+                    <div className="w-20 h-20 rounded-xl overflow-hidden opacity-50 blur-sm">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={actorReferences[draftingActorId]} alt="Reference" className="w-full h-full object-cover" />
+                    </div>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <Loader2 size={32} className="text-cyan-500 animate-spin" />
+                    </div>
+                  </div>
+                  <h4 className="text-neutral-800 dark:text-neutral-200 font-medium">Drawing Vector Arrays...</h4>
+                  <p className="text-xs text-neutral-500 mt-2">This may take 15-20 seconds.</p>
+                </div>
+              )}
+
+              {draftError && (
+                <div className="p-4 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-lg max-w-md text-center text-sm">
+                  {draftError}
+                </div>
+              )}
+
+              {draftedRig && (
+                <div className="w-full h-full flex flex-col">
+                  <div className="bg-emerald-100/50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 text-xs px-4 py-2 rounded-lg mb-4 text-center border border-emerald-200 dark:border-emerald-800/50">
+                    Draftsman Success: Found {draftedRig.rig_data.bones.length} bones, {draftedRig.rig_data.visemes?.length || 0} visemes, and {draftedRig.rig_data.emotions?.length || 0} emotions. Hover points to inspect rig.
+                  </div>
+                  <div className="flex-1 min-h-0 bg-neutral-100 dark:bg-neutral-900 rounded-xl overflow-hidden relative shadow-inner">
+                    <RigViewer data={draftedRig} />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
