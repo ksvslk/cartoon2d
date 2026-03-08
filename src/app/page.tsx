@@ -440,19 +440,41 @@ export default function Home() {
     setSelectedSceneIndex(index);
     const beat = storyData.beats[index];
 
+    let totalTokens = 0;
+    let apiCalls = 0;
+    let totalCostEst = 0;
+
+    const logUsage = (usage: any) => {
+      const promptTokens = usage?.promptTokenCount || 0;
+      const candidateTokens = usage?.candidatesTokenCount || 0;
+      const total = promptTokens + candidateTokens;
+      totalTokens += total;
+      
+      // Gemini 1.5 Pro approx cost (USD)
+      const cost = (promptTokens * 0.00000125) + (candidateTokens * 0.000005);
+      totalCostEst += cost;
+      
+      setAnimatingLogs(prev => [...prev, `   [Usage: ${total} tokens | ~$${cost.toFixed(4)}]`]);
+    };
+
     try {
       // 1. Generate Background if missing
       if (!beat.drafted_background && beat.image_data) {
         setAnimatingLogs(prev => [...prev, "> Starting Set Designer AI..."]);
         setAnimatingLogs(prev => [...prev, "> Extracting 3-layer parallax environment..."]);
+        
+        apiCalls++;
         const result = await processSetDesignerPrompt(beat.image_data, beat.narrative);
+        
         setStoryData(prev => {
           if (!prev) return prev;
           const newBeats = [...prev.beats];
-          newBeats[index] = { ...newBeats[index], drafted_background: result };
+          newBeats[index] = { ...newBeats[index], drafted_background: result.data };
           return { ...prev, beats: newBeats };
         });
+        
         setAnimatingLogs(prev => [...prev, "✓ Environment vector rig compiled."]);
+        logUsage(result.usage);
       } else {
         setAnimatingLogs(prev => [...prev, "✓ Environment rig found in cache."]);
       }
@@ -465,18 +487,23 @@ export default function Home() {
           if (!actor.drafted_rig && actorReferences[actorId]) {
             setAnimatingLogs(prev => [...prev, `> Starting Draftsman AI for '${actor.name}'...`]);
             setAnimatingLogs(prev => [...prev, `> Rigging A-Pose skeleton & visemes...`]);
+            
+            apiCalls++;
             const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}`;
             const result = await processDraftsmanPrompt(actorReferences[actorId], description);
+            
             setStoryData(prev => {
               if (!prev) return prev;
               return {
                 ...prev,
                 actors_detected: prev.actors_detected.map(a =>
-                  a.id === actorId ? { ...a, drafted_rig: result } : a
+                  a.id === actorId ? { ...a, drafted_rig: result.data } : a
                 )
               };
             });
+            
             setAnimatingLogs(prev => [...prev, `✓ '${actor.name}' SVG rig assembled.`]);
+            logUsage(result.usage);
           } else if (actor.drafted_rig) {
              setAnimatingLogs(prev => [...prev, `✓ '${actor.name}' rig found in cache.`]);
           }
@@ -484,6 +511,13 @@ export default function Home() {
       }
 
       setAnimatingLogs(prev => [...prev, "✓ Stage ready. Dispatching GSAP context..."]);
+      
+      if (apiCalls > 0) {
+        setAnimatingLogs(prev => [...prev, "--- AUTOMATION COMPLETE ---"]);
+        setAnimatingLogs(prev => [...prev, `Total API Calls: ${apiCalls}`]);
+        setAnimatingLogs(prev => [...prev, `Total Est. Cost: $${totalCostEst.toFixed(4)} (${totalTokens} tokens)`]);
+      }
+
     } catch (err: any) {
       console.error("Animation prep failed", err);
       setAnimatingLogs(prev => [...prev, `❌ Error: ${err.message || 'Pipeline failed'}`]);
@@ -491,7 +525,7 @@ export default function Home() {
       setTimeout(() => {
         setAnimatingSceneIndex(null);
         setAnimatingLogs([]);
-      }, 2500);
+      }, Math.max(2500, apiCalls * 1500)); // stay open longer if it did lots of work
     }
   };
 
@@ -1415,7 +1449,7 @@ export default function Home() {
                                 const newBeats = [...prev.beats];
                                 newBeats[draftingBackgroundSceneIndex] = {
                                   ...newBeats[draftingBackgroundSceneIndex],
-                                  drafted_background: result,
+                                  drafted_background: result.data,
                                 };
                                 return { ...prev, beats: newBeats };
                               });
@@ -1526,12 +1560,12 @@ export default function Home() {
                           return {
                             ...prev,
                             actors_detected: prev.actors_detected.map(a =>
-                              a.id === draftingActorId ? { ...a, drafted_rig: result } : a
+                              a.id === draftingActorId ? { ...a, drafted_rig: result.data } : a
                             )
                           };
                         });
 
-                        setDraftedRig(result);
+                        setDraftedRig(result.data);
                       } catch (err: any) {
                         setDraftError(err.message || "Failed to generate rig.");
                       } finally {

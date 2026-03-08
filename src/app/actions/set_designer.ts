@@ -37,7 +37,16 @@ CRITICAL SHAPE: You must output ONLY a SINGLE valid JSON object matching this ex
 Do not write any text outside this JSON object.
 `;
 
-export async function processSetDesignerPrompt(base64Image: string, sceneNarrative: string): Promise<DraftsmanData> {
+export interface SetDesignerResponse {
+    data: DraftsmanData;
+    usage: {
+        promptTokenCount: number;
+        candidatesTokenCount: number;
+        totalTokenCount: number;
+    }
+}
+
+export async function processSetDesignerPrompt(base64Image: string, sceneNarrative: string): Promise<SetDesignerResponse> {
     try {
         const response = await ai.models.generateContent({
             model: "gemini-3.1-pro-preview",
@@ -85,7 +94,13 @@ export async function processSetDesignerPrompt(base64Image: string, sceneNarrati
             console.error("Warning: Failed to run post-processing on SVG. Proceeding with raw data.", postProcessErr);
         }
 
-        return data;
+        const usage = {
+            promptTokenCount: response.usageMetadata?.promptTokenCount || 0,
+            candidatesTokenCount: response.usageMetadata?.candidatesTokenCount || 0,
+            totalTokenCount: response.usageMetadata?.totalTokenCount || 0
+        };
+
+        return { data, usage };
 
     } catch (error: any) {
         console.error("Set Designer Error:", error);
