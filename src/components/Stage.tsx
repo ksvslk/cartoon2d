@@ -77,13 +77,13 @@ export default function Stage({ beat, availableRigs, isPlaying = false }: StageP
                     
                     // Parse any scale/position tweaks from the action, default to basic layout
                     const actionData = beat.actions.find(a => a.actor_id === actorId);
-                    // Use a slightly smarter base placement (y=500 is the floor of a 1000x1000 viewBox)
-                    const baseY = 500;
-                    const baseX = 300 + (actorIndex * 200);
                     
-                    // We can add logic here later to read a 'transform' object from actionData
-                    // For now, we inject a generic starting transform
-                    actorGroup.setAttribute("transform", `translate(${baseX}, ${baseY}) scale(0.6)`);
+                    // Use spatial transforms provided by the AI, or fall back to defaults
+                    const baseY = actionData?.spatial_transform?.y ?? 500;
+                    const baseX = actionData?.spatial_transform?.x ?? (300 + (actorIndex * 200));
+                    const baseScale = actionData?.spatial_transform?.scale ?? 0.6;
+                    
+                    actorGroup.setAttribute("transform", `translate(${baseX}, ${baseY}) scale(${baseScale})`);
 
                     // Move all children from the rig SVG into this group
                     while (rigSvg.firstChild) {
