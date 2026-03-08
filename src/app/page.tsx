@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Stage from "@/components/Stage";
 import { Send, Play, Image as ImageIcon, ImageOff, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, ChevronUp, Loader2, Film, Trash2, Pencil, Plus, Copy, Check, Mountain } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -59,6 +59,48 @@ export default function Home() {
   // Stage Selection State
   const [selectedSceneIndex, setSelectedSceneIndex] = useState<number>(0);
   const [selectedActionIndex, setSelectedActionIndex] = useState<number | null>(null);
+
+  // Timeline Playhead State
+  const [playheadPos, setPlayheadPos] = useState<number>(0);
+  const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
+  const timelineRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isDraggingPlayhead) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!timelineRef.current) return;
+      const rect = timelineRef.current.getBoundingClientRect();
+      let newX = e.clientX - rect.left;
+      newX = Math.max(0, Math.min(newX, rect.width));
+      setPlayheadPos((newX / rect.width) * 100);
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingPlayhead(false);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDraggingPlayhead]);
+
+  // Simulate playback visually
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isPlaying) {
+      interval = setInterval(() => {
+        setPlayheadPos(prev => {
+          if (prev >= 100) return 0;
+          return prev + 0.5;
+        });
+      }, 50);
+    }
+    return () => clearInterval(interval);
+  }, [isPlaying]);
 
   // Panel Editing State
   const [editingBeatIndex, setEditingBeatIndex] = useState<number | null>(null);
@@ -1311,12 +1353,15 @@ export default function Home() {
                         <div className="w-48 border-r border-neutral-200 dark:border-neutral-800/60 h-full flex items-center px-4 bg-neutral-50 dark:bg-[#0a0a0a] shrink-0 transition-colors">
                           <span className="text-[10px] text-neutral-500 dark:text-neutral-600 font-bold uppercase tracking-wider">Tracks</span>
                         </div>
-                        <div className="flex-1 h-full relative bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iMTAwJSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJyZ2JhKDE1MCwxNTAsMTUwLDAuMikiIHg9IjAiIHk9IjAiLz48L3N2Zz4=')] dark:bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iMTAwJSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuMDUpIiB5PSIwIi8+PC9zdmc+')] bg-repeat-x transition-colors">
+                        <div className="flex-1 h-full relative bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iMTAwJSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJyZ2JhKDE1MCwxNTAsMTUwLDAuMikiIHg9IjAiIHk9IjAiLz48L3N2Zz4=')] dark:bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iMTAwJSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuMDUpIiB5PSIwIi8+PC9zdmc+')] bg-repeat-x transition-colors" ref={timelineRef}>
 
                           {/* Playhead Time Ruler & Beautiful Knob */}
-                          <div className="absolute left-[20%] top-0 bottom-[-500px] w-[1px] bg-emerald-500/80 z-50 pointer-events-none dark:mix-blend-screen shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.8)] transition-shadow">
+                          <div className="absolute top-0 bottom-[-500px] w-[1px] bg-emerald-500/80 z-50 pointer-events-none dark:mix-blend-screen shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.8)] transition-shadow" style={{ left: `${playheadPos}%` }}>
                             {/* The Knob */}
-                            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-3 h-4 bg-gradient-to-b from-emerald-400 to-emerald-600 rounded-b-[3px] cursor-grab active:cursor-grabbing border-b border-l border-r border-emerald-300 shadow-[0_2px_10px_rgba(16,185,129,0.2)] dark:shadow-[0_2px_10px_rgba(16,185,129,0.5)] pointer-events-auto flex items-center justify-center flex-col gap-[2px]">
+                            <div 
+                              className={`absolute top-0 left-1/2 -translate-x-1/2 w-3 h-4 bg-gradient-to-b from-emerald-400 to-emerald-600 rounded-b-[3px] cursor-grab active:cursor-grabbing border-b border-l border-r border-emerald-300 shadow-[0_2px_10px_rgba(16,185,129,0.2)] dark:shadow-[0_2px_10px_rgba(16,185,129,0.5)] pointer-events-auto flex items-center justify-center flex-col gap-[2px] ${isDraggingPlayhead ? 'scale-110' : ''}`}
+                              onMouseDown={() => setIsDraggingPlayhead(true)}
+                            >
                               <span className="w-1.5 h-px bg-emerald-200/80 dark:bg-emerald-200/50"></span>
                               <span className="w-1.5 h-px bg-emerald-200/80 dark:bg-emerald-200/50"></span>
                             </div>
@@ -1414,6 +1459,22 @@ export default function Home() {
                     });
                   };
 
+                  const targetTransform = action.target_spatial_transform || { x: transform.x + 200, y: transform.y, scale: transform.scale };
+                  
+                  const updateTargetTransform = (key: keyof typeof targetTransform, value: number) => {
+                    setStoryData(prev => {
+                      if (!prev) return prev;
+                      const newBeats = [...prev.beats];
+                      const newActions = [...newBeats[selectedSceneIndex].actions];
+                      newActions[selectedActionIndex] = {
+                        ...newActions[selectedActionIndex],
+                        target_spatial_transform: { ...targetTransform, [key]: value }
+                      };
+                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions };
+                      return { ...prev, beats: newBeats };
+                    });
+                  };
+
                   const updateDuration = (value: number) => {
                      setStoryData(prev => {
                       if (!prev) return prev;
@@ -1503,6 +1564,59 @@ export default function Home() {
                           </div>
                         </div>
                       </div>
+
+                      {/* Target Transform (For Movement) */}
+                      {(action.motion === 'run' || action.motion === 'walk' || action.motion === 'jump') && (
+                        <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
+                          <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex items-center gap-2">
+                            <Mountain size={12} className="opacity-50" /> Target Destination
+                          </div>
+                          
+                          <div className="space-y-4">
+                            {/* X Target */}
+                            <div>
+                              <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
+                                <span>End X Position</span>
+                                <span>{targetTransform.x}px</span>
+                              </div>
+                              <input 
+                                type="range" min="-200" max="1200" step="10" 
+                                value={targetTransform.x} 
+                                onChange={e => updateTargetTransform('x', parseInt(e.target.value))}
+                                className="w-full accent-blue-500" 
+                              />
+                            </div>
+
+                            {/* Y Target */}
+                            <div>
+                              <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
+                                <span>End Y Position</span>
+                                <span>{targetTransform.y}px</span>
+                              </div>
+                              <input 
+                                type="range" min="-200" max="1200" step="10" 
+                                value={targetTransform.y} 
+                                onChange={e => updateTargetTransform('y', parseInt(e.target.value))}
+                                className="w-full accent-blue-500" 
+                              />
+                            </div>
+                            
+                            {/* Scale Target */}
+                            <div>
+                              <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
+                                <span>End Scale</span>
+                                <span>{targetTransform.scale.toFixed(2)}x</span>
+                              </div>
+                              <input 
+                                type="range" min="0.1" max="3" step="0.05" 
+                                value={targetTransform.scale} 
+                                onChange={e => updateTargetTransform('scale', parseFloat(e.target.value))}
+                                className="w-full accent-blue-500" 
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
                         <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex items-center gap-2">

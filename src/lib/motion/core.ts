@@ -45,7 +45,7 @@ export function animateScene(context: AnimationContext) {
       switch (motion) {
         case 'run':
         case 'walk':
-          applyRunCycle(actorId, action.duration_seconds || 2, rig);
+          applyRunCycle(actorId, action, rig);
           break;
         case 'panic':
           applyPanicShake(actorId);
@@ -78,17 +78,33 @@ function applyIdleBreathing(actorId: string) {
   });
 }
 
-function applyRunCycle(actorId: string, duration: number, rig?: DraftsmanData) {
+function applyRunCycle(actorId: string, action: any, rig?: DraftsmanData) {
+  const duration = action.duration_seconds || 2;
+  const targetX = action.target_spatial_transform?.x;
+  const targetY = action.target_spatial_transform?.y;
+  const targetScale = action.target_spatial_transform?.scale;
+
   // 1. Switch to Side View for running
   gsap.set(`#actor_group_${actorId} #view_front`, { display: "none" });
   gsap.set(`#actor_group_${actorId} #view_side_right`, { display: "inline" });
 
   // 2. Animate the whole body moving across the screen
-  gsap.to(`#actor_group_${actorId}`, {
-    x: "+=500", // Move right
-    duration: duration,
-    ease: "power1.inOut"
-  });
+  const motionProps: any = { duration: duration, ease: "power1.inOut" };
+  if (targetX !== undefined) motionProps.x = targetX - (action.spatial_transform?.x || 500); // Relative movement if x is mapped to translation
+  else motionProps.x = "+=500"; // Fallback
+  
+  if (targetY !== undefined) motionProps.y = targetY - (action.spatial_transform?.y || 800);
+  if (targetScale !== undefined) motionProps.scale = targetScale;
+  
+  // Since actorGroup is already translated to its starting position, we can animate `x` and `y` relative to that,
+  // or absolute to SVG origin. GSAP animates transforms, so 'x' animates the transform translation.
+  // The initial translation is set via setAttribute("transform", "translate(X, Y)"). 
+  // GSAP parses this. Animating x: targetX directly works if GSAP reads the absolute translation as x.
+  // Actually, GSAP maps x and y to the transform string. Let's just animate to the target coordinates!
+  motionProps.x = targetX !== undefined ? targetX : "+=500";
+  motionProps.y = targetY !== undefined ? targetY : undefined;
+  
+  gsap.to(`#actor_group_${actorId}`, motionProps);
 
   // 3. Bob the body up and down
   gsap.to(`#actor_group_${actorId}`, {
