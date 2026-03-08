@@ -62,7 +62,8 @@ CRITICAL: Your response MUST contain TWO things:
 ## Rules
 - Output the JSON object first as a text block.
 - Then, for EACH beat, generate a vivid, colorful flat 2D style illustration based on the comic_panel_prompt. 
-- STRICTLY AVOID 3D, CGI, OR PHOTOREALISTIC STYLES. 
+- EXTREME 2D FLATNESS REQUIRED: The art style MUST be composed of highly abstract, minimal vector-like solid color shapes. NO shading, NO gradients, NO 3D rendering, NO photorealism.
+- CLEAR SILHOUETTES: Characters should ideally be drawn in clear, distinct profile (side-view) or straight-on angles to make them easier to extract as 2D puppets.
 - DO NOT include any text, speech bubbles, or onomatopoeia (e.g., "BANG!", "CRASH!") in the images. These are handled by the audio/narrative data.
 - Output each image immediately after the JSON.
 - Keep actions as simple semantic verbs.
@@ -127,7 +128,7 @@ CRITICAL: Your response MUST contain TWO things:
     const bufferedImages: string[] = []; // Buffer images until JSON is parsed
 
     // Helper to attempt JSON extraction and parsing
-    const tryParseJson = (text: string): { type: 'story', data: StoryGenerationData } | null => {
+    const tryParseJson = (text: string, isFinal: boolean = false): { type: 'story', data: StoryGenerationData } | null => {
         let jsonStr = text;
         const jsonMatch = text.match(/```json\s*([\s\S]*?)```/);
         if (jsonMatch) {
@@ -147,7 +148,11 @@ CRITICAL: Your response MUST contain TWO things:
                 validatedData.beats = [validatedData.beats[0]];
             }
             return { type: 'story' as const, data: validatedData };
-        } catch {
+        } catch (e: any) {
+            if (isFinal) {
+                console.error("[tryParseJson] Failed to parse or validate JSON:", e.message || e);
+                console.error("RAW JSON STRING:\n", jsonStr);
+            }
             return null;
         }
     };
@@ -212,7 +217,7 @@ CRITICAL: Your response MUST contain TWO things:
 
     // Final attempt: parse JSON if it still hasn't been parsed
     if (!jsonParsed) {
-        const result = tryParseJson(fullText);
+        const result = tryParseJson(fullText, true);
         if (result) {
             yield result;
             jsonParsed = true;
@@ -253,6 +258,7 @@ CRITICAL: Your response MUST contain TWO things:
       "name": "string - character name",
       "species": "string - e.g. 'cat', 'human', 'robot'",
       "attributes": ["string - visual traits like 'orange tabby', 'blue hat'"],
+      "personality": "string - core personality like 'hyperactive', 'grumpy', 'naive'. This dictates voice and facial animation style.",
       "visual_description": "string - concise visual appearance summary"
     }
   ],
@@ -404,8 +410,8 @@ Output ONLY the new generated image.`;
         }
     });
 
-    if (response.candidates && response.candidates.length > 0 && response.candidates[0].content && response.candidates[0].content.parts.length > 0) {
-        const part = response.candidates[0].content.parts[0];
+    if (response.candidates && response.candidates.length > 0 && response.candidates[0].content && response.candidates[0].content.parts && response.candidates[0].content.parts.length > 0) {
+        const part = response.candidates[0].content!.parts[0];
         if (part.inlineData && part.inlineData.data) {
             return `data:image/png;base64,${part.inlineData.data}`;
         }
