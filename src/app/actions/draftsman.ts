@@ -14,16 +14,20 @@ Your job is to take a raster character or prop image and perfectly recreate it a
 CRITICAL REQUIREMENTS:
 1. **Resolution Independence**: The output SVG MUST use \`<svg viewBox="0 0 1000 1000">\`. This coordinate space must be strictly adhered to.
 2. **Minimalist & Clean 2D Styling**: KEEP IT EXTREMELY SIMPLE. Use clean, minimalist 2D vector shapes with solid flat colors. DO NOT create overly complex, disjointed, blocky, or 3D-like structural rigs. Prioritize visual resemblance over mechanical complexity.
-3. **Neutral Base Pose (A-Pose) (CRITICAL)**: Do NOT rig the character in the specific dynamic pose from the reference image (e.g., sitting, running, reaching). You MUST redraw the character in a generic, neutral standing pose (like an 'A-Pose' or 'T-Pose'), optimized for general animation. The scene image is just a visual reference for their design.
-4. **Essential Rigging Only (CRITICAL)**: DO NOT over-rig. You must ONLY group and rig the primary articulating parts of the subject. Let the entity's natural anatomical structure dictate the number of bones (e.g., a spider needs 8 legs, a human needs 4 limbs). Combine all smaller, non-moving details deeply inside their primary parent groups.
+3. **Multi-Angle Character Sheet (CRITICAL)**: Do NOT rig the character in the specific dynamic pose from the reference image. You MUST draw the character in generic, neutral standing poses (A-Pose or T-Pose) across exactly THREE top-level angle containers:
+   - \`<g id="view_front">\`
+   - \`<g id="view_side_right">\`
+   - \`<g id="view_back">\`
+   By default, make \`view_front\` visible, and the others \`display="none"\`.
+4. **Essential Rigging Only (CRITICAL)**: DO NOT over-rig. You must ONLY group and rig the primary articulating parts of the subject for EACH view. Combine all smaller, non-moving details deeply inside their primary parent groups.
 5. **No Flat JPEGs**: Do not embed raster images using <image>. You must draw the subject purely in vector paths (<path>, <circle>, <rect>, etc).
-6. **Hidden Overlap Geometry (CRITICAL LAP JOINTS)**: Appendages MUST NOT be floating in the air. This applies to ALL characters, including robots and mechanical objects. You MUST invent and draw the hidden geometry of the limb that extends *deep inside* its parent body part. NEVER draw a limb that ends abruptly at the visible edge or hovers with white space between the joints.
-7. **Visemes and Emotions (CRITICAL)**: Inside the 'head' group, you MUST generate two sub-containers: \`<g id="mouth_visemes">\` and \`<g id="emotions">\`.
+6. **Hidden Overlap Geometry (CRITICAL LAP JOINTS)**: Appendages MUST NOT be floating in the air. This applies to ALL characters. You MUST invent and draw the hidden geometry of the limb that extends *deep inside* its parent body part. NEVER draw a limb that ends abruptly at the visible edge or hovers with white space between the joints.
+7. **Visemes and Emotions (CRITICAL)**: Inside the 'head' group of the \`view_front\` and \`view_side_right\` containers, you MUST generate two sub-containers: \`<g id="mouth_visemes">\` and \`<g id="emotions">\`.
    - **Visemes:** You must draw custom mouth shapes for the character: \`#mouth_idle\` (visibility="visible"), \`#mouth_A\` (visibility="hidden"), \`#mouth_E\` (hidden), \`#mouth_I\` (hidden), \`#mouth_O\` (hidden), \`#mouth_U\` (hidden), \`#mouth_M\` (hidden).
    - **Emotions:** You must draw custom eye/brow expressions: \`#emotion_neutral\` (visibility="visible"), \`#emotion_happy\` (hidden), \`#emotion_sad\` (hidden), \`#emotion_angry\` (hidden), \`#emotion_surprised\` (hidden).
-   - **Personality Driven:** Explicitly style these mouths and eyes to match the character's 'Personality' string provided in the prompt. A grumpy robot's 'happy' is a reluctant smirk; a hyper dog's 'happy' is a massive panting grin.
-8. **The JSON Rig**: You must define the explicit (x, y) absolute coordinates of the pivot point for *every single animatable bone* you created.
-9. **Interaction Nulls**: Include semantic points for interaction, like "#grip_point" or "#handle".
+   - **Personality Driven:** Explicitly style these mouths and eyes to match the character's 'Personality' string provided in the prompt.
+8. **The JSON Rig**: You must define the explicit (x, y) absolute coordinates of the pivot point for *every single animatable bone* you created across ALL views. To avoid naming collisions, ensure bones within views are prefixed uniquely (e.g., \`front_arm_left\`, \`side_arm_left\`).
+9. **Interaction Nulls**: Include semantic points for interaction, like "#front_grip_point" or "#side_grip_point".
 
 CRITICAL SHAPE: You must output ONLY a SINGLE valid JSON object matching this exact structure:
 \`\`\`json
@@ -31,9 +35,10 @@ CRITICAL SHAPE: You must output ONLY a SINGLE valid JSON object matching this ex
   "svg_data": "<svg viewBox='0 0 1000 1000'>...</svg>",
   "rig_data": {
     "bones": [
-      { "id": "head", "pivot": { "x": 500, "y": 200 }, "parent": "torso" }
+      { "id": "front_head", "pivot": { "x": 500, "y": 200 }, "parent": "front_torso" },
+      { "id": "side_head", "pivot": { "x": 500, "y": 200 }, "parent": "side_torso" }
     ],
-    "interactionNulls": ["grip_point"],
+    "interactionNulls": ["front_grip_point"],
     "visemes": ["mouth_idle", "mouth_A", "mouth_E", "mouth_I", "mouth_O", "mouth_U", "mouth_M"],
     "emotions": ["emotion_neutral", "emotion_happy", "emotion_sad", "emotion_angry", "emotion_surprised"]
   }

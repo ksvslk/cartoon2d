@@ -5,13 +5,15 @@ import gsap from "gsap";
 import { StoryBeatData } from "@/lib/schema/story";
 import { DraftsmanData } from "@/lib/schema/rig";
 import DOMPurify from 'dompurify';
+import { animateScene } from "@/lib/motion/core";
 
 interface StageProps {
     beat: StoryBeatData | null;
     availableRigs: Record<string, DraftsmanData>;
+    isPlaying?: boolean;
 }
 
-export default function Stage({ beat, availableRigs }: StageProps) {
+export default function Stage({ beat, availableRigs, isPlaying = false }: StageProps) {
     const containerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -98,14 +100,9 @@ export default function Stage({ beat, availableRigs }: StageProps) {
 
         // 5. GSAP Context Setup (For later animation)
         const ctx = gsap.context(() => {
-            // Example: We can target specific actor groups now!
-            /*
-            beat.actions.forEach(action => {
-               if (action.motion === "run") {
-                 gsap.to(\`#actor_group_${action.actor_id}\`, { x: "+=200", duration: action.duration_seconds });
-               }
-            });
-            */
+            if (isPlaying) {
+                animateScene({ container: containerRef.current!, beat });
+            }
         }, containerRef);
 
         return () => ctx.revert();

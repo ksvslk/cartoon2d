@@ -50,6 +50,9 @@ export default function Home() {
   const [animatingSceneIndex, setAnimatingSceneIndex] = useState<number | null>(null);
   const [animatingLogs, setAnimatingLogs] = useState<string[]>([]);
 
+  // Stage Playback State
+  const [isPlaying, setIsPlaying] = useState(false);
+
   // Generation Mode: 'sequence' | 'single'
   const [generateMode, setGenerateMode] = useState<'sequence' | 'single'>('single');
 
@@ -1207,6 +1210,7 @@ export default function Home() {
                       <div className="absolute inset-0 flex items-center justify-center">
                         <Stage
                           beat={storyData && storyData.beats.length > 0 ? storyData.beats[selectedSceneIndex] : null}
+                          isPlaying={isPlaying}
                           availableRigs={
                             storyData 
                             ? storyData.actors_detected.reduce((acc, actor) => {
@@ -1252,8 +1256,8 @@ export default function Home() {
                             <button className="w-7 h-7 rounded flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors group" title="Step Back">
                               <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current" xmlns="http://www.w3.org/2000/svg"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
                             </button>
-                            <button className="w-8 h-8 rounded-lg bg-emerald-500 hover:bg-emerald-400 dark:hover:bg-emerald-400 flex items-center justify-center text-white dark:text-[#0a0a0a] transition-all shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.3)] hover:shadow-[0_0_15px_rgba(16,185,129,0.4)] dark:hover:shadow-[0_0_15px_rgba(16,185,129,0.5)] group" title="Play">
-                              <Play size={15} className="fill-current ml-0.5 group-hover:scale-110 transition-transform" />
+                            <button onClick={() => setIsPlaying(!isPlaying)} className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all group ${isPlaying ? 'bg-amber-500 hover:bg-amber-400 text-[#0a0a0a] shadow-[0_0_10px_rgba(245,158,11,0.3)]' : 'bg-emerald-500 hover:bg-emerald-400 text-white dark:text-[#0a0a0a] shadow-[0_0_10px_rgba(16,185,129,0.3)] hover:shadow-[0_0_15px_rgba(16,185,129,0.4)]'}`} title={isPlaying ? "Pause" : "Play"}>
+                              {isPlaying ? <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> : <Play size={15} className="fill-current ml-0.5 group-hover:scale-110 transition-transform" />}
                             </button>
                             <button className="w-7 h-7 rounded flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors group" title="Step Forward">
                               <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current" xmlns="http://www.w3.org/2000/svg"><path d="M4 18l8.5-6L4 6v12zm13-12v12h2V6h-2z" /></svg>
