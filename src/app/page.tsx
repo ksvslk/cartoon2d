@@ -1330,48 +1330,43 @@ export default function Home() {
 
                       {/* 3. Timeline Tracks */}
                       <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col">
+                        {!storyData || storyData.beats.length === 0 ? (
+                           <div className="h-full flex items-center justify-center text-xs text-neutral-500 font-mono">No scene selected.</div>
+                        ) : (
+                          <>
+                            {/* Dynamic Actor Tracks */}
+                            {Array.from(new Set(storyData.beats[selectedSceneIndex].actions.map(a => a.actor_id))).map(actorId => {
+                              const action = storyData.beats[selectedSceneIndex].actions.find(a => a.actor_id === actorId);
+                              const actorData = storyData.actors_detected.find(a => a.id === actorId);
+                              const isSelected = selectedActionIndex !== null && storyData.beats[selectedSceneIndex].actions[selectedActionIndex]?.actor_id === actorId;
+                              
+                              // Calculate a rough width based on duration (e.g. 10% per second)
+                              const widthPct = Math.min(100, Math.max(10, (action?.duration_seconds || 2) * 10));
 
-                        {/* Audio Track */}
-                        <div className="h-10 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
-                          <div className="w-48 h-full flex items-center px-4 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors">
-                            <span className="text-xs text-neutral-500 dark:text-neutral-400 flex items-center gap-1.5"><Volume2 size={12} /> Audio</span>
-                          </div>
-                          <div className="flex-1 h-full py-1.5 px-2 relative">
-                            {/* Audio Waveform Clip */}
-                            <div className="absolute left-[10%] w-[15%] h-full top-0 py-1.5">
-                              <div className="w-full h-full bg-cyan-100 dark:bg-cyan-900/40 border border-cyan-200 dark:border-cyan-800/50 rounded flex items-center justify-center overflow-hidden transition-colors">
-                                <div className="w-full h-2/3 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAiIGhlaWdodD0iMTAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3QgeD0iMCI yeD0iMiIgd2lkdGg9IjIiIGhlaWdodD0iNiIgZmlsbD0icmdiYSg4LCAxNDUsIDE3OCLCAwLjQpIi8+PHJlY3QgeD0iNCIgeT0iMCIgd2lkdGg9IjIiIGhlaWdodD0iMTAiIGZpbGw9InJnYmEoOCwgMTQ1LCAxNzgsIDAuNCkiLz48cmVjdCB4PSI4IiB5PSI0IiB3aWR0aD0iMiIgaGVpZ2h0PSI0IiBmaWxsPSJyZ2JhKDgsIDE0NSwgMTc4LCAwLjQpIi8+PC9zdmc+')] dark:bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAiIGhlaWdodD0iMTAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3QgeD0iMCIgeT0iMiIgd2lkdGg9IjIiIGhlaWdodD0iNiIgZmlsbD0icmdiYSgzNCwgMjExLCAyMzgsIDAuNCkiLz48cmVjdCB4PSI0IiB5PSIwIiB3aWR0aD0iMiIgaGVpZ2h0PSIxMCIgZmlsbD0icmdiYSgzNCwgMjExLCAyMzgsIDAuNCkiLz48cmVjdCB4PSI4IiB5PSI0IiB3aWR0aD0iMiIgaGVpZ2h0PSI0IiBmaWxsPSJyZ2JhKDM0LCAyMTEsIDIzOCwgMC40KSIvPjwvc3ZnPg==')] bg-repeat-x opacity-60"></div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Actor Track: Robot Cat */}
-                        <div className="h-10 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
-                          <div className="w-48 h-full flex items-center px-4 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors">
-                            <span className="text-xs text-neutral-700 dark:text-neutral-300 font-medium">Robot Cat</span>
-                          </div>
-                          <div className="flex-1 h-full py-1.5 px-2 relative">
-                            {/* Motion Clip */}
-                            <div className="absolute left-[15%] w-[40%] h-[70%] top-[15%] rounded bg-blue-100 dark:bg-blue-600/20 border border-blue-200 dark:border-blue-500/40 flex items-center px-2 cursor-pointer hover:bg-blue-200 dark:hover:bg-blue-600/30 transition-colors">
-                              <span className="text-[10px] font-mono text-blue-700 dark:text-blue-300 truncate">run(panic)</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Actor Track: Vacuum Cleaner */}
-                        <div className="h-10 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
-                          <div className="w-48 h-full flex items-center px-4 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors">
-                            <span className="text-xs text-neutral-700 dark:text-neutral-300 font-medium">Vacuum</span>
-                          </div>
-                          <div className="flex-1 h-full py-1.5 px-2 relative">
-                            {/* Motion Clip */}
-                            <div className="absolute left-[5%] w-[60%] h-[70%] top-[15%] rounded bg-amber-100 dark:bg-amber-600/20 border border-amber-200 dark:border-amber-500/40 flex items-center px-2 cursor-pointer hover:bg-amber-200 dark:hover:bg-amber-600/30 transition-colors">
-                              <span className="text-[10px] font-mono text-amber-700 dark:text-amber-300 truncate">idle(loud)</span>
-                            </div>
-                          </div>
-                        </div>
-
+                              return (
+                                <div key={`track-${actorId}`} className="h-10 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
+                                  <div className="w-48 h-full flex items-center px-4 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors">
+                                    <span className="text-xs text-neutral-700 dark:text-neutral-300 font-medium truncate pr-2">{actorData?.name || actorId}</span>
+                                  </div>
+                                  <div className="flex-1 h-full py-1.5 px-2 relative">
+                                    {action && (
+                                      <div 
+                                        className={`absolute left-[5%] h-[70%] top-[15%] rounded flex items-center px-2 cursor-pointer transition-colors ${isSelected ? 'bg-cyan-500/30 border border-cyan-400 text-cyan-700 dark:text-cyan-300' : 'bg-blue-100 dark:bg-blue-600/20 border border-blue-200 dark:border-blue-500/40 hover:bg-blue-200 dark:hover:bg-blue-600/30 text-blue-700 dark:text-blue-300'}`}
+                                        style={{ width: `${widthPct}%` }}
+                                        onClick={() => {
+                                          const actionIdx = storyData.beats[selectedSceneIndex].actions.findIndex(a => a === action);
+                                          setSelectedActionIndex(actionIdx);
+                                        }}
+                                      >
+                                        <span className="text-[10px] font-mono truncate">{action.motion}({action.style})</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
