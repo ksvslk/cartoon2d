@@ -22,6 +22,7 @@ CRITICAL REQUIREMENTS:
    - \`<g id="bg_sky">\`: Furthest elements (sky, distant mountains, solid backdrop colors)
    - \`<g id="bg_midground">\`: The main stage (buildings, walls, distant trees)
    - \`<g id="bg_foreground">\`: Elements visually closest to the camera (the floor they walk on, objects overlapping the lower camera frame)
+   *Note: Within these 3 master layers, you may create sub-groups to establish micro-layering (e.g., placing a desk behind a chair inside bg_midground).*
 5. **No Flat JPEGs**: Do not embed raster images using <image>. Pure vector paths only.
 6. **Interaction Nulls (Props)**: If there are crucial semantic objects in the background a character might sit on or touch (e.g., a chair, a steering wheel, a door handle), you must wrap their shape in a uniquely ID'd group (e.g., \`<g id="prop_chair">\`) and log that ID in the \`interactionNulls\` array in the JSON. You MUST also provide the exact (x, y) absolute coordinates of that prop's interactive anchor point in the \`bones\` array.
 7. **Complete Scene**: Ensure the background is fully drawn top-to-bottom within the 1000x1000 box. Do not leave blank white void where the characters used to stand. Fill in the missing ground/walls behind them.
