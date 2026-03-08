@@ -46,6 +46,10 @@ export default function Home() {
   const [isDraftingBackground, setIsDraftingBackground] = useState(false);
   const [draftBackgroundError, setDraftBackgroundError] = useState<string | null>(null);
 
+  // Auto-Animate Macro State
+  const [animatingSceneIndex, setAnimatingSceneIndex] = useState<number | null>(null);
+  const [animatingStatus, setAnimatingStatus] = useState<string>("");
+
   // Generation Mode: 'sequence' | 'single'
   const [generateMode, setGenerateMode] = useState<'sequence' | 'single'>('single');
 
@@ -428,7 +432,60 @@ export default function Home() {
     }
   };
 
+  const handleAnimateScene = async (index: number) => {
+    if (!storyData || !storyData.beats[index]) return;
+    
+    setAnimatingSceneIndex(index);
+    setSelectedSceneIndex(index);
+    const beat = storyData.beats[index];
+
+    try {
+      // 1. Generate Background if missing
+      if (!beat.drafted_background && beat.image_data) {
+        setAnimatingStatus("Drafting background...");
+        const result = await processSetDesignerPrompt(beat.image_data, beat.narrative);
+        setStoryData(prev => {
+          if (!prev) return prev;
+          const newBeats = [...prev.beats];
+          newBeats[index] = { ...newBeats[index], drafted_background: result };
+          return { ...prev, beats: newBeats };
+        });
+      }
+
+      // 2. Generate Actors if missing
+      const actorIdsInScene = new Set(beat.actions.map(a => a.actor_id));
+      for (const actorId of Array.from(actorIdsInScene)) {
+        const actor = storyData.actors_detected.find(a => a.id === actorId);
+        if (actor && !actor.drafted_rig && actorReferences[actorId]) {
+          setAnimatingStatus(`Drafting ${actor.name}...`);
+          const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}`;
+          const result = await processDraftsmanPrompt(actorReferences[actorId], description);
+          setStoryData(prev => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              actors_detected: prev.actors_detected.map(a =>
+                a.id === actorId ? { ...a, drafted_rig: result } : a
+              )
+            };
+          });
+        }
+      }
+
+      setAnimatingStatus("Ready!");
+    } catch (err: any) {
+      console.error("Animation prep failed", err);
+      setAnimatingStatus("Error!");
+    } finally {
+      setTimeout(() => {
+        setAnimatingSceneIndex(null);
+        setAnimatingStatus("");
+      }, 2000);
+    }
+  };
+
   return (
+
     <div className="h-screen h-[100dvh] w-screen bg-neutral-50 dark:bg-[#050505] text-neutral-900 dark:text-neutral-200 flex flex-col font-sans selection:bg-cyan-500/30 relative overflow-hidden transition-colors duration-300">
 
       {/* Background Ambience Layers */}
@@ -944,6 +1001,24 @@ export default function Home() {
                                   </span>
                                 ))}
                               </div>
+                            </div>
+                            
+                            {/* Auto-Animate Macro Button */}
+                            <div className="p-2 border-t border-neutral-200/80 dark:border-neutral-800/50 bg-neutral-50/50 dark:bg-[#0a0a0a]/50">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleAnimateScene(index);
+                                }}
+                                disabled={animatingSceneIndex === index || isGenerating || !beat.image_data}
+                                className="w-full py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm flex items-center justify-center gap-2 transition-all group/animate"
+                              >
+                                {animatingSceneIndex === index ? (
+                                  <><Loader2 size={14} className="animate-spin" /> {animatingStatus}</>
+                                ) : (
+                                  <><Play size={14} className="fill-white group-hover/animate:scale-110 transition-transform" /> Animate Scene</>
+                                )}
+                              </button>
                             </div>
                           </div>
 
