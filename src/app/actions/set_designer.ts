@@ -12,8 +12,12 @@ Your job is to take a raster comic panel image and extract ONLY its background e
 
 CRITICAL REQUIREMENTS:
 1. **Resolution Independence**: The output SVG MUST use \`<svg viewBox="0 0 1000 1000">\`.
-2. **Scenery Only**: Ignore all active characters/actors in the reference image. Draw ONLY the environment they are standing in (e.g., the room, the street, the forest).
-3. **Flat 2D Styling**: Use clean, minimalist vector shapes with solid flat colors. DO NOT create complex gradients, noise, or photorealistic textures.
+2. **Scenery Only**: Ignore all active characters/actors in the reference image. Draw ONLY the environment they are standing in.
+3. **EXTREME Minimalism (CRITICAL)**: To optimize for performance and file size, you MUST abstract the environment into the absolute minimum number of shapes possible. Use large, flat, geometric primitives (rectangles, basic polygons, large sweeping paths) instead of complex linework. 
+   - DO NOT draw individual bricks, leaves, tiles, or texture details.
+   - Represent a forest with 3-4 abstract geometric tree trunks, not a hundred branches.
+   - Represent a city skyline with 3-4 blocky silhouettes, not individual windows.
+   - Use solid flat colors only. No gradients, shading, or texture.
 4. **Mandatory Parallax Hierarchy**: You MUST structure the entire environment into exactly three top-level container groups for depth sorting:
    - \`<g id="bg_sky">\`: Furthest elements (sky, distant mountains, solid backdrop colors)
    - \`<g id="bg_midground">\`: The main stage (buildings, walls, distant trees)
