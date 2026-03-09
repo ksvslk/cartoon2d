@@ -29,8 +29,8 @@ export const ActionSchema = z.object({
     style: z.string().describe("An adverb or modifier describing how the action is performed, e.g., 'casual', 'panic', 'polite'"),
     duration_seconds: z.number().describe("The estimated duration of this specific action clip."),
     spatial_transform: z.object({
-        x: z.number().default(500).describe("The starting X center coordinate on the 1000x1000 stage. E.g. 500 is center, 200 is left."),
-        y: z.number().default(800).describe("The starting Y center coordinate on the 1000x1000 stage. Usually around 700-900 to be on the floor."),
+        x: z.number().default(960).describe("The starting X center coordinate on the 1920x1080 stage. E.g. 960 is center, 400 is left, 1500 is right."),
+        y: z.number().default(950).describe("The starting Y center coordinate on the 1920x1080 stage. Usually around 800-1050 to be on the floor."),
         scale: z.number().default(1.0).describe("The scale of the actor. 1.0 is default size. Use smaller values if they are far away."),
         z_index: z.number().default(10).describe("The z-index layering order. Higher numbers are closer to the camera/in front.")
     }).optional(),

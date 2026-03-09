@@ -42,11 +42,12 @@ export default function Stage({ beat, availableRigs, isPlaying = false }: StageP
             const bgDoc = parser.parseFromString(beat.drafted_background.svg_data, "image/svg+xml");
             masterSvgElement = bgDoc.querySelector("svg") as SVGSVGElement;
         } else {
-            const fallbackStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" class="w-full h-full">
-              <rect width="1000" height="1000" fill="#111"/>
+            const fallbackStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" class="w-full h-full">
+              <rect width="1920" height="1080" fill="#111"/>
               <g id="bg_sky"/>
               <g id="bg_midground">
-                ${Array.from({length:10}).map((_,i)=>`<line x1="0" y1="${i*100}" x2="1000" y2="${i*100}" stroke="#222" stroke-width="2"/><line x1="${i*100}" y1="0" x2="${i*100}" y2="1000" stroke="#222" stroke-width="2"/>`).join('')}
+                ${Array.from({length:11}).map((_,i)=>`<line x1="0" y1="${i*108}" x2="1920" y2="${i*108}" stroke="#222" stroke-width="2"/>`).join('')}
+                ${Array.from({length:20}).map((_,i)=>`<line x1="${i*96}" y1="0" x2="${i*96}" y2="1080" stroke="#222" stroke-width="2"/>`).join('')}
               </g>
               <g id="bg_foreground"/>
             </svg>`;
@@ -80,8 +81,8 @@ export default function Stage({ beat, availableRigs, isPlaying = false }: StageP
             actorGroup.setAttribute("id", `actor_group_${actorId}`);
 
             const actionData = beat.actions.find(a => a.actor_id === actorId);
-            const tX     = actionData?.spatial_transform?.x     ?? (300 + actorIdx * 200);
-            const tY     = actionData?.spatial_transform?.y     ?? 800;
+            const tX     = actionData?.spatial_transform?.x     ?? (480 + actorIdx * 320);
+            const tY     = actionData?.spatial_transform?.y     ?? 950;
             const tScale = actionData?.spatial_transform?.scale ?? 0.5;
 
             targetTransforms[actorId] = { x: tX, y: tY, scale: tScale };
@@ -107,8 +108,8 @@ export default function Stage({ beat, availableRigs, isPlaying = false }: StageP
                 const group = domSvg?.querySelector(`#actor_group_${id}`) as SVGGElement | null;
                 if (!group) return;
 
-                let naturalCX = 500;
-                let naturalBottom = 850;
+                let naturalCX = 960;
+                let naturalBottom = 1050;
 
                 try {
                     const bbox = group.getBBox();
@@ -192,7 +193,7 @@ export default function Stage({ beat, availableRigs, isPlaying = false }: StageP
         <div className="w-full h-full flex items-center justify-center p-4">
             <div
                 ref={containerRef}
-                className="w-full aspect-square max-w-[1000px] shadow-2xl bg-black rounded-lg overflow-hidden border border-neutral-800"
+                className="w-full aspect-video max-w-[1920px] shadow-2xl bg-black rounded-lg overflow-hidden border border-neutral-800"
             />
         </div>
     );

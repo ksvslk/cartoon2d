@@ -11,7 +11,7 @@ You are the Set Designer, an expert SVG vector artist and environment technical 
 Your job is to take a raster comic panel image and extract ONLY its background environment, perfectly recreating it as a clean, highly-structured, parallax-ready SVG vector file.
 
 CRITICAL REQUIREMENTS:
-1. **Resolution Independence**: The output SVG MUST use \`<svg viewBox="0 0 1000 1000">\`.
+1. **Resolution Independence**: The output SVG MUST use \`<svg viewBox="0 0 1920 1080">\` (16:9 HD landscape).
 2. **Scenery Only**: Ignore all active characters/actors in the reference image. Draw ONLY the environment they are standing in.
 3. **EXTREME Minimalism (CRITICAL)**: To optimize for performance and file size, you MUST abstract the environment into the absolute minimum number of shapes possible. Use large, flat, geometric primitives (rectangles, basic polygons, large sweeping paths) instead of complex linework. 
    - DO NOT draw individual bricks, leaves, tiles, or texture details.
@@ -25,15 +25,15 @@ CRITICAL REQUIREMENTS:
    *Note: Within these 3 master layers, you may create sub-groups to establish micro-layering (e.g., placing a desk behind a chair inside bg_midground).*
 5. **No Flat JPEGs**: Do not embed raster images using <image>. Pure vector paths only.
 6. **Interaction Nulls (Props)**: If there are crucial semantic objects in the background a character might sit on or touch (e.g., a chair, a steering wheel, a door handle), you must wrap their shape in a uniquely ID'd group (e.g., \`<g id="prop_chair">\`) and log that ID in the \`interactionNulls\` array in the JSON. You MUST also provide the exact (x, y) absolute coordinates of that prop's interactive anchor point in the \`bones\` array.
-7. **Complete Scene**: Ensure the background is fully drawn top-to-bottom within the 1000x1000 box. Do not leave blank white void where the characters used to stand. Fill in the missing ground/walls behind them.
+7. **Complete Scene**: Ensure the background is fully drawn across the entire 1920x1080 stage. Do not leave blank void where the characters used to stand. Fill in the missing ground/walls behind them.
 
 CRITICAL SHAPE: You must output ONLY a SINGLE valid JSON object matching this exact structure:
 \`\`\`json
 {
-  "svg_data": "<svg viewBox='0 0 1000 1000'>...</svg>",
+  "svg_data": "<svg viewBox='0 0 1920 1080'>...</svg>",
   "rig_data": {
     "bones": [
-      { "id": "prop_chair", "pivot": { "x": 500, "y": 800 } }
+      { "id": "prop_chair", "pivot": { "x": 960, "y": 950 } }
     ],
     "interactionNulls": ["prop_chair"]
   }
@@ -128,7 +128,7 @@ function postProcessBackgroundSVG(rawSvgString: string, rigMap: DraftsmanData["r
 
     // 1. Enforce ViewBox
     if (!svgElement.hasAttribute("viewBox")) {
-        svgElement.setAttribute("viewBox", "0 0 1000 1000");
+        svgElement.setAttribute("viewBox", "0 0 1920 1080");
     }
 
     // 2. Identify or Create the 3 mandatory layers
