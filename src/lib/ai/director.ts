@@ -126,6 +126,7 @@ CRITICAL: Your response MUST contain TWO things:
     let jsonParsed = false;
     let imageIndex = 0;
     const bufferedImages: string[] = []; // Buffer images until JSON is parsed
+    let lastUsage: { promptTokenCount?: number; candidatesTokenCount?: number } = {};
 
     // Helper to attempt JSON extraction and parsing
     const tryParseJson = (text: string, isFinal: boolean = false): { type: 'story', data: StoryGenerationData } | null => {
@@ -158,6 +159,8 @@ CRITICAL: Your response MUST contain TWO things:
     };
 
     for await (const chunk of responseStream) {
+        if (chunk.usageMetadata) lastUsage = chunk.usageMetadata;
+
         if (!chunk.candidates || chunk.candidates.length === 0 || !chunk.candidates[0].content || !chunk.candidates[0].content.parts) {
             // Log blocked or empty chunks for debugging
             if (chunk.candidates && chunk.candidates[0]) {
@@ -213,6 +216,15 @@ CRITICAL: Your response MUST contain TWO things:
                 imageIndex++;
             }
         }
+    }
+
+    // Yield final token usage so callers can show image generation cost
+    if (lastUsage.promptTokenCount !== undefined || lastUsage.candidatesTokenCount !== undefined) {
+        yield {
+            type: 'usage' as const,
+            promptTokens: lastUsage.promptTokenCount || 0,
+            candidateTokens: lastUsage.candidatesTokenCount || 0,
+        };
     }
 
     // Final attempt: parse JSON if it still hasn't been parsed

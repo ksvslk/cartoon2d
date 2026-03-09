@@ -6,6 +6,7 @@ import { StoryGenerationData } from "@/lib/schema/story";
 export type StreamResult =
     | { type: 'story', data: StoryGenerationData }
     | { type: 'image', index: number, data: string }
+    | { type: 'usage', promptTokens: number, candidateTokens: number }
     | { type: 'error', error: string };
 
 export async function* processScenePromptStream(prompt: string, contextBeats?: StoryGenerationData['beats'], options?: { singleBeat?: boolean }, actorReferences?: Record<string, string>): AsyncGenerator<StreamResult, void, unknown> {

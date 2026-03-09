@@ -49,6 +49,10 @@ export default function Home() {
   // Auto-Animate Macro State
   const [animatingSceneIndex, setAnimatingSceneIndex] = useState<number | null>(null);
   const [animatingLogs, setAnimatingLogs] = useState<string[]>([]);
+  // Persistent per-scene logs that survive after animation completes
+  const [completedAnimLogs, setCompletedAnimLogs] = useState<Record<number, string[]>>({});
+  // Per-beat image generation cost (from Gemini usage metadata)
+  const [beatGenerationCosts, setBeatGenerationCosts] = useState<Record<number, { tokens: number; cost: number }>>({});
 
   // Stage Playback State
   const [isPlaying, setIsPlaying] = useState(false);
@@ -60,10 +64,22 @@ export default function Home() {
   const [selectedSceneIndex, setSelectedSceneIndex] = useState<number>(0);
   const [selectedActionIndex, setSelectedActionIndex] = useState<number | null>(null);
 
-  // Timeline Playhead State
+  // Timeline Playhead & Frame State
   const [playheadPos, setPlayheadPos] = useState<number>(0);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
+  const [fps, setFps] = useState<12 | 24 | 30>(24);
   const timelineRef = useRef<HTMLDivElement>(null);
+
+  // Total duration of the selected scene (seconds), used for frame math
+  const totalDuration = (() => {
+    const beat = storyData?.beats[selectedSceneIndex];
+    if (!beat || beat.actions.length === 0) return 10;
+    return Math.max(2, ...beat.actions.map(a => a.duration_seconds || 2));
+  })();
+
+  const currentTimeSeconds = (playheadPos / 100) * totalDuration;
+  const currentFrame = Math.round(currentTimeSeconds * fps);
+  const totalFrames  = Math.round(totalDuration * fps);
 
   useEffect(() => {
     if (!isDraggingPlayhead) return;
@@ -73,7 +89,8 @@ export default function Home() {
       const rect = timelineRef.current.getBoundingClientRect();
       let newX = e.clientX - rect.left;
       newX = Math.max(0, Math.min(newX, rect.width));
-      setPlayheadPos((newX / rect.width) * 100);
+      const newPercent = (newX / rect.width) * 100;
+      setPlayheadPos(newPercent);
     };
 
     const handleMouseUp = () => {
@@ -88,19 +105,22 @@ export default function Home() {
     };
   }, [isDraggingPlayhead]);
 
-  // Simulate playback visually
+  // Advance playhead in real-time when playing
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (isPlaying) {
+      const stepMs = 1000 / fps;
+      const stepPct = (1 / totalFrames) * 100;
       interval = setInterval(() => {
         setPlayheadPos(prev => {
-          if (prev >= 100) return 0;
-          return prev + 0.5;
+          if (prev >= 100) { setIsPlaying(false); return 0; }
+          return prev + stepPct;
         });
-      }, 50);
+      }, stepMs);
     }
     return () => clearInterval(interval);
-  }, [isPlaying]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, fps, totalFrames]);
 
   // Panel Editing State
   const [editingBeatIndex, setEditingBeatIndex] = useState<number | null>(null);
@@ -340,6 +360,25 @@ export default function Home() {
             }
             return { ...prev, beats: newBeats };
           });
+        } else if (chunk.type === 'usage') {
+          // Store generation cost split evenly across the newly generated beats
+          const totalTokens = chunk.promptTokens + chunk.candidateTokens;
+          const totalCost = (chunk.promptTokens * 0.00000125) + (chunk.candidateTokens * 0.000005);
+          setStoryData(prev => {
+            if (!prev) return prev;
+            const newBeatCount = prev.beats.length - initialBeatsLength;
+            if (newBeatCount <= 0) return prev;
+            const costPerBeat = totalCost / newBeatCount;
+            const tokensPerBeat = Math.round(totalTokens / newBeatCount);
+            setBeatGenerationCosts(prevCosts => {
+              const updated = { ...prevCosts };
+              for (let i = initialBeatsLength; i < prev.beats.length; i++) {
+                updated[i] = { tokens: tokensPerBeat, cost: costPerBeat };
+              }
+              return updated;
+            });
+            return prev;
+          });
         }
       }
     } catch (err: unknown) {
@@ -480,49 +519,59 @@ export default function Home() {
 
   const handleAnimateScene = async (index: number) => {
     if (!storyData || !storyData.beats[index]) return;
-    
+
+    // Clear any previous completed logs for this scene
+    setCompletedAnimLogs(prev => { const n = { ...prev }; delete n[index]; return n; });
+
     setAnimatingSceneIndex(index);
     setAnimatingLogs(["Initializing automation macro..."]);
     setSelectedSceneIndex(index);
     const beat = storyData.beats[index];
 
+    // Local accumulator so we can capture the full log on completion
+    const localLogs: string[] = ["Initializing automation macro..."];
+    const addLog = (msg: string) => {
+      localLogs.push(msg);
+      setAnimatingLogs([...localLogs]);
+    };
+
     let totalTokens = 0;
     let apiCalls = 0;
     let totalCostEst = 0;
 
-    const logUsage = (usage: any) => {
+    const logUsage = (usage: any, label?: string) => {
       const promptTokens = usage?.promptTokenCount || 0;
       const candidateTokens = usage?.candidatesTokenCount || 0;
       const total = promptTokens + candidateTokens;
       totalTokens += total;
-      
+
       // Gemini 1.5 Pro approx cost (USD)
       const cost = (promptTokens * 0.00000125) + (candidateTokens * 0.000005);
       totalCostEst += cost;
-      
-      setAnimatingLogs(prev => [...prev, `   [Usage: ${total} tokens | ~$${cost.toFixed(4)}]`]);
+
+      addLog(`   [${label || 'Usage'}: ${total} tokens | ~$${cost.toFixed(4)}]`);
     };
 
     try {
       // 1. Generate Background if missing
       if (!beat.drafted_background && beat.image_data) {
-        setAnimatingLogs(prev => [...prev, "> Starting Set Designer AI..."]);
-        setAnimatingLogs(prev => [...prev, "> Extracting 3-layer parallax environment..."]);
-        
+        addLog("> Starting Set Designer AI...");
+        addLog("> Extracting 3-layer parallax environment...");
+
         apiCalls++;
         const result = await processSetDesignerPrompt(beat.image_data, beat.narrative);
-        
+
         setStoryData(prev => {
           if (!prev) return prev;
           const newBeats = [...prev.beats];
           newBeats[index] = { ...newBeats[index], drafted_background: result.data };
           return { ...prev, beats: newBeats };
         });
-        
-        setAnimatingLogs(prev => [...prev, "✓ Environment vector rig compiled."]);
-        logUsage(result.usage);
+
+        addLog("✓ Environment vector rig compiled.");
+        logUsage(result.usage, "Set Designer");
       } else {
-        setAnimatingLogs(prev => [...prev, "✓ Environment rig found in cache."]);
+        addLog("✓ Environment rig found in cache.");
       }
 
       // 2. Generate Actors if missing
@@ -531,7 +580,6 @@ export default function Home() {
         const actor = storyData.actors_detected.find(a => a.id === actorId);
         if (actor) {
           if (!actor.drafted_rig && actorReferences[actorId]) {
-            // Determine required views based on actions
             const actorActions = beat.actions.filter(a => a.actor_id === actorId);
             const requiredViews = new Set<string>();
             actorActions.forEach(a => {
@@ -542,13 +590,13 @@ export default function Home() {
             if (requiredViews.size === 0) requiredViews.add('view_front');
             const viewsArray = Array.from(requiredViews);
 
-            setAnimatingLogs(prev => [...prev, `> Starting Draftsman AI for '${actor.name}'...`]);
-            setAnimatingLogs(prev => [...prev, `> Rigging A-Pose skeleton & visemes (${viewsArray.join(', ')})...`]);
-            
+            addLog(`> Starting Draftsman AI for '${actor.name}'...`);
+            addLog(`> Rigging A-Pose skeleton & visemes (${viewsArray.join(', ')})...`);
+
             apiCalls++;
             const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}`;
             const result = await processDraftsmanPrompt(actorReferences[actorId], description, viewsArray);
-            
+
             setStoryData(prev => {
               if (!prev) return prev;
               return {
@@ -558,31 +606,29 @@ export default function Home() {
                 )
               };
             });
-            
-            setAnimatingLogs(prev => [...prev, `✓ '${actor.name}' SVG rig assembled.`]);
-            logUsage(result.usage);
+
+            addLog(`✓ '${actor.name}' SVG rig assembled.`);
+            logUsage(result.usage, `Draftsman (${actor.name})`);
           } else if (actor.drafted_rig) {
-             setAnimatingLogs(prev => [...prev, `✓ '${actor.name}' rig found in cache.`]);
+            addLog(`✓ '${actor.name}' rig found in cache.`);
           }
         }
       }
 
-      setAnimatingLogs(prev => [...prev, "✓ Stage ready. Dispatching GSAP context..."]);
-      
-      if (apiCalls > 0) {
-        setAnimatingLogs(prev => [...prev, "--- AUTOMATION COMPLETE ---"]);
-        setAnimatingLogs(prev => [...prev, `Total API Calls: ${apiCalls}`]);
-        setAnimatingLogs(prev => [...prev, `Total Est. Cost: $${totalCostEst.toFixed(4)} (${totalTokens} tokens)`]);
-      }
+      addLog("✓ Stage ready. Dispatching GSAP context...");
+      addLog("─────────────────────────────");
+      addLog(`API Calls: ${apiCalls} | Total tokens: ${totalTokens}`);
+      addLog(`Scene cost: ~$${totalCostEst.toFixed(5)}`);
+      addLog("─────────────────────────────");
 
     } catch (err: any) {
       console.error("Animation prep failed", err);
-      setAnimatingLogs(prev => [...prev, `❌ Error: ${err.message || 'Pipeline failed'}`]);
+      addLog(`❌ Error: ${err.message || 'Pipeline failed'}`);
     } finally {
-      setTimeout(() => {
-        setAnimatingSceneIndex(null);
-        setAnimatingLogs([]);
-      }, Math.max(2500, apiCalls * 1500)); // stay open longer if it did lots of work
+      // Persist logs so they remain visible below the scene image
+      setCompletedAnimLogs(prev => ({ ...prev, [index]: [...localLogs] }));
+      setAnimatingSceneIndex(null);
+      setAnimatingLogs([]);
     }
   };
 
@@ -1045,6 +1091,15 @@ export default function Home() {
                               )}
                             </div>
 
+                            {/* Image generation cost badge */}
+                            {beatGenerationCosts[index] && (
+                              <div className="px-3 py-1 bg-neutral-50 dark:bg-[#0a0a0a] border-t border-neutral-100 dark:border-neutral-800/50 flex items-center gap-2 text-[9px] font-mono text-neutral-400 dark:text-neutral-600">
+                                <span className="text-neutral-500 dark:text-neutral-500">Image gen:</span>
+                                <span className="text-amber-600 dark:text-amber-500 font-semibold">~${beatGenerationCosts[index].cost.toFixed(5)}</span>
+                                <span className="text-neutral-400 dark:text-neutral-600">{beatGenerationCosts[index].tokens.toLocaleString()} tokens</span>
+                              </div>
+                            )}
+
                             {/* Narrative + metadata */}
                             <div className="p-3 pt-2">
                               <p
@@ -1116,18 +1171,49 @@ export default function Home() {
                               </div>
                             </div>
                             
-                            {/* Auto-Animate Macro Button */}
+                            {/* Auto-Animate Macro Button + Persistent Log Console */}
                             <div className="border-t border-neutral-200/80 dark:border-neutral-800/50 bg-neutral-50/50 dark:bg-[#0a0a0a]/50">
                               {animatingSceneIndex === index ? (
-                                <div className="p-3 bg-neutral-900 font-mono text-[10px] text-emerald-400 h-24 overflow-y-auto flex flex-col gap-1 rounded-b-xl shadow-inner relative custom-scrollbar">
+                                // Live: show spinning log while running
+                                <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
                                   <div className="absolute top-2 right-2">
                                     <Loader2 size={12} className="animate-spin text-emerald-500 opacity-50" />
                                   </div>
                                   {animatingLogs.map((log, i) => (
-                                    <div key={i} className="animate-in fade-in slide-in-from-bottom-1">{log}</div>
+                                    <div key={i} className="animate-in fade-in slide-in-from-bottom-1 leading-relaxed">{log}</div>
+                                  ))}
+                                </div>
+                              ) : completedAnimLogs[index] ? (
+                                // Completed: persistent log with dismiss + re-run button
+                                <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 max-h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
+                                  <div className="absolute top-2 right-2 flex items-center gap-1">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleAnimateScene(index);
+                                      }}
+                                      title="Re-run animation pipeline"
+                                      className="text-neutral-500 hover:text-emerald-400 transition-colors"
+                                    >
+                                      <Play size={10} className="fill-current" />
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setCompletedAnimLogs(prev => { const n = { ...prev }; delete n[index]; return n; });
+                                      }}
+                                      title="Dismiss log"
+                                      className="text-neutral-500 hover:text-red-400 transition-colors text-[11px] leading-none"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                  {completedAnimLogs[index].map((log, i) => (
+                                    <div key={i} className="leading-relaxed">{log}</div>
                                   ))}
                                 </div>
                               ) : (
+                                // Idle: show Animate button
                                 <div className="p-2">
                                   <button
                                     onClick={(e) => {
@@ -1307,12 +1393,21 @@ export default function Home() {
 
                       {/* 1. Timeline Toolbar (Global Transport Controls) */}
                       <div className="h-12 border-b border-neutral-200 dark:border-neutral-800/60 bg-neutral-50 dark:bg-[#0a0a0a] flex items-center px-4 shrink-0 shadow-sm z-30 relative transition-colors duration-300">
-                        {/* Left Side: Scene info */}
-                        <div className="w-48 flex items-center gap-3 shrink-0">
-                          <div className="text-[10px] font-bold text-neutral-600 dark:text-neutral-300 uppercase tracking-widest bg-white dark:bg-neutral-900 px-2 py-1.5 rounded border border-neutral-200 dark:border-neutral-800 shadow-sm dark:shadow-none transition-colors">Scene 1</div>
-                          <button className="text-neutral-400 dark:text-neutral-500 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors" title="Timeline Settings">
-                            <SlidersHorizontal size={14} />
-                          </button>
+                        {/* Left Side: Scene info + FPS */}
+                        <div className="w-48 flex items-center gap-2 shrink-0">
+                          <div className="text-[10px] font-bold text-neutral-600 dark:text-neutral-300 uppercase tracking-widest bg-white dark:bg-neutral-900 px-2 py-1.5 rounded border border-neutral-200 dark:border-neutral-800 shadow-sm dark:shadow-none transition-colors">
+                            Scene {selectedSceneIndex + 1}
+                          </div>
+                          {/* FPS selector */}
+                          <div className="flex items-center bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded overflow-hidden shadow-sm">
+                            {([12, 24, 30] as const).map(f => (
+                              <button
+                                key={f}
+                                onClick={() => setFps(f)}
+                                className={`px-1.5 py-1 text-[9px] font-bold transition-colors ${fps === f ? 'bg-cyan-500 text-white' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}`}
+                              >{f}</button>
+                            ))}
+                          </div>
                         </div>
 
                         {/* Center: Transport Controls */}
@@ -1342,33 +1437,56 @@ export default function Home() {
                           </button>
                         </div>
 
-                        {/* Right Side flex spacer */}
-                        <div className="w-48 flex justify-end shrink-0">
-                          <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-500 font-bold bg-emerald-50 dark:bg-emerald-500/10 px-2 py-1 rounded border border-emerald-200 dark:border-emerald-500/20 shadow-sm dark:shadow-none transition-colors">00:00:00</span>
+                        {/* Right Side: frame counter */}
+                        <div className="w-48 flex justify-end items-center gap-2 shrink-0">
+                          <span className="text-[10px] font-mono text-neutral-500 dark:text-neutral-500">{fps}fps</span>
+                          <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-500 font-bold bg-emerald-50 dark:bg-emerald-500/10 px-2 py-1 rounded border border-emerald-200 dark:border-emerald-500/20 shadow-sm dark:shadow-none transition-colors">
+                            {String(currentFrame).padStart(3, '0')} / {String(totalFrames).padStart(3, '0')}
+                          </span>
                         </div>
                       </div>
 
                       {/* 2. Timeline Ruler Header (Track Labels & Time Ticks) */}
                       <div className="h-8 border-b border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#111] flex items-center shrink-0 z-20 relative transition-colors duration-300">
                         <div className="w-48 border-r border-neutral-200 dark:border-neutral-800/60 h-full flex items-center px-4 bg-neutral-50 dark:bg-[#0a0a0a] shrink-0 transition-colors">
-                          <span className="text-[10px] text-neutral-500 dark:text-neutral-600 font-bold uppercase tracking-wider">Tracks</span>
+                          <span className="text-[10px] text-neutral-500 dark:text-neutral-600 font-bold uppercase tracking-wider">Layers</span>
                         </div>
-                        <div className="flex-1 h-full relative bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iMTAwJSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJyZ2JhKDE1MCwxNTAsMTUwLDAuMikiIHg9IjAiIHk9IjAiLz48L3N2Zz4=')] dark:bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iMTAwJSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuMDUpIiB5PSIwIi8+PC9zdmc+')] bg-repeat-x transition-colors" ref={timelineRef}>
+                        <div className="flex-1 h-full relative overflow-hidden transition-colors" ref={timelineRef}>
 
-                          {/* Playhead Time Ruler & Beautiful Knob */}
-                          <div className="absolute top-0 bottom-[-500px] w-[1px] bg-emerald-500/80 z-50 pointer-events-none dark:mix-blend-screen shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.8)] transition-shadow" style={{ left: `${playheadPos}%` }}>
-                            {/* The Knob */}
-                            <div 
-                              className={`absolute top-0 left-1/2 -translate-x-1/2 w-3 h-4 bg-gradient-to-b from-emerald-400 to-emerald-600 rounded-b-[3px] cursor-grab active:cursor-grabbing border-b border-l border-r border-emerald-300 shadow-[0_2px_10px_rgba(16,185,129,0.2)] dark:shadow-[0_2px_10px_rgba(16,185,129,0.5)] pointer-events-auto flex items-center justify-center flex-col gap-[2px] ${isDraggingPlayhead ? 'scale-110' : ''}`}
+                          {/* Playhead line + knob */}
+                          <div className="absolute top-0 bottom-[-500px] w-[1px] bg-emerald-500/80 z-50 pointer-events-none dark:mix-blend-screen shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.8)]" style={{ left: `${playheadPos}%` }}>
+                            <div
+                              className={`absolute top-0 left-1/2 -translate-x-1/2 w-3 h-4 bg-gradient-to-b from-emerald-400 to-emerald-600 rounded-b-[3px] cursor-grab active:cursor-grabbing border-b border-l border-r border-emerald-300 shadow-[0_2px_10px_rgba(16,185,129,0.5)] pointer-events-auto flex items-center justify-center flex-col gap-[2px] ${isDraggingPlayhead ? 'scale-110' : ''}`}
                               onMouseDown={() => setIsDraggingPlayhead(true)}
                             >
-                              <span className="w-1.5 h-px bg-emerald-200/80 dark:bg-emerald-200/50"></span>
-                              <span className="w-1.5 h-px bg-emerald-200/80 dark:bg-emerald-200/50"></span>
+                              <span className="w-1.5 h-px bg-emerald-200/80"></span>
+                              <span className="w-1.5 h-px bg-emerald-200/80"></span>
                             </div>
                           </div>
 
-                          <div className="flex items-end h-full px-2 gap-[28px] text-[9px] text-neutral-400 dark:text-neutral-600 font-mono pb-1 select-none pointer-events-none transition-colors">
-                            <span>0:00</span><span>0:01</span><span>0:02</span><span>0:03</span><span>0:04</span><span>0:05</span>
+                          {/* Frame grid + second labels */}
+                          <div className="absolute inset-0 flex items-end pb-1 pointer-events-none select-none">
+                            {Array.from({ length: Math.ceil(totalDuration) + 1 }).map((_, s) => {
+                              const pct = (s / totalDuration) * 100;
+                              return (
+                                <div key={s} className="absolute top-0 bottom-0 flex flex-col items-center" style={{ left: `${pct}%` }}>
+                                  <div className="w-px h-3 bg-neutral-300 dark:bg-neutral-700 mt-auto" />
+                                  <span className="text-[8px] font-mono text-neutral-400 dark:text-neutral-600 mt-0.5 -translate-x-1/2">{s}s</span>
+                                </div>
+                              );
+                            })}
+                            {/* Minor frame ticks (every N frames based on fps) */}
+                            {Array.from({ length: totalFrames + 1 }).map((_, f) => {
+                              if (f % fps === 0) return null; // skip second marks (already drawn)
+                              const tickInterval = fps <= 12 ? 1 : fps <= 24 ? 4 : 6;
+                              if (f % tickInterval !== 0) return null;
+                              const pct = (f / totalFrames) * 100;
+                              return (
+                                <div key={`f${f}`} className="absolute bottom-1" style={{ left: `${pct}%` }}>
+                                  <div className="w-px h-1.5 bg-neutral-200 dark:bg-neutral-800" />
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       </div>
@@ -1377,41 +1495,87 @@ export default function Home() {
                       <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col">
                         {!storyData || storyData.beats.length === 0 ? (
                            <div className="h-full flex items-center justify-center text-xs text-neutral-500 font-mono">No scene selected.</div>
-                        ) : (
-                          <>
-                            {/* Dynamic Actor Tracks */}
-                            {Array.from(new Set(storyData.beats[selectedSceneIndex].actions.map(a => a.actor_id))).map(actorId => {
-                              const action = storyData.beats[selectedSceneIndex].actions.find(a => a.actor_id === actorId);
-                              const actorData = storyData.actors_detected.find(a => a.id === actorId);
-                              const isSelected = selectedActionIndex !== null && storyData.beats[selectedSceneIndex].actions[selectedActionIndex]?.actor_id === actorId;
-                              
-                              // Calculate a rough width based on duration (e.g. 10% per second)
-                              const widthPct = Math.min(100, Math.max(10, (action?.duration_seconds || 2) * 10));
-
-                              return (
-                                <div key={`track-${actorId}`} className="h-10 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
-                                  <div className="w-48 h-full flex items-center px-4 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors">
-                                    <span className="text-xs text-neutral-700 dark:text-neutral-300 font-medium truncate pr-2">{actorData?.name || actorId}</span>
-                                  </div>
-                                  <div className="flex-1 h-full py-1.5 px-2 relative">
-                                    {action && (
-                                      <div 
-                                        className={`absolute left-[5%] h-[70%] top-[15%] rounded flex items-center px-2 cursor-pointer transition-colors ${isSelected ? 'bg-cyan-500/30 border border-cyan-400 text-cyan-700 dark:text-cyan-300' : 'bg-blue-100 dark:bg-blue-600/20 border border-blue-200 dark:border-blue-500/40 hover:bg-blue-200 dark:hover:bg-blue-600/30 text-blue-700 dark:text-blue-300'}`}
-                                        style={{ width: `${widthPct}%` }}
-                                        onClick={() => {
-                                          const actionIdx = storyData.beats[selectedSceneIndex].actions.findIndex(a => a === action);
-                                          setSelectedActionIndex(actionIdx);
-                                        }}
-                                      >
-                                        <span className="text-[10px] font-mono truncate">{action.motion}({action.style})</span>
-                                      </div>
-                                    )}
+                        ) : (() => {
+                          const beat = storyData.beats[selectedSceneIndex];
+                          return (
+                            <>
+                              {/* Background / Environment Layer */}
+                              <div className="h-9 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
+                                <div className="w-48 h-full flex items-center gap-2 px-4 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors">
+                                  <Mountain size={10} className="text-neutral-400 dark:text-neutral-600 shrink-0" />
+                                  <span className="text-[10px] text-neutral-500 dark:text-neutral-500 font-medium truncate">Background</span>
+                                  {beat.drafted_background && <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 ml-auto shrink-0" title="Background generated" />}
+                                </div>
+                                <div className="flex-1 h-full relative overflow-hidden">
+                                  {/* Ambient loop strip — full width, always on */}
+                                  <div className="absolute inset-y-1.5 left-0 right-0 rounded bg-repeating-gradient opacity-50 dark:opacity-30"
+                                    style={{ background: 'repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(99,102,241,0.15) 8px, rgba(99,102,241,0.15) 9px)' }}>
+                                    <div className="absolute inset-0 border border-indigo-200 dark:border-indigo-700/30 rounded" />
+                                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[9px] font-mono text-indigo-400 dark:text-indigo-500 select-none">ambient ↻</span>
                                   </div>
                                 </div>
-                              );
-                            })}
-                          </>
-                        )}
+                              </div>
+
+                              {/* Actor Layers */}
+                              {Array.from(new Set(beat.actions.map(a => a.actor_id))).map(actorId => {
+                                const action = beat.actions.find(a => a.actor_id === actorId);
+                                const actorData = storyData.actors_detected.find(a => a.id === actorId);
+                                const isSelected = selectedActionIndex !== null && beat.actions[selectedActionIndex]?.actor_id === actorId;
+                                const hasRig = !!actorData?.drafted_rig;
+
+                                // Width of the timeline clip = fraction of totalDuration
+                                const clipWidthPct = Math.min(100, ((action?.duration_seconds || 2) / totalDuration) * 100);
+                                const isIdleMotion = !action || ['idle', 'stare'].includes(action.motion.toLowerCase());
+
+                                return (
+                                  <div key={`track-${actorId}`} className="h-9 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
+                                    <div className="w-48 h-full flex items-center gap-2 px-3 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors">
+                                      {/* Actor thumbnail */}
+                                      <div className="w-5 h-5 rounded shrink-0 bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                                        {actorReferences[actorId]
+                                          ? <img src={actorReferences[actorId]} alt="" className="w-full h-full object-cover" />
+                                          : <div className="w-full h-full flex items-center justify-center text-[8px] text-neutral-400">?</div>
+                                        }
+                                      </div>
+                                      <span className="text-[10px] text-neutral-700 dark:text-neutral-300 font-medium truncate flex-1">{actorData?.name || actorId}</span>
+                                      {hasRig && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" title="Rig ready" />}
+                                    </div>
+                                    <div className="flex-1 h-full relative overflow-hidden">
+                                      {/* Ambient loop strip (always present behind the clip) */}
+                                      <div className="absolute inset-y-1.5 left-0 right-0 rounded"
+                                        style={{ background: 'repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(99,102,241,0.08) 8px, rgba(99,102,241,0.08) 9px)', border: '1px solid rgba(99,102,241,0.15)' }}>
+                                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-indigo-300 dark:text-indigo-700 select-none">idle ↻</span>
+                                      </div>
+
+                                      {/* Timeline action clip (on top of ambient strip) */}
+                                      {action && !isIdleMotion && (
+                                        <div
+                                          className={`absolute left-0 inset-y-1.5 rounded flex items-center px-2 cursor-pointer transition-colors z-10 ${
+                                            isSelected
+                                              ? 'bg-cyan-500/40 border border-cyan-400 text-cyan-700 dark:text-cyan-300'
+                                              : 'bg-blue-100 dark:bg-blue-600/25 border border-blue-300 dark:border-blue-500/50 hover:bg-blue-200 dark:hover:bg-blue-600/35 text-blue-700 dark:text-blue-300'
+                                          }`}
+                                          style={{ width: `${clipWidthPct}%` }}
+                                          onClick={() => {
+                                            const idx = beat.actions.findIndex(a => a === action);
+                                            setSelectedActionIndex(idx);
+                                          }}
+                                        >
+                                          {/* Start keyframe diamond */}
+                                          <span className="absolute -left-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
+                                          <span className="text-[9px] font-mono truncate pl-1">{action.motion}</span>
+                                          {action.style && <span className="text-[8px] font-mono text-blue-400 dark:text-blue-500 ml-1 truncate">({action.style})</span>}
+                                          {/* End keyframe diamond */}
+                                          <span className="absolute -right-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>
@@ -1438,8 +1602,59 @@ export default function Home() {
                   }
                   
                   const beat = storyData.beats[selectedSceneIndex];
-                  if (!beat || selectedActionIndex === null || !beat.actions[selectedActionIndex]) {
-                    return <div className="mt-8 text-center text-[10px] text-neutral-400 dark:text-neutral-600 font-mono transition-colors">Click an action tag on a scene to edit its properties.</div>;
+                  if (!beat) {
+                    return <div className="mt-8 text-center text-[10px] text-neutral-400 dark:text-neutral-600 font-mono transition-colors">Awaiting story data...</div>;
+                  }
+
+                  // ── Animation Overview (shown when nothing selected) ──────
+                  if (selectedActionIndex === null || !beat.actions[selectedActionIndex]) {
+                    return (
+                      <div className="space-y-5">
+                        <div>
+                          <h3 className="text-[9px] font-bold uppercase tracking-widest text-neutral-400 dark:text-neutral-600 mb-2">Scene Animations</h3>
+                          <div className="space-y-1.5">
+                            {/* Background ambient */}
+                            <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-800/20">
+                              <span className="text-indigo-400 text-[9px] font-mono">↻</span>
+                              <span className="text-[10px] text-neutral-600 dark:text-neutral-400 flex-1">Background ambient</span>
+                              <span className="text-[9px] text-indigo-400 font-mono">∞</span>
+                            </div>
+                            {/* Per-actor animations */}
+                            {beat.actions.map((action, idx) => {
+                              const actorData = storyData.actors_detected.find(a => a.id === action.actor_id);
+                              const isIdle = ['idle', 'stare'].includes(action.motion.toLowerCase());
+                              return (
+                                <div key={idx} className="rounded border border-neutral-100 dark:border-neutral-800/40 overflow-hidden">
+                                  <div className="px-2 py-1 bg-neutral-50 dark:bg-neutral-900/50 flex items-center gap-1.5">
+                                    <div className="w-3 h-3 rounded-sm bg-neutral-200 dark:bg-neutral-800 overflow-hidden shrink-0">
+                                      {actorReferences[action.actor_id] && <img src={actorReferences[action.actor_id]} alt="" className="w-full h-full object-cover" />}
+                                    </div>
+                                    <span className="text-[10px] font-semibold text-neutral-600 dark:text-neutral-300 flex-1 truncate">{actorData?.name || action.actor_id}</span>
+                                  </div>
+                                  {/* Ambient row */}
+                                  <div className="flex items-center gap-2 px-2 py-1 border-t border-neutral-100 dark:border-neutral-800/30">
+                                    <span className="text-indigo-400 text-[9px] font-mono">↻</span>
+                                    <span className="text-[9px] text-neutral-500 dark:text-neutral-500 flex-1">idle / breathing</span>
+                                    <span className="text-[8px] text-indigo-400 font-mono">∞</span>
+                                  </div>
+                                  {/* Timeline clip row (only if non-idle) */}
+                                  {!isIdle && (
+                                    <div
+                                      className="flex items-center gap-2 px-2 py-1 border-t border-neutral-100 dark:border-neutral-800/30 bg-blue-50/50 dark:bg-blue-900/10 cursor-pointer hover:bg-blue-100/60 dark:hover:bg-blue-900/20 transition-colors"
+                                      onClick={() => setSelectedActionIndex(idx)}
+                                    >
+                                      <span className="text-blue-400 text-[9px] font-mono">▶</span>
+                                      <span className="text-[9px] text-neutral-600 dark:text-neutral-400 flex-1">{action.motion} <span className="text-neutral-400">({action.style})</span></span>
+                                      <span className="text-[8px] text-blue-400 font-mono">{action.duration_seconds}s</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    );
                   }
 
                   const action = beat.actions[selectedActionIndex];
