@@ -1,37 +1,66 @@
 import gsap from "gsap";
-import { StoryBeatData } from "../schema/story";
-import { DraftsmanData } from "../schema/rig";
-import type { RigBoneSchema } from "../schema/rig";
-import { z } from "zod";
+import { CompiledSceneData, StoryBeatData } from "../schema/story";
+import { DraftsmanData, AnimationKeyframe } from "../schema/rig";
+import { inferAutoTargetTransform, motionNeedsTarget, normalizeMotionKey, suggestMotionAliases } from "./semantics";
 
-type Bone = z.infer<typeof RigBoneSchema>;
+const ALL_VIEWS = ["view_front", "view_side_right", "view_3q_right", "view_top", "view_back"] as const;
+
+/** Show one view, hide all others for an actor group (immediate gsap.set). */
+function switchView(actorId: string, targetView: string) {
+  ALL_VIEWS.forEach(v => {
+    gsap.set(`#actor_group_${actorId} #${v}`, {
+      display: v === targetView ? "inline" : "none",
+    });
+  });
+}
 
 export interface AnimationContext {
   container: HTMLElement;
   beat: StoryBeatData;
+  compiledScene?: CompiledSceneData | null;
   availableRigs: Record<string, DraftsmanData>;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Style Modulation ──────────────────────────────────────────────────────────
 
-function boneSide(bone: Bone): "left" | "right" | "center" {
-  const n = bone.id.toLowerCase();
-  if (/_l(_|$)/.test(n) || n.includes("left")  || n.startsWith("l_")) return "left";
-  if (/_r(_|$)/.test(n) || n.includes("right") || n.startsWith("r_")) return "right";
-  if (bone.pivot) {
-    if (bone.pivot.x < 450) return "left";
-    if (bone.pivot.x > 550) return "right";
-  }
-  return "center";
+/** Maps style adverbs to motion amplitude multipliers. */
+function styleAmplitude(style: string): number {
+  const s = style.toLowerCase();
+  if (/frantic|panic|wild|manic|extreme/.test(s)) return 1.8;
+  if (/fast|quick|swift|hurried|rushed/.test(s)) return 1.2;
+  if (/slow|lazy|sleepy|tired|groggy/.test(s)) return 0.7;
+  if (/subtle|gentle|soft|delicate/.test(s)) return 0.5;
+  if (/casual|relaxed|easy|chill/.test(s)) return 0.85;
+  return 1.0;
 }
 
-/** GSAP origin props — prefer svgOrigin (absolute SVG coords) when a pivot exists. */
-function pivotProps(bone: Bone): gsap.TweenVars {
-  if (bone.pivot) return { svgOrigin: `${bone.pivot.x} ${bone.pivot.y}` };
-  return { transformOrigin: "top center" };
+/** Maps style adverbs to speed multipliers (>1 = faster). */
+function styleSpeed(style: string): number {
+  const s = style.toLowerCase();
+  if (/frantic|panic|manic|wild/.test(s)) return 1.9;
+  if (/fast|quick|swift|hurried/.test(s)) return 1.5;
+  if (/slow|lazy|sleepy|tired/.test(s)) return 0.5;
+  if (/casual|relaxed|gentle/.test(s)) return 0.75;
+  return 1.0;
 }
 
-// ── Object Ambient Patterns ──────────────────────────────────────────────────
+/**
+ * Convert an infinite repeat (-1) to a finite count based on available time.
+ * One full cycle = tweenDuration * 2 when yoyo=true, tweenDuration otherwise.
+ */
+function calcRepeat(availableTime: number, tweenDuration: number, yoyo: boolean): number {
+  const cycle = yoyo ? tweenDuration * 2 : tweenDuration;
+  if (cycle <= 0) return 0;
+  return Math.max(0, Math.ceil(availableTime / cycle) - 1);
+}
+
+/** Scale a property value by amplitude, capping opacity at 1. */
+function scaleProp(prop: string, value: number, amp: number): number {
+  const scaled = value * amp;
+  return prop === "opacity" ? Math.min(1, scaled) : scaled;
+}
+
+// ── Object Ambient Patterns ───────────────────────────────────────────────────
 // SVG element IDs matching these patterns receive looping ambient animations.
 
 export const OBJECT_ANIM_PATTERNS: Array<{
@@ -98,10 +127,6 @@ export const OBJECT_ANIM_PATTERNS: Array<{
   },
 ];
 
-/**
- * Scan the container's DOM for SVG elements whose IDs match ambient patterns.
- * Returns descriptors so the UI can list them per-scene.
- */
 export function detectObjectAnimations(container: HTMLElement): Array<{ id: string; label: string }> {
   const result: Array<{ id: string; label: string }> = [];
   container.querySelectorAll("[id]").forEach(el => {
@@ -116,204 +141,441 @@ export function detectObjectAnimations(container: HTMLElement): Array<{ id: stri
   return result;
 }
 
-// ── Ambient Layer ─────────────────────────────────────────────────────────────
-/**
- * Always-on looping animations:
- *  • Character idle (breathing / micro-sway) for every actor in the beat.
- *  • Object ambient loops (fire flicker, smoke rise, etc.) detected by ID pattern.
- *
- * Start this immediately after the SVG is assembled.
- * Revert it when the scene changes or the component unmounts.
- */
-export function animateAmbient(context: AnimationContext): gsap.Context {
-  const { container, beat, availableRigs } = context;
-
-  return gsap.context(() => {
-    // Object animations — scan all SVG elements with recognised IDs
-    container.querySelectorAll("[id]").forEach(el => {
-      const id = el.getAttribute("id") || "";
-      for (const { regex, animate } of OBJECT_ANIM_PATTERNS) {
-        if (regex.test(id)) {
-          animate(el);
-          break;
-        }
-      }
-    });
-
-    // Character idle animations
-    beat.actions.forEach(action => {
-      applyIdle(action.actor_id, availableRigs[action.actor_id]);
-    });
-  }, container);
-}
-
-// ── Timeline Layer ─────────────────────────────────────────────────────────────
-/**
- * Scripted / keyframed animations driven by the play button.
- * Each action in the beat drives its actor: walk, panic, hide, etc.
- * Idle/stare motions are intentionally omitted here — ambient already handles them.
- */
-export function animateTimeline(context: AnimationContext): gsap.Context {
-  const { container, beat, availableRigs } = context;
-
-  return gsap.context(() => {
-    beat.actions.forEach(action => {
-      const id  = action.actor_id;
-      const rig = availableRigs[id];
-
-      // Default front-facing; walk overrides to side view
-      gsap.set(`#actor_group_${id} #view_front`,      { display: "inline" });
-      gsap.set(`#actor_group_${id} #view_side_right`, { display: "none"   });
-      gsap.set(`#actor_group_${id} #view_back`,       { display: "none"   });
-
-      const m = action.motion.toLowerCase();
-      console.log(`[Timeline] '${m}' → ${id}`);
-
-      switch (m) {
-        case "run":
-        case "walk":
-          applyWalkCycle(id, action, rig);
-          break;
-        case "panic":
-          applyPanic(id, rig);
-          break;
-        case "hide":
-          applyHide(id);
-          break;
-        // idle / stare: ambient covers this, nothing extra needed
-      }
-    });
-  }, container);
-}
-
-// ── Motion Templates ──────────────────────────────────────────────────────────
+// ── Generic Clip Player (ambient use only) ───────────────────────────────────
 
 /**
- * Walk / Run cycle.
- * Moves the whole group toward target_spatial_transform (if defined),
- * and drives EVERY rig bone with an alternating rotational cycle.
+ * Plays a named animation clip with repeat: -1 looping (for ambient idle).
+ * Falls back to a simple whole-body pulse if the clip is missing.
  */
-function applyWalkCycle(actorId: string, action: any, rig?: DraftsmanData) {
-  const duration = action.duration_seconds || 2;
-  const startX: number = action.spatial_transform?.x ?? 500;
-  const startY: number = action.spatial_transform?.y ?? 800;
-  const endX: number | undefined = action.target_spatial_transform?.x;
-  const endY: number | undefined = action.target_spatial_transform?.y;
-  const endScale: number | undefined = action.target_spatial_transform?.scale;
+function playClip(
+  actorId: string,
+  clipName: string,
+  rig: DraftsmanData | undefined,
+  container: HTMLElement,
+) {
+  const rawClip = rig?.rig_data.animation_clips?.[clipName];
 
-  const deltaX = endX !== undefined ? endX - startX : 0;
-  const deltaY = endY !== undefined ? endY - startY : 0;
-  const isMoving = Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10;
+  let keyframes: AnimationKeyframe[];
+  let clipView: string | undefined;
 
-  // Side view for walking
-  gsap.set(`#actor_group_${actorId} #view_front`,      { display: "none"   });
-  gsap.set(`#actor_group_${actorId} #view_side_right`, { display: "inline" });
-
-  // Translate group to destination
-  if (isMoving || endScale !== undefined) {
-    const props: gsap.TweenVars = { duration, ease: "power1.inOut" };
-    if (Math.abs(deltaX) > 10) props.x = `+=${deltaX}`;
-    if (Math.abs(deltaY) > 10) props.y = `+=${deltaY}`;
-    if (endScale !== undefined) { props.scaleX = endScale; props.scaleY = endScale; }
-    gsap.to(`#actor_group_${actorId}`, props);
-  }
-
-  if (!rig) return;
-
-  // Drive every bone in the rig with alternating left/right cycle
-  const stepDur    = 0.2;
-  const halfSwings = Math.max(1, Math.round(duration / stepDur)) - 1;
-
-  rig.rig_data.bones.forEach(bone => {
-    const side = boneSide(bone);
-    const [minR, maxR] = bone.rotationLimit ?? [-35, 35];
-    const amp = Math.max(Math.abs(minR), Math.abs(maxR));
-
-    const delay     = side === "right" ? stepDur : 0;
-    const direction = side === "right" ? -1 : 1;
-
-    gsap.to(`#actor_group_${actorId} #${bone.id}`, {
-      rotation: amp * direction,
-      duration: stepDur,
-      yoyo: true,
-      repeat: halfSwings,
-      delay,
-      ease: "sine.inOut",
-      overwrite: "auto",
-      ...pivotProps(bone),
-    });
-  });
-}
-
-/**
- * Idle / Stare.
- * Root bones: slow breathing squash-stretch.
- * Limb bones: tiny micro-sway so they don't look frozen.
- */
-function applyIdle(actorId: string, rig?: DraftsmanData) {
-  if (!rig) {
+  if (!rawClip) {
+    console.warn(`[ambient] No clip "${clipName}" for actor "${actorId}" — using fallback pulse`);
     gsap.to(`#actor_group_${actorId}`, {
-      scaleY: 1.02, scaleX: 0.99,
-      duration: 1.8, yoyo: true, repeat: -1, ease: "sine.inOut",
+      scaleY: 1.04, scaleX: 0.97,
+      duration: 1.6, yoyo: true, repeat: -1, ease: "sine.inOut",
       transformOrigin: "center bottom",
     });
     return;
   }
 
-  const rootBones = rig.rig_data.bones.filter(b => !b.parent);
-  const limbBones = rig.rig_data.bones.filter(b =>  b.parent);
+  if (Array.isArray(rawClip)) {
+    keyframes = rawClip;
+  } else {
+    keyframes = rawClip.keyframes;
+    clipView  = rawClip.view;
+  }
 
-  rootBones.forEach(bone => {
-    gsap.to(`#actor_group_${actorId} #${bone.id}`, {
-      scaleY: 1.03, scaleX: 0.98,
-      duration: 1.6 + Math.random() * 0.4,
-      yoyo: true, repeat: -1, ease: "sine.inOut",
-      ...pivotProps(bone),
-    });
+  if (keyframes.length === 0) {
+    console.warn(`[ambient] Clip "${clipName}" for actor "${actorId}" has 0 keyframes`);
+    return;
+  }
+
+  console.log(`[ambient] Playing clip "${clipName}" (view: ${clipView ?? "none"}) on "${actorId}" — ${keyframes.length} keyframes`);
+
+  if (clipView) {
+    switchView(actorId, clipView);
+  }
+
+  const pivotMap: Record<string, { x: number; y: number }> = {};
+  rig!.rig_data.bones.forEach(b => {
+    if (b.pivot) pivotMap[b.id] = b.pivot;
   });
 
-  limbBones.forEach(bone => {
-    const [minR, maxR] = bone.rotationLimit ?? [-10, 10];
-    const amp = Math.min(6, Math.max(Math.abs(minR), Math.abs(maxR)) * 0.15);
-    gsap.to(`#actor_group_${actorId} #${bone.id}`, {
-      rotation: amp,
-      duration: 2 + Math.random() * 1,
-      yoyo: true, repeat: -1, ease: "sine.inOut",
-      ...pivotProps(bone),
-    });
-  });
-}
+  keyframes.forEach(k => {
+    const pivot = pivotMap[k.bone];
 
-/**
- * Panic.
- * Whole-body shake + every bone driven to its rotation extreme rapidly.
- */
-function applyPanic(actorId: string, rig?: DraftsmanData) {
-  gsap.to(`#actor_group_${actorId}`, {
-    x: "+=12", duration: 0.05, yoyo: true, repeat: 20, ease: "none",
-  });
-
-  if (!rig) return;
-
-  rig.rig_data.bones.forEach(bone => {
-    const [minR, maxR] = bone.rotationLimit ?? [-40, 40];
-    const amp = Math.max(Math.abs(minR), Math.abs(maxR));
-    gsap.to(`#actor_group_${actorId} #${bone.id}`, {
-      rotation: amp,
-      duration: 0.08, yoyo: true, repeat: 12, ease: "none",
+    const tweenVars: gsap.TweenVars = {
+      [k.prop]: k.to,
+      duration: k.duration,
+      yoyo:     k.yoyo   ?? false,
+      repeat:   k.repeat ?? 0,
+      ease:     k.ease   ?? "sine.inOut",
+      delay:    k.delay  ?? 0,
       overwrite: "auto",
-      ...pivotProps(bone),
-    });
+    };
+
+    if (pivot) tweenVars.svgOrigin = `${pivot.x} ${pivot.y}`;
+
+    // Use attribute selector — bone IDs may start with digits (e.g. "3q_torso"),
+    // which makes #3q_torso an invalid CSS selector.
+    const target = `#actor_group_${actorId} [id="${k.bone}"]`;
+
+    if (k.from !== undefined) {
+      gsap.fromTo(target, { [k.prop]: k.from }, tweenVars);
+    } else {
+      gsap.to(target, tweenVars);
+    }
   });
 }
 
+// ── Ambient Layer ─────────────────────────────────────────────────────────────
+
 /**
- * Hide.
- * Slides the character down off-screen and fades out.
+ * Always-on looping animations:
+ *  • Character idle clip from rig (falls back to simple breathing if missing).
+ *  • Object ambient loops (fire, smoke, etc.) detected by ID pattern.
  */
-function applyHide(actorId: string) {
-  gsap.to(`#actor_group_${actorId}`, {
-    y: "+=220", opacity: 0, duration: 0.8, ease: "back.in(1.7)",
-    overwrite: "auto",
+export function animateAmbient(context: AnimationContext): gsap.Context {
+  const { container, beat, compiledScene, availableRigs } = context;
+
+  const actorIds = compiledScene?.instance_tracks.map(track => track.actor_id) ?? beat.actions.map(a => a.actor_id);
+  console.log(`[ambient] Starting ambient for scene ${beat.scene_number} — actors: ${actorIds.join(", ")}`);
+
+  return gsap.context(() => {
+    // Object ambient — scan all SVG elements with recognised ID patterns
+    const matchedObjects: string[] = [];
+    container.querySelectorAll("[id]").forEach(el => {
+      const id = el.getAttribute("id") || "";
+      for (const { regex, label, animate } of OBJECT_ANIM_PATTERNS) {
+        if (regex.test(id)) {
+          animate(el);
+          matchedObjects.push(`${id} (${label})`);
+          break;
+        }
+      }
+    });
+    if (matchedObjects.length > 0) {
+      console.log(`[ambient] Object loops: ${matchedObjects.join(", ")}`);
+    }
+
+    // Character idle — use the rig's idle clip
+    actorIds.forEach(actorId => {
+      const rig = availableRigs[actorId];
+      if (!rig) {
+        console.warn(`[ambient] No rig found for actor "${actorId}"`);
+        return;
+      }
+      if (rig.rig_data.animation_clips?.idle) {
+        playClip(actorId, "idle", rig, container);
+      }
+    });
+  }, container);
+}
+
+// ── Timeline Layer ────────────────────────────────────────────────────────────
+
+/**
+ * Builds a scrubable, paused GSAP timeline for the beat.
+ *
+ * For each action:
+ *   1. Spatial translation (walk/run/jump movement) added at timeline position 0.
+ *   2. Bone-level animation clips with style modulation (amplitude + speed).
+ *
+ * Infinite repeat (-1) keyframes are converted to finite counts so the timeline
+ * has a definite duration and can be seeked/scrubbed by the playhead.
+ *
+ * Returns the timeline in a paused state — call .play() to start it.
+ */
+export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
+  const { container, beat, compiledScene, availableRigs } = context;
+
+  const compiledBindings = compiledScene?.instance_tracks.flatMap(track => track.clip_bindings) ?? [];
+  console.log(`[timeline] Building timeline for scene ${beat.scene_number} — ${compiledBindings.length > 0 ? `${compiledBindings.length} compiled bindings` : `${beat.actions.length} semantic actions`}`);
+
+  const tl = gsap.timeline({ paused: true, defaults: { overwrite: "auto" } });
+
+  if (compiledScene && compiledScene.instance_tracks.length > 0) {
+    compiledScene.instance_tracks.forEach(track => {
+      const id = track.actor_id;
+      const rig = availableRigs[id];
+
+      track.clip_bindings.forEach(binding => {
+        const m = normalizeMotionKey(binding.motion);
+        const actionDuration = binding.duration_seconds || 2;
+        const amp = binding.amplitude ?? 1.0;
+        const spd = binding.speed ?? 1.0;
+        const startDelay = binding.start_time ?? 0;
+
+        console.log(`[timeline]   actor="${id}" clip="${binding.clip_id}" motion="${m}" → amp=${amp.toFixed(2)} spd=${spd.toFixed(2)} delay=${startDelay}`);
+
+        const startX = binding.start_transform.x;
+        const startY = binding.start_transform.y;
+        const startScale = binding.start_transform.scale;
+        const endX = binding.end_transform?.x;
+        const endY = binding.end_transform?.y;
+        const endScale = binding.end_transform?.scale;
+        const deltaX = endX !== undefined ? endX - startX : 0;
+        const deltaY = endY !== undefined ? endY - startY : 0;
+        const isMoving = motionNeedsTarget(m) || Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10;
+
+        if (isMoving && deltaX < -10) {
+          const group = container.querySelector<SVGGElement>(`#actor_group_${id}`);
+          if (group) {
+            const naturalCX = parseFloat(group.dataset.naturalCx || "500");
+            const naturalBottom = parseFloat(group.dataset.naturalBottom || "1000");
+            tl.set(`#actor_group_${id}`, {
+              scaleX: -startScale,
+              svgOrigin: `${naturalCX} ${naturalBottom}`,
+            }, startDelay);
+          }
+        }
+
+        if (isMoving || endScale !== undefined) {
+          const moveVars: gsap.TweenVars = { duration: actionDuration, ease: "power1.inOut" };
+          if (Math.abs(deltaX) > 10) moveVars.x = `+=${deltaX}`;
+          if (Math.abs(deltaY) > 10) moveVars.y = `+=${deltaY}`;
+          if (endScale !== undefined) {
+            const flipped = deltaX < -10;
+            moveVars.scaleX = flipped ? -endScale : endScale;
+            moveVars.scaleY = endScale;
+          }
+          tl.to(`#actor_group_${id}`, moveVars, startDelay);
+        }
+
+        if (!rig) {
+          console.warn(`[timeline]   No rig found for actor "${id}" — skipping bone animation`);
+          return;
+        }
+
+        const availableClips = Object.keys(rig.rig_data.animation_clips ?? {});
+        const rawClip = rig.rig_data.animation_clips?.[binding.clip_id];
+
+        if (!rawClip) {
+          console.warn(`[timeline]   No clip "${binding.clip_id}" for actor "${id}" — available: [${availableClips.join(", ")}] — using fallback pulse`);
+          const tweenDur = 1.6 / spd;
+          tl.to(`#actor_group_${id}`, {
+            scaleY: 1 + (0.04 * amp),
+            scaleX: 1 - (0.03 * amp),
+            duration: tweenDur,
+            yoyo: true,
+            repeat: calcRepeat(actionDuration, tweenDur, true),
+            ease: "sine.inOut",
+            transformOrigin: "center bottom",
+          }, startDelay);
+          return;
+        }
+
+        let keyframes: AnimationKeyframe[];
+        let clipView: string | undefined = binding.view;
+
+        if (Array.isArray(rawClip)) {
+          keyframes = rawClip;
+        } else {
+          keyframes = rawClip.keyframes;
+          clipView = clipView ?? rawClip.view;
+        }
+
+        if (keyframes.length === 0) {
+          console.warn(`[timeline]   Clip "${binding.clip_id}" for actor "${id}" has 0 keyframes`);
+          return;
+        }
+
+        if (clipView) {
+          ALL_VIEWS.forEach(v => {
+            tl.set(`#actor_group_${id} #${v}`, {
+              display: v === clipView ? "inline" : "none",
+            }, startDelay);
+          });
+        }
+
+        const pivotMap: Record<string, { x: number; y: number }> = {};
+        rig.rig_data.bones.forEach(b => {
+          if (b.pivot) pivotMap[b.id] = b.pivot;
+        });
+
+        keyframes.forEach(k => {
+          const pivot = pivotMap[k.bone];
+          const scaledTo = scaleProp(k.prop, k.to, amp);
+          const scaledFrom = k.from !== undefined ? scaleProp(k.prop, k.from, amp) : undefined;
+          const tweenDur = (k.duration || 0.5) / spd;
+          const boneDelay = (k.delay ?? 0) / spd;
+          const yoyo = k.yoyo ?? false;
+
+          const repeat = k.repeat === -1
+            ? calcRepeat(actionDuration - boneDelay, tweenDur, yoyo)
+            : (k.repeat ?? 0);
+
+          const tweenVars: gsap.TweenVars = {
+            [k.prop]: scaledTo,
+            duration: tweenDur,
+            yoyo,
+            repeat,
+            ease: k.ease ?? "sine.inOut",
+            overwrite: "auto",
+          };
+
+          if (pivot) tweenVars.svgOrigin = `${pivot.x} ${pivot.y}`;
+
+          const target = `#actor_group_${id} [id="${k.bone}"]`;
+          const position = startDelay + boneDelay;
+
+          if (scaledFrom !== undefined) {
+            tl.fromTo(target, { [k.prop]: scaledFrom }, tweenVars, position);
+          } else {
+            tl.to(target, tweenVars, position);
+          }
+        });
+      });
+    });
+
+    console.log(`[timeline] Built — duration: ${tl.duration().toFixed(2)}s, tweens: ${tl.getChildren().length}`);
+    return tl;
+  }
+
+  beat.actions.forEach(action => {
+    const id             = action.actor_id;
+    const rig            = availableRigs[id];
+    const m              = normalizeMotionKey(action.motion);
+    const actionDuration = action.duration_seconds || 2;
+    const overrides      = action.animation_overrides;
+
+    // Resolve amplitude and speed: explicit overrides > style inference > 1.0
+    const amp = overrides?.amplitude ?? styleAmplitude(action.style ?? "");
+    const spd = overrides?.speed     ?? styleSpeed(action.style ?? "");
+    const startDelay = overrides?.delay ?? 0;
+
+    console.log(`[timeline]   actor="${id}" motion="${m}" style="${action.style}" → amp=${amp.toFixed(2)} spd=${spd.toFixed(2)} delay=${startDelay}`);
+
+    // ── 1. Spatial movement ─────────────────────────────────────────────────
+    const startX     = action.spatial_transform?.x     ?? 960;
+    const startY     = action.spatial_transform?.y     ?? 950;
+    const startScale = action.spatial_transform?.scale ?? 0.5;
+    const inferredTarget = !action.target_spatial_transform
+      ? inferAutoTargetTransform(
+          m,
+          { x: startX, y: startY, scale: startScale },
+          actionDuration,
+        )
+      : undefined;
+    const resolvedTarget = action.target_spatial_transform ?? inferredTarget;
+    const endX       = resolvedTarget?.x;
+    const endY       = resolvedTarget?.y;
+    const endScale   = resolvedTarget?.scale;
+
+    const deltaX   = endX !== undefined ? endX - startX : 0;
+    const deltaY   = endY !== undefined ? endY - startY : 0;
+    const isMoving = motionNeedsTarget(m) || Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10;
+
+    // Left-walk: flip scaleX immediately at start
+    if (isMoving && deltaX < -10) {
+      const group = container.querySelector<SVGGElement>(`#actor_group_${id}`);
+      if (group) {
+        const naturalCX     = parseFloat(group.dataset.naturalCx     || "500");
+        const naturalBottom = parseFloat(group.dataset.naturalBottom  || "1000");
+        tl.set(`#actor_group_${id}`, {
+          scaleX: -startScale,
+          svgOrigin: `${naturalCX} ${naturalBottom}`,
+        }, startDelay);
+      }
+    }
+
+    if (isMoving || endScale !== undefined) {
+      const moveVars: gsap.TweenVars = { duration: actionDuration, ease: "power1.inOut" };
+      if (Math.abs(deltaX) > 10) moveVars.x = `+=${deltaX}`;
+      if (Math.abs(deltaY) > 10) moveVars.y = `+=${deltaY}`;
+      if (endScale !== undefined) {
+        const flipped = deltaX < -10;
+        moveVars.scaleX = flipped ? -endScale : endScale;
+        moveVars.scaleY = endScale;
+      }
+      tl.to(`#actor_group_${id}`, moveVars, startDelay);
+    }
+
+    // ── 2. Bone animation from rig clip ────────────────────────────────────
+    if (!rig) {
+      console.warn(`[timeline]   No rig found for actor "${id}" — skipping bone animation`);
+      return;
+    }
+
+    const availableClips = Object.keys(rig.rig_data.animation_clips ?? {});
+    const resolvedClipKey = suggestMotionAliases(m).find(alias => rig.rig_data.animation_clips?.[alias]);
+    const rawClip = resolvedClipKey ? rig.rig_data.animation_clips?.[resolvedClipKey] : undefined;
+
+    if (!rawClip) {
+      console.warn(`[timeline]   No clip "${m}" for actor "${id}" — available: [${availableClips.join(", ")}] — using fallback pulse`);
+      // Fallback: whole-body pulse scaled by amplitude/speed
+      const tweenDur = 1.6 / spd;
+      tl.to(`#actor_group_${id}`, {
+        scaleY: 1 + (0.04 * amp),
+        scaleX: 1 - (0.03 * amp),
+        duration: tweenDur,
+        yoyo: true,
+        repeat: calcRepeat(actionDuration, tweenDur, true),
+        ease: "sine.inOut",
+        transformOrigin: "center bottom",
+      }, startDelay);
+      return;
+    }
+
+    let keyframes: AnimationKeyframe[];
+    let clipView: string | undefined;
+
+    if (Array.isArray(rawClip)) {
+      keyframes = rawClip;
+    } else {
+      keyframes = rawClip.keyframes;
+      clipView  = rawClip.view;
+    }
+
+    if (keyframes.length === 0) {
+      console.warn(`[timeline]   Clip "${m}" for actor "${id}" has 0 keyframes`);
+      return;
+    }
+
+    console.log(`[timeline]   Clip "${resolvedClipKey ?? m}" → view="${clipView ?? "none"}" ${keyframes.length} keyframes`);
+
+    // Switch to the appropriate view at the action start
+    if (clipView) {
+      ALL_VIEWS.forEach(v => {
+        tl.set(`#actor_group_${id} #${v}`, {
+          display: v === clipView ? "inline" : "none",
+        }, startDelay);
+      });
+    }
+
+    // Build pivot lookup map
+    const pivotMap: Record<string, { x: number; y: number }> = {};
+    rig!.rig_data.bones.forEach(b => {
+      if (b.pivot) pivotMap[b.id] = b.pivot;
+    });
+
+    keyframes.forEach(k => {
+      const pivot = pivotMap[k.bone];
+
+      // Apply amplitude (scale rotation/position) and speed
+      const scaledTo   = scaleProp(k.prop, k.to, amp);
+      const scaledFrom = k.from !== undefined ? scaleProp(k.prop, k.from, amp) : undefined;
+      const tweenDur   = (k.duration || 0.5) / spd;
+      const boneDelay  = (k.delay ?? 0) / spd;
+      const yoyo       = k.yoyo ?? false;
+
+      const repeat = k.repeat === -1
+        ? calcRepeat(actionDuration - boneDelay, tweenDur, yoyo)
+        : (k.repeat ?? 0);
+
+      const tweenVars: gsap.TweenVars = {
+        [k.prop]: scaledTo,
+        duration: tweenDur,
+        yoyo,
+        repeat,
+        ease: k.ease ?? "sine.inOut",
+        overwrite: "auto",
+      };
+
+      if (pivot) tweenVars.svgOrigin = `${pivot.x} ${pivot.y}`;
+
+      // Use attribute selector — bone IDs may start with digits (e.g. "3q_torso")
+      const target   = `#actor_group_${id} [id="${k.bone}"]`;
+      const position = startDelay + boneDelay;   // timeline insert position
+
+      if (scaledFrom !== undefined) {
+        tl.fromTo(target, { [k.prop]: scaledFrom }, tweenVars, position);
+      } else {
+        tl.to(target, tweenVars, position);
+      }
+    });
   });
+
+  console.log(`[timeline] Built — duration: ${tl.duration().toFixed(2)}s, tweens: ${tl.getChildren().length}`);
+  return tl;
 }

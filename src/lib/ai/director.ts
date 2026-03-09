@@ -50,7 +50,23 @@ CRITICAL: Your response MUST contain TWO things:
           "actor_id": "string",
           "motion": "string - semantic verb like 'walk', 'run', 'hide', 'idle'",
           "style": "string - adverb like 'panic', 'casual', 'frantic'",
-          "duration_seconds": 2.0
+          "duration_seconds": 2.0,
+          "spatial_transform": {
+            "x": 960,
+            "y": 950,
+            "scale": 0.5,
+            "z_index": 10
+          },
+          "target_spatial_transform": {
+            "x": 1400,
+            "y": 950,
+            "scale": 0.5
+          },
+          "animation_overrides": {
+            "amplitude": 1.0,
+            "speed": 1.0,
+            "delay": 0.0
+          }
         }
       ],
       "comic_panel_prompt": "string - optimized prompt describing this scene as a comic book panel"
@@ -61,13 +77,30 @@ CRITICAL: Your response MUST contain TWO things:
 
 ## Rules
 - Output the JSON object first as a text block.
-- Then, for EACH beat, generate a vivid, colorful flat 2D style illustration based on the comic_panel_prompt. 
+- Then, for EACH beat, generate a vivid, colorful flat 2D style illustration based on the comic_panel_prompt.
 - EXTREME 2D FLATNESS REQUIRED: The art style MUST be composed of highly abstract, minimal vector-like solid color shapes. NO shading, NO gradients, NO 3D rendering, NO photorealism.
-- CLEAR SILHOUETTES: Characters should ideally be drawn in clear, distinct profile (side-view) or straight-on angles to make them easier to extract as 2D puppets.
+- CHARACTER ANGLES: Draw characters from the most cinematically appropriate angle for the scene — front view for dialogue, side profile for walking, 3/4 view for natural depth. Keep angles consistent within a scene.
 - DO NOT include any text, speech bubbles, or onomatopoeia (e.g., "BANG!", "CRASH!") in the images. These are handled by the audio/narrative data.
 - Output each image immediately after the JSON.
 - Keep actions as simple semantic verbs.
 - actors_detected must list ALL characters.
+
+## Spatial Transform Rules (CRITICAL — always include these in every action)
+- The stage is 1920x1080 pixels. x=960 is center, x=300 is far-left, x=1600 is far-right.
+- y represents the character's floor contact point: y=900-1000 for ground level, smaller y = higher on screen.
+- SPREAD characters horizontally — NEVER stack multiple actors at x=960. Assign distinct x positions.
+- Use scale + y together for depth perspective: far away = lower scale (0.3-0.4), higher y; close = higher scale (0.6-0.8), lower y.
+- z_index: foreground characters 20-30, midground 10-15, background 5-10.
+- ALWAYS include target_spatial_transform for any locomotion action: walk, run, jump, swim, crawl, fly, slither, glide, drive, skate, roll, scoot, dash, march, sprint, hop, chase, drift.
+- Omit target_spatial_transform only for clearly in-place actions like idle, stare, talk, hide, wave, panic, celebrate, sit.
+- target_spatial_transform.x should be meaningfully different from spatial_transform.x for horizontal locomotion (minimum 300px apart).
+- For swim/fly/glide/drift motions, you may also change target_spatial_transform.y to create believable travel arcs.
+
+## Animation Override Rules
+- animation_overrides MUST be included for every action. Use it to express how the style affects the motion.
+- amplitude: how big/exaggerated the movement is. frantic/panic = 1.8, fast = 1.2, neutral = 1.0, gentle/calm = 0.5.
+- speed: how fast the animation cycles. frantic = 1.9, fast = 1.5, neutral = 1.0, slow/tired = 0.5.
+- delay: stagger actors in a scene (e.g., 0.0 for first actor, 0.3 for second, 0.6 for third).
 - ${options?.singleBeat ? "CRITICAL: Generate EXACTLY 1 beat based on the prompt." : "Generate 3-5 beats for a typical prompt."}`;
 
     const contentsParts: any[] = [];

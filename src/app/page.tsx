@@ -1,20 +1,41 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import Stage from "@/components/Stage";
-import { Send, Play, Image as ImageIcon, ImageOff, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, ChevronUp, Loader2, Film, Trash2, Pencil, Plus, Copy, Check, Mountain } from "lucide-react";
+import { Send, Play, Image as ImageIcon, ImageOff, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, ChevronUp, Loader2, Film, Trash2, Pencil, Plus, Copy, Mountain } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { processScenePromptStream, processSceneImageEdit } from "@/app/actions/scene";
-import { StoryGenerationData } from "@/lib/schema/story";
+import { ClipBinding, CompiledSceneData, StoryGenerationData } from "@/lib/schema/story";
 import { loadStoryFromStorage, saveStoryToStorage, clearStoryStorage, getProjectsList, createProject, deleteProject, updateProjectTitle, ProjectMetadata, loadActorIdentities, saveActorIdentity } from "@/lib/storage/db";
-import { processDraftsmanPrompt } from "@/app/actions/draftsman";
+import { generateMotionClipForRig, processDraftsmanPrompt } from "@/app/actions/draftsman";
 import { processSetDesignerPrompt } from "@/app/actions/set_designer";
 import { DraftsmanData } from "@/lib/schema/rig";
 import { RigViewer } from "@/components/RigViewer";
+import { inferAutoTargetTransform, motionNeedsTarget, normalizeMotionKey } from "@/lib/motion/semantics";
+import { compileBeatToScene } from "@/lib/motion/compiler";
 
 import { ThemeToggle } from "@/components/ThemeToggle";
 
+function findCompiledBinding(compiledScene: CompiledSceneData | null | undefined, actionIndex: number | null) {
+  if (!compiledScene || actionIndex === null) return null;
+  for (let trackIndex = 0; trackIndex < compiledScene.instance_tracks.length; trackIndex += 1) {
+    const track = compiledScene.instance_tracks[trackIndex];
+    const bindingIndex = track.clip_bindings.findIndex(binding => binding.source_action_index === actionIndex);
+    if (bindingIndex >= 0) {
+      return { trackIndex, bindingIndex, track, binding: track.clip_bindings[bindingIndex] };
+    }
+  }
+  return null;
+}
+
 export default function Home() {
+  const EXPORT_RESOLUTIONS = {
+    "720p": { label: "720p HD", width: 1280, height: 720 },
+    "1080p": { label: "1080p FHD", width: 1920, height: 1080 },
+    "4k": { label: "4K UHD", width: 3840, height: 2160 },
+    "8k": { label: "8K UHD", width: 7680, height: 4320 },
+  } as const;
+
   const [prompt, setPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [storyData, setStoryData] = useState<StoryGenerationData | null>(null);
@@ -33,7 +54,6 @@ export default function Home() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmDeleteBeatIndex, setConfirmDeleteBeatIndex] = useState<number | null>(null);
   const [confirmClearStory, setConfirmClearStory] = useState(false);
-  const [isStoryApproved, setIsStoryApproved] = useState(false);
 
   // Draftsman / Rigging State
   const [draftingActorId, setDraftingActorId] = useState<string | null>(null);
@@ -51,11 +71,27 @@ export default function Home() {
   const [animatingLogs, setAnimatingLogs] = useState<string[]>([]);
   // Persistent per-scene logs that survive after animation completes
   const [completedAnimLogs, setCompletedAnimLogs] = useState<Record<number, string[]>>({});
+  const [dismissedCompileReports, setDismissedCompileReports] = useState<Record<number, boolean>>({});
   // Per-beat image generation cost (from Gemini usage metadata)
   const [beatGenerationCosts, setBeatGenerationCosts] = useState<Record<number, { tokens: number; cost: number }>>({});
+  const [playbackScope, setPlaybackScope] = useState<"scene" | "all">("scene");
+  const [exportResolution, setExportResolution] = useState<keyof typeof EXPORT_RESOLUTIONS>("1080p");
+  const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<string | null>(null);
+  const [exportPlayheadTime, setExportPlayheadTime] = useState(0);
+  const [exportBeatState, setExportBeatState] = useState<{
+    beat: StoryGenerationData["beats"][number];
+    compiledScene: CompiledSceneData;
+    key: string;
+  } | null>(null);
+  const exportStageHostRef = useRef<HTMLDivElement>(null);
+  const exportTimelineDurationRef = useRef(0);
+  const exportTimelineReadyResolverRef = useRef<((duration: number) => void) | null>(null);
 
   // Stage Playback State
   const [isPlaying, setIsPlaying] = useState(false);
+  const [sceneTimelineDurations, setSceneTimelineDurations] = useState<Record<number, number>>({});
 
   // Generation Mode: 'sequence' | 'single'
   const [generateMode, setGenerateMode] = useState<'sequence' | 'single'>('single');
@@ -63,19 +99,48 @@ export default function Home() {
   // Stage Selection State
   const [selectedSceneIndex, setSelectedSceneIndex] = useState<number>(0);
   const [selectedActionIndex, setSelectedActionIndex] = useState<number | null>(null);
+  const [selectedActorId, setSelectedActorId] = useState<string | null>(null);
 
   // Timeline Playhead & Frame State
   const [playheadPos, setPlayheadPos] = useState<number>(0);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
-  const [fps, setFps] = useState<12 | 24 | 30>(24);
+  const [fps, setFps] = useState<12 | 24 | 30 | 60>(60);
   const timelineRef = useRef<HTMLDivElement>(null);
 
+  const selectedBeat = useMemo(
+    () => (storyData && storyData.beats.length > 0 ? storyData.beats[selectedSceneIndex] : null),
+    [storyData, selectedSceneIndex]
+  );
+  const selectedCompiledScene = selectedBeat?.compiled_scene ?? null;
+
+  const availableRigs = useMemo(
+    () =>
+      storyData
+        ? storyData.actors_detected.reduce((acc, actor) => {
+            if (actor.drafted_rig) acc[actor.id] = actor.drafted_rig;
+            return acc;
+          }, {} as Record<string, DraftsmanData>)
+        : {},
+    [storyData]
+  );
+
   // Total duration of the selected scene (seconds), used for frame math
-  const totalDuration = (() => {
-    const beat = storyData?.beats[selectedSceneIndex];
-    if (!beat || beat.actions.length === 0) return 10;
-    return Math.max(2, ...beat.actions.map(a => a.duration_seconds || 2));
-  })();
+  const totalDuration = useMemo(() => {
+    const compiledDuration = sceneTimelineDurations[selectedSceneIndex];
+    if (compiledDuration && compiledDuration > 0) return compiledDuration;
+    if (selectedCompiledScene?.duration_seconds && selectedCompiledScene.duration_seconds > 0) {
+      return selectedCompiledScene.duration_seconds;
+    }
+
+    if (!selectedBeat || selectedBeat.actions.length === 0) return 10;
+    return Math.max(
+      2,
+      ...selectedBeat.actions.map(a => {
+        const delay = a.animation_overrides?.delay || 0;
+        return delay + (a.duration_seconds || 2);
+      }),
+    );
+  }, [sceneTimelineDurations, selectedSceneIndex, selectedBeat, selectedCompiledScene]);
 
   const currentTimeSeconds = (playheadPos / 100) * totalDuration;
   const currentFrame = Math.round(currentTimeSeconds * fps);
@@ -105,22 +170,98 @@ export default function Home() {
     };
   }, [isDraggingPlayhead]);
 
-  // Advance playhead in real-time when playing
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isPlaying) {
-      const stepMs = 1000 / fps;
-      const stepPct = (1 / totalFrames) * 100;
-      interval = setInterval(() => {
-        setPlayheadPos(prev => {
-          if (prev >= 100) { setIsPlaying(false); return 0; }
-          return prev + stepPct;
-        });
-      }, stepMs);
+  // Playhead callbacks — called by Stage when GSAP timeline ticks or completes
+  const handlePlayheadUpdate = (timeSeconds: number) => {
+    const pct = totalDuration > 0 ? (timeSeconds / totalDuration) * 100 : 0;
+    setPlayheadPos(Math.min(100, pct));
+  };
+
+  const handlePlayComplete = () => {
+    setIsPlaying(false);
+    setPlayheadPos(0);
+  };
+
+  const handleTimelineReady = (durationSeconds: number) => {
+    setSceneTimelineDurations(prev => {
+      const current = prev[selectedSceneIndex];
+      if (current === durationSeconds) return prev;
+      return { ...prev, [selectedSceneIndex]: durationSeconds };
+    });
+  };
+
+  const waitForAnimationFrames = (count: number = 2) =>
+    new Promise<void>((resolve) => {
+      const tick = (remaining: number) => {
+        if (remaining <= 0) {
+          resolve();
+          return;
+        }
+        requestAnimationFrame(() => tick(remaining - 1));
+      };
+      tick(count);
+    });
+
+  const waitForExportTimelineReady = () =>
+    new Promise<number>((resolve) => {
+      exportTimelineReadyResolverRef.current = resolve;
+    });
+
+  const sanitizeSvgMarkup = (svgMarkup: string) => {
+    if (svgMarkup.includes('xmlns="http://www.w3.org/2000/svg"')) {
+      return svgMarkup;
     }
-    return () => clearInterval(interval);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, fps, totalFrames]);
+    return svgMarkup.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+  };
+
+  const captureExportStageSvg = async (timeSeconds: number) => {
+    setExportPlayheadTime(timeSeconds);
+    await waitForAnimationFrames(2);
+    const svg = exportStageHostRef.current?.querySelector("svg");
+    if (!svg) {
+      throw new Error("Export stage did not render an SVG frame.");
+    }
+    return sanitizeSvgMarkup(svg.outerHTML);
+  };
+
+  const downloadBlob = (blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const loadSvgIntoImage = (svgMarkup: string) =>
+    new Promise<HTMLImageElement>((resolve, reject) => {
+      const blob = new Blob([sanitizeSvgMarkup(svgMarkup)], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = (error) => {
+        URL.revokeObjectURL(url);
+        reject(error);
+      };
+      img.src = url;
+    });
+
+  const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  const canvasToPngBlob = (canvas: HTMLCanvasElement) =>
+    new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error("Failed to encode a frame as PNG."));
+          return;
+        }
+        resolve(blob);
+      }, "image/png");
+    });
 
   // Panel Editing State
   const [editingBeatIndex, setEditingBeatIndex] = useState<number | null>(null);
@@ -522,11 +663,46 @@ export default function Home() {
 
     // Clear any previous completed logs for this scene
     setCompletedAnimLogs(prev => { const n = { ...prev }; delete n[index]; return n; });
+    setDismissedCompileReports(prev => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
 
     setAnimatingSceneIndex(index);
     setAnimatingLogs(["Initializing automation macro..."]);
     setSelectedSceneIndex(index);
     const beat = storyData.beats[index];
+    let didAugmentTargets = false;
+    let workingBeat = {
+      ...beat,
+      actions: beat.actions.map(action => {
+        if (action.target_spatial_transform || !motionNeedsTarget(action.motion)) return action;
+
+        const start = action.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
+        const inferred = inferAutoTargetTransform(
+          action.motion,
+          { x: start.x, y: start.y, scale: start.scale },
+          action.duration_seconds || 2,
+        );
+
+        return inferred
+          ? (() => {
+              didAugmentTargets = true;
+              return { ...action, target_spatial_transform: inferred };
+            })()
+          : action;
+      }),
+    };
+
+    if (didAugmentTargets) {
+      setStoryData(prev => {
+        if (!prev) return prev;
+        const newBeats = [...prev.beats];
+        newBeats[index] = workingBeat;
+        return { ...prev, beats: newBeats };
+      });
+    }
 
     // Local accumulator so we can capture the full log on completion
     const localLogs: string[] = ["Initializing automation macro..."];
@@ -538,6 +714,7 @@ export default function Home() {
     let totalTokens = 0;
     let apiCalls = 0;
     let totalCostEst = 0;
+    let compileStatus: "success" | "error" = "error";
 
     const logUsage = (usage: any, label?: string) => {
       const promptTokens = usage?.promptTokenCount || 0;
@@ -554,12 +731,12 @@ export default function Home() {
 
     try {
       // 1. Generate Background if missing
-      if (!beat.drafted_background && beat.image_data) {
+      if (!workingBeat.drafted_background && workingBeat.image_data) {
         addLog("> Starting Set Designer AI...");
         addLog("> Extracting 3-layer parallax environment...");
 
         apiCalls++;
-        const result = await processSetDesignerPrompt(beat.image_data, beat.narrative);
+        const result = await processSetDesignerPrompt(workingBeat.image_data, workingBeat.narrative);
 
         setStoryData(prev => {
           if (!prev) return prev;
@@ -570,25 +747,47 @@ export default function Home() {
 
         addLog("✓ Environment vector rig compiled.");
         logUsage(result.usage, "Set Designer");
+        workingBeat = { ...workingBeat, drafted_background: result.data };
       } else {
         addLog("✓ Environment rig found in cache.");
       }
 
       // 2. Generate Actors if missing
-      const actorIdsInScene = new Set(beat.actions.map(a => a.actor_id));
+      const actorIdsInScene = new Set(workingBeat.actions.map(a => a.actor_id));
+      const sceneRigs: Record<string, DraftsmanData> = {};
       for (const actorId of Array.from(actorIdsInScene)) {
         const actor = storyData.actors_detected.find(a => a.id === actorId);
         if (actor) {
-          if (!actor.drafted_rig && actorReferences[actorId]) {
-            const actorActions = beat.actions.filter(a => a.actor_id === actorId);
-            const requiredViews = new Set<string>();
-            actorActions.forEach(a => {
-              const m = a.motion.toLowerCase();
-              if (m === 'run' || m === 'walk') requiredViews.add('view_side_right');
-              else requiredViews.add('view_front');
-            });
-            if (requiredViews.size === 0) requiredViews.add('view_front');
-            const viewsArray = Array.from(requiredViews);
+          let actorRig = actor.drafted_rig;
+
+          if (!actorRig && actorReferences[actorId]) {
+            const sceneText = `${workingBeat.narrative} ${workingBeat.comic_panel_prompt}`.toLowerCase();
+            const actorActions = workingBeat.actions.filter(a => a.actor_id === actorId);
+            const viewSet = new Set<string>();
+
+            for (const action of actorActions) {
+              const motionKey = normalizeMotionKey(action.motion);
+              if (motionNeedsTarget(motionKey)) {
+                viewSet.add('view_side_right');
+              } else if (/wave|greet|salute|talk|speak|say|tip_hat|sing|shout|smile|dialogue/.test(motionKey)) {
+                viewSet.add('view_front');
+              } else {
+                viewSet.add('view_3q_right');
+              }
+            }
+
+            if (/top[- ]?down|overhead|bird'?s[- ]eye|from above/.test(sceneText)) {
+              viewSet.add('view_top');
+            }
+            if (/from behind|back view|walk away|turns away|retreats|seen from behind/.test(sceneText)) {
+              viewSet.add('view_back');
+            }
+
+            if (viewSet.size === 0) {
+              viewSet.add('view_3q_right');
+            }
+
+            const viewsArray = Array.from(viewSet);
 
             addLog(`> Starting Draftsman AI for '${actor.name}'...`);
             addLog(`> Rigging A-Pose skeleton & visemes (${viewsArray.join(', ')})...`);
@@ -607,19 +806,85 @@ export default function Home() {
               };
             });
 
+            actorRig = result.data;
             addLog(`✓ '${actor.name}' SVG rig assembled.`);
             logUsage(result.usage, `Draftsman (${actor.name})`);
-          } else if (actor.drafted_rig) {
+          } else if (actorRig) {
             addLog(`✓ '${actor.name}' rig found in cache.`);
+          }
+
+          if (actorRig) {
+            const actorActions = workingBeat.actions.filter(a => a.actor_id === actorId);
+            let nextRig = actorRig;
+
+            for (const actorAction of actorActions) {
+              const motionKey = normalizeMotionKey(actorAction.motion);
+              if (nextRig.rig_data.animation_clips?.[motionKey]) continue;
+
+              addLog(`> Compiling motion '${motionKey}' for '${actor.name}'...`);
+              apiCalls++;
+
+              const clipResult = await generateMotionClipForRig({
+                rig: nextRig,
+                motion: motionKey,
+                style: actorAction.style,
+                durationSeconds: actorAction.duration_seconds,
+                actorName: actor.name,
+                actorDescription: actor.visual_description,
+                sceneNarrative: workingBeat.narrative,
+              });
+
+              nextRig = {
+                ...nextRig,
+                rig_data: {
+                  ...nextRig.rig_data,
+                  animation_clips: {
+                    ...(nextRig.rig_data.animation_clips || {}),
+                    [motionKey]: clipResult.clip,
+                  },
+                },
+              };
+
+              addLog(`✓ Motion '${motionKey}' compiled for '${actor.name}'.`);
+              logUsage(clipResult.usage, `Motion (${actor.name}:${motionKey})`);
+            }
+
+            if (nextRig !== actorRig) {
+              setStoryData(prev => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  actors_detected: prev.actors_detected.map(a =>
+                    a.id === actorId ? { ...a, drafted_rig: nextRig } : a
+                  )
+                };
+              });
+            }
+
+            sceneRigs[actorId] = nextRig;
           }
         }
       }
 
+      const compiledScene = compileBeatToScene(workingBeat, sceneRigs);
+      setStoryData(prev => {
+        if (!prev) return prev;
+        const newBeats = [...prev.beats];
+        newBeats[index] = { ...newBeats[index], compiled_scene: compiledScene };
+        return { ...prev, beats: newBeats };
+      });
+      addLog(`✓ Compiled scene timeline (${compiledScene.instance_tracks.length} track${compiledScene.instance_tracks.length === 1 ? "" : "s"}, ${compiledScene.duration_seconds.toFixed(2)}s).`);
+
       addLog("✓ Stage ready. Dispatching GSAP context...");
       addLog("─────────────────────────────");
+      const imageGen = beatGenerationCosts[index];
+      if (imageGen) {
+        addLog(`Image gen: ~$${imageGen.cost.toFixed(5)} | ${imageGen.tokens.toLocaleString()} tokens`);
+      }
       addLog(`API Calls: ${apiCalls} | Total tokens: ${totalTokens}`);
       addLog(`Scene cost: ~$${totalCostEst.toFixed(5)}`);
       addLog("─────────────────────────────");
+      compileStatus = "success";
 
     } catch (err: any) {
       console.error("Animation prep failed", err);
@@ -627,8 +892,215 @@ export default function Home() {
     } finally {
       // Persist logs so they remain visible below the scene image
       setCompletedAnimLogs(prev => ({ ...prev, [index]: [...localLogs] }));
+      setStoryData(prev => {
+        if (!prev || !prev.beats[index]) return prev;
+        const newBeats = [...prev.beats];
+        const imageGen = beatGenerationCosts[index];
+        newBeats[index] = {
+          ...newBeats[index],
+          compile_report: {
+            status: compileStatus,
+            compiled_at: Date.now(),
+            logs: [...localLogs],
+            api_calls: apiCalls,
+            total_tokens: totalTokens,
+            scene_cost_estimate: Number(totalCostEst.toFixed(5)),
+            image_generation_cost: imageGen
+              ? { cost: imageGen.cost, tokens: imageGen.tokens }
+              : undefined,
+          },
+        };
+        return { ...prev, beats: newBeats };
+      });
       setAnimatingSceneIndex(null);
       setAnimatingLogs([]);
+    }
+  };
+
+  // --- Actor Selection Handlers ---
+
+  const handleActorSelect = (actorId: string | null) => {
+    setSelectedActorId(actorId);
+    if (!actorId || !storyData) {
+      setSelectedActionIndex(null);
+      return;
+    }
+    const beat = storyData.beats[selectedSceneIndex];
+    if (!beat) { setSelectedActionIndex(null); return; }
+    const compiledTrack = beat.compiled_scene?.instance_tracks.find(track => track.actor_id === actorId);
+    const idx = compiledTrack?.clip_bindings[0]?.source_action_index ?? beat.actions.findIndex(a => a.actor_id === actorId);
+    setSelectedActionIndex(idx >= 0 ? idx : null);
+  };
+
+  const handleActorPositionChange = (actorId: string, x: number, y: number) => {
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const beat = newBeats[selectedSceneIndex];
+      if (!beat) return prev;
+      const newActions = beat.actions.map(a => {
+        if (a.actor_id !== actorId) return a;
+        return {
+          ...a,
+          spatial_transform: {
+            ...(a.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
+            x: Math.round(x),
+            y: Math.round(y),
+          },
+        };
+      });
+      let nextCompiledScene = beat.compiled_scene;
+      if (nextCompiledScene) {
+        nextCompiledScene = {
+          ...nextCompiledScene,
+          instance_tracks: nextCompiledScene.instance_tracks.map(track => {
+            if (track.actor_id !== actorId) return track;
+            const first = track.transform_track[0];
+            const dx = Math.round(x - (first?.x ?? x));
+            const dy = Math.round(y - (first?.y ?? y));
+            return {
+              ...track,
+              transform_track: track.transform_track.map(keyframe => ({
+                ...keyframe,
+                x: Math.round(keyframe.x + dx),
+                y: Math.round(keyframe.y + dy),
+              })),
+              clip_bindings: track.clip_bindings.map(binding => ({
+                ...binding,
+                start_transform: {
+                  ...binding.start_transform,
+                  x: Math.round(binding.start_transform.x + dx),
+                  y: Math.round(binding.start_transform.y + dy),
+                },
+                end_transform: binding.end_transform
+                  ? {
+                      ...binding.end_transform,
+                      x: Math.round(binding.end_transform.x + dx),
+                      y: Math.round(binding.end_transform.y + dy),
+                    }
+                  : binding.end_transform,
+              })),
+            };
+          }),
+        };
+      }
+      newBeats[selectedSceneIndex] = { ...beat, actions: newActions, compiled_scene: nextCompiledScene };
+      return { ...prev, beats: newBeats };
+    });
+  };
+
+  const handleExportTimelineReady = (durationSeconds: number) => {
+    exportTimelineDurationRef.current = durationSeconds;
+    exportTimelineReadyResolverRef.current?.(durationSeconds);
+    exportTimelineReadyResolverRef.current = null;
+  };
+
+  const handleExport = async () => {
+    if (!storyData) return;
+
+    const beatsToExport = (playbackScope === "all"
+      ? storyData.beats
+      : storyData.beats[selectedSceneIndex]
+        ? [storyData.beats[selectedSceneIndex]]
+        : []
+    ).filter(beat => beat.compiled_scene);
+
+    if (beatsToExport.length === 0) {
+      setError("No compiled scene is available to export. Run Animate Scene first.");
+      return;
+    }
+
+    const missingCompiled = (playbackScope === "all"
+      ? storyData.beats
+      : storyData.beats[selectedSceneIndex]
+        ? [storyData.beats[selectedSceneIndex]]
+        : []
+    ).filter(beat => !beat.compiled_scene);
+
+    if (missingCompiled.length > 0) {
+      const missingScenes = missingCompiled.map(beat => beat.scene_number).join(", ");
+      setError(`Scene ${missingScenes} is not compiled yet. Run Animate Scene before exporting.`);
+      return;
+    }
+
+    try {
+      setIsExporting(true);
+      setError(null);
+      setExportProgress("Preparing export stage...");
+      const resolution = EXPORT_RESOLUTIONS[exportResolution];
+      const canvas = document.createElement("canvas");
+      canvas.width = resolution.width;
+      canvas.height = resolution.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Canvas export context could not be created.");
+      }
+
+      const formData = new FormData();
+      formData.append("fileName", `${storyData.title || "cartoon"}-${playbackScope}-${resolution.label}.mp4`);
+      formData.append("fps", String(fps));
+      formData.append("width", String(resolution.width));
+      formData.append("height", String(resolution.height));
+
+      let frameSerial = 1;
+
+      for (let sceneOffset = 0; sceneOffset < beatsToExport.length; sceneOffset += 1) {
+        const beat = beatsToExport[sceneOffset];
+        const compiledScene = beat.compiled_scene!;
+
+        setExportProgress(`Rendering Scene ${beat.scene_number}...`);
+        const durationPromise = waitForExportTimelineReady();
+        setExportBeatState({
+          beat,
+          compiledScene,
+          key: `${beat.scene_number}-${Date.now()}-${sceneOffset}`,
+        });
+        setExportPlayheadTime(0);
+
+        await waitForAnimationFrames(2);
+        const timelineDuration = await durationPromise;
+        const sceneDuration = timelineDuration > 0 ? timelineDuration : compiledScene.duration_seconds;
+        const frameCount = Math.max(1, Math.ceil(sceneDuration * fps) + 1);
+
+        for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+          const timeSeconds = Math.min(sceneDuration, frameIndex / fps);
+          setExportProgress(`Rendering Scene ${beat.scene_number} frame ${frameIndex + 1}/${frameCount}...`);
+          const svgMarkup = await captureExportStageSvg(timeSeconds);
+          const image = await loadSvgIntoImage(svgMarkup);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+          const pngBlob = await canvasToPngBlob(canvas);
+          const frameName = `frame-${String(frameSerial).padStart(6, "0")}.png`;
+          formData.append("frames", pngBlob, frameName);
+          frameSerial += 1;
+        }
+      }
+
+      setExportProgress(`Encoding MP4 (${resolution.label})...`);
+
+      const response = await fetch("/api/export", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(async () => ({ error: await response.text().catch(() => null) }));
+        throw new Error(payload?.error || `Export failed (${response.status}).`);
+      }
+
+      const blob = await response.blob();
+      const suggestedName = response.headers.get("x-export-filename") || `${storyData.title || "cartoon"}-${playbackScope}.mp4`;
+      downloadBlob(blob, suggestedName);
+      setExportProgress(`Export complete: ${suggestedName}`);
+    } catch (err) {
+      console.error("Export failed", err);
+      setError(err instanceof Error ? err.message : "Export failed.");
+      setExportProgress(null);
+    } finally {
+      setIsExporting(false);
+      setExportBeatState(null);
+      exportTimelineDurationRef.current = 0;
+      exportTimelineReadyResolverRef.current = null;
     }
   };
 
@@ -757,7 +1229,6 @@ export default function Home() {
                     if (confirmClearStory) {
                       if (currentProjectId) clearStoryStorage(currentProjectId);
                       setStoryData(null);
-                      setIsStoryApproved(false);
                       setConfirmClearStory(false);
                     } else {
                       setConfirmClearStory(true);
@@ -781,60 +1252,113 @@ export default function Home() {
               {storyData && storyData.actors_detected.length > 0 && (
                 <div className="mt-1 space-y-1 pl-2 pr-1">
                   {storyData.actors_detected.map(actor => (
+                    (() => {
+                      const clipNames = Object.keys(actor.drafted_rig?.rig_data.animation_clips || {}).sort();
+                      return (
                     <div
                       key={actor.id}
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-800/50 transition-colors group"
+                      onClick={() => handleActorSelect(selectedActorId === actor.id ? null : actor.id)}
+                      className={`px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${selectedActorId === actor.id ? 'bg-cyan-100 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : 'hover:bg-neutral-100 dark:hover:bg-neutral-800/50'}`}
                     >
-                      {/* Actor Thumbnail */}
-                      <div className="w-8 h-8 rounded-md overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
-                        {actorReferences[actor.id] ? (
-                          <img
-                            src={actorReferences[actor.id]}
-                            alt={actor.name}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
-                            <ImageIcon size={12} />
+                      <div className="flex items-center gap-2">
+                        {/* Actor Thumbnail */}
+                        <div className="w-8 h-8 rounded-md overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
+                          {actorReferences[actor.id] ? (
+                            <img
+                              src={actorReferences[actor.id]}
+                              alt={actor.name}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
+                              <ImageIcon size={12} />
+                            </div>
+                          )}
+                        </div>
+                        {/* Actor Info & Draft Button */}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">{actor.name}</div>
+                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
+                            {actor.species}
+                            {actor.drafted_rig && (
+                              <span className="ml-1 text-cyan-600 dark:text-cyan-400">
+                                • {clipNames.length} action{clipNames.length === 1 ? "" : "s"}
+                              </span>
+                            )}
                           </div>
+                        </div>
+
+                        {/* Draft Vector Rig Button */}
+                        {actorReferences[actor.id] && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDraftingActorId(actor.id);
+                              // Load cached rig if it exists, otherwise prepare for new generation
+                              setDraftedRig(actor.drafted_rig || null);
+                              setDraftError(null);
+                            }}
+                            className={`p-1.5 rounded transition-colors group-hover:opacity-100 ${actor.drafted_rig
+                              ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 opacity-100 border border-emerald-200 dark:border-emerald-700/50"
+                              : "text-neutral-400 hover:text-cyan-500 opacity-0 bg-transparent"
+                              }`}
+                            title={actor.drafted_rig ? "View Vector Rig" : "Generate SVG Vector Rig"}
+                          >
+                            {actor.drafted_rig ? (
+                              <div className="relative">
+                                <Sparkles size={14} />
+                                <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border border-white dark:border-neutral-900"></div>
+                              </div>
+                            ) : (
+                              <Sparkles size={14} />
+                            )}
+                          </button>
                         )}
                       </div>
-                      {/* Actor Info & Draft Button */}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">{actor.name}</div>
-                        <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">{actor.species}</div>
-                      </div>
 
-                      {/* Draft Vector Rig Button */}
-                      {actorReferences[actor.id] && (
-                        <button
-                          onClick={() => {
-                            setDraftingActorId(actor.id);
-                            // Load cached rig if it exists, otherwise prepare for new generation
-                            setDraftedRig(actor.drafted_rig || null);
-                            setDraftError(null);
-                          }}
-                          className={`p-1.5 rounded transition-colors group-hover:opacity-100 ${actor.drafted_rig
-                            ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 opacity-100 border border-emerald-200 dark:border-emerald-700/50"
-                            : "text-neutral-400 hover:text-cyan-500 opacity-0 bg-transparent"
-                            }`}
-                          title={actor.drafted_rig ? "View Vector Rig" : "Generate SVG Vector Rig"}
-                        >
-                          {actor.drafted_rig ? (
-                            <div className="relative">
-                              <Sparkles size={14} />
-                              <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border border-white dark:border-neutral-900"></div>
-                            </div>
-                          ) : (
-                            <Sparkles size={14} />
-                          )}
-                        </button>
+                      {selectedActorId === actor.id && clipNames.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1 pl-10">
+                          {clipNames.map(clipName => (
+                            <span
+                              key={`${actor.id}-${clipName}`}
+                              className="inline-flex items-center rounded-full border border-cyan-200 dark:border-cyan-800/50 bg-cyan-50 dark:bg-cyan-900/20 px-2 py-0.5 text-[9px] font-mono text-cyan-700 dark:text-cyan-300"
+                              title={`Reusable motion clip on ${actor.name}`}
+                            >
+                              {clipName}
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </div>
+                      );
+                    })()
                   ))}
                 </div>
               )}
             </div>
+            {/* Background Props subsection */}
+            {(() => {
+              const beatProps = storyData?.beats[selectedSceneIndex]?.drafted_background?.rig_data?.interactionNulls;
+              if (!beatProps || beatProps.length === 0) return null;
+              return (
+              <div>
+                <div className="px-2 py-1.5 text-[10px] font-bold text-neutral-400 uppercase tracking-wider flex items-center gap-2">
+                  <Mountain size={12} /> Props
+                </div>
+                <div className="mt-0.5 space-y-0.5 pl-2 pr-1">
+                  {beatProps.map(propId => (
+                    <div
+                      key={propId}
+                      className="flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-800/50 transition-colors"
+                    >
+                      <div className="w-2 h-2 rounded-sm bg-neutral-300 dark:bg-neutral-600 shrink-0" />
+                      <span className="text-[10px] text-neutral-600 dark:text-neutral-400 truncate">{propId}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              );
+            })()}
             <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
               <Volume2 size={14} /> <span className="flex-1">Audio</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">0</span>
             </div>
@@ -1140,12 +1664,13 @@ export default function Home() {
                                   </span>
                                 ))}
                                 {beat.actions.map((act, i) => (
-                                  <span 
-                                    key={`act-${i}`} 
+                                  <span
+                                    key={`act-${i}`}
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setSelectedSceneIndex(index);
                                       setSelectedActionIndex(i);
+                                      setSelectedActorId(act.actor_id);
                                     }}
                                     className={`group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full border cursor-pointer text-[9px] font-mono transition-colors ${selectedSceneIndex === index && selectedActionIndex === i ? 'bg-cyan-500 text-white border-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)]' : 'bg-neutral-100 dark:bg-neutral-800/80 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:border-cyan-400 dark:hover:border-cyan-500/50'}`}
                                   >
@@ -1173,7 +1698,13 @@ export default function Home() {
                             
                             {/* Auto-Animate Macro Button + Persistent Log Console */}
                             <div className="border-t border-neutral-200/80 dark:border-neutral-800/50 bg-neutral-50/50 dark:bg-[#0a0a0a]/50">
-                              {animatingSceneIndex === index ? (
+                              {(() => {
+                                const persistedLogs = dismissedCompileReports[index]
+                                  ? null
+                                  : (completedAnimLogs[index] || beat.compile_report?.logs || null);
+
+                                if (animatingSceneIndex === index) {
+                                  return (
                                 // Live: show spinning log while running
                                 <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
                                   <div className="absolute top-2 right-2">
@@ -1183,7 +1714,11 @@ export default function Home() {
                                     <div key={i} className="animate-in fade-in slide-in-from-bottom-1 leading-relaxed">{log}</div>
                                   ))}
                                 </div>
-                              ) : completedAnimLogs[index] ? (
+                                  );
+                                }
+
+                                if (persistedLogs) {
+                                  return (
                                 // Completed: persistent log with dismiss + re-run button
                                 <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 max-h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
                                   <div className="absolute top-2 right-2 flex items-center gap-1">
@@ -1200,6 +1735,7 @@ export default function Home() {
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
+                                        setDismissedCompileReports(prev => ({ ...prev, [index]: true }));
                                         setCompletedAnimLogs(prev => { const n = { ...prev }; delete n[index]; return n; });
                                       }}
                                       title="Dismiss log"
@@ -1208,11 +1744,38 @@ export default function Home() {
                                       ✕
                                     </button>
                                   </div>
-                                  {completedAnimLogs[index].map((log, i) => (
+                                  {persistedLogs.map((log, i) => (
                                     <div key={i} className="leading-relaxed">{log}</div>
                                   ))}
                                 </div>
-                              ) : (
+                                  );
+                                }
+
+                                if (beat.compiled_scene && !dismissedCompileReports[index]) {
+                                  return (
+                                    <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 max-h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
+                                      <div className="absolute top-2 right-2 flex items-center gap-1">
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleAnimateScene(index);
+                                          }}
+                                          title="Re-run animation pipeline"
+                                          className="text-neutral-500 hover:text-emerald-400 transition-colors"
+                                        >
+                                          <Play size={10} className="fill-current" />
+                                        </button>
+                                      </div>
+                                      <div>✓ Compiled scene timeline ({beat.compiled_scene.instance_tracks.length} track{beat.compiled_scene.instance_tracks.length === 1 ? "" : "s"}, {beat.compiled_scene.duration_seconds.toFixed(2)}s).</div>
+                                      <div>✓ Persisted compiled scene found after refresh.</div>
+                                      {beat.compile_report?.compiled_at && (
+                                        <div>Last compile: {new Date(beat.compile_report.compiled_at).toLocaleString()}</div>
+                                      )}
+                                    </div>
+                                  );
+                                }
+
+                                return (
                                 // Idle: show Animate button
                                 <div className="p-2">
                                   <button
@@ -1226,7 +1789,8 @@ export default function Home() {
                                     <Play size={14} className="fill-white group-hover/animate:scale-110 transition-transform" /> Animate Scene
                                   </button>
                                 </div>
-                              )}
+                                );
+                              })()}
                             </div>
                           </div>
 
@@ -1266,32 +1830,6 @@ export default function Home() {
                       ))
                     )}
 
-                    {/* Approve Storyboard Button */}
-                    {storyData && storyData.beats.length > 0 && (
-                      <div className="mt-4 mb-2">
-                        {isStoryApproved ? (
-                          <div className="flex items-center justify-between p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/50">
-                            <div className="flex items-center gap-2">
-                              <Check size={16} className="text-emerald-600 dark:text-emerald-400" />
-                              <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">Storyboard Approved</span>
-                            </div>
-                            <button
-                              onClick={() => setIsStoryApproved(false)}
-                              className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:text-emerald-800 dark:hover:text-emerald-200 underline transition-colors"
-                            >
-                              Edit Again
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => setIsStoryApproved(true)}
-                            className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-md hover:shadow-lg hover:-translate-y-0.5 transform"
-                          >
-                            <Check size={14} /> Approve Storyboard
-                          </button>
-                        )}
-                      </div>
-                    )}
                   </div>
                 </div>
               </section>
@@ -1320,16 +1858,27 @@ export default function Home() {
                         <div className="flex items-center gap-2 bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-800/80 rounded-lg p-1 shadow-sm dark:shadow-inner transition-colors duration-300">
                           {/* Resolution Dropdown */}
                           <div className="relative group/dropdown">
-                            <button className="flex items-center gap-2 px-3 py-1.5 text-[11px] font-semibold text-neutral-700 dark:text-neutral-300 hover:text-black dark:hover:text-white bg-neutral-100 dark:bg-neutral-800/50 hover:bg-neutral-200 dark:hover:bg-neutral-800 rounded transition-colors group">
-                              1080p FHD <span className="text-[9px] font-mono text-neutral-500 group-hover:text-neutral-600 dark:group-hover:text-neutral-400">(1920x1080)</span> <ChevronDown size={14} className="text-neutral-400 dark:text-neutral-500 group-hover/dropdown:text-neutral-600 dark:group-hover/dropdown:text-neutral-300" />
+                            <button
+                              onClick={() => setIsExportDropdownOpen(prev => !prev)}
+                              className="flex items-center gap-2 px-3 py-1.5 text-[11px] font-semibold text-neutral-700 dark:text-neutral-300 hover:text-black dark:hover:text-white bg-neutral-100 dark:bg-neutral-800/50 hover:bg-neutral-200 dark:hover:bg-neutral-800 rounded transition-colors group"
+                            >
+                              {EXPORT_RESOLUTIONS[exportResolution].label} <span className="text-[9px] font-mono text-neutral-500 group-hover:text-neutral-600 dark:group-hover:text-neutral-400">({EXPORT_RESOLUTIONS[exportResolution].width}x{EXPORT_RESOLUTIONS[exportResolution].height})</span> <ChevronDown size={14} className="text-neutral-400 dark:text-neutral-500 group-hover/dropdown:text-neutral-600 dark:group-hover/dropdown:text-neutral-300" />
                             </button>
                             {/* Dropdown Menu (Hidden by default, shown on hover for this prototype) */}
-                            <div className="absolute top-full mt-1 right-0 w-48 bg-white dark:bg-[#1a1a1a] border border-neutral-200 dark:border-neutral-700/50 rounded-lg shadow-xl opacity-0 invisible group-hover/dropdown:opacity-100 group-hover/dropdown:visible transition-all duration-200 z-50">
+                            <div className={`absolute top-full mt-1 right-0 w-48 bg-white dark:bg-[#1a1a1a] border border-neutral-200 dark:border-neutral-700/50 rounded-lg shadow-xl transition-all duration-200 z-50 ${isExportDropdownOpen ? 'opacity-100 visible' : 'opacity-0 invisible'}`}>
                               <div className="p-1 flex flex-col gap-0.5">
-                                <button className="text-left px-3 py-2 text-xs text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded transition-colors flex items-center justify-between">720p HD <span className="text-[9px] text-neutral-400 dark:text-neutral-500">1280x720</span></button>
-                                <button className="text-left px-3 py-2 text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 rounded flex items-center justify-between">1080p FHD <span className="text-[9px] text-emerald-500/70">1920x1080</span></button>
-                                <button className="text-left px-3 py-2 text-xs text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded transition-colors flex items-center justify-between">4K UHD <span className="text-[9px] text-neutral-400 dark:text-neutral-500">3840x2160</span></button>
-                                <button className="text-left px-3 py-2 text-xs text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded transition-colors flex items-center justify-between">8K UHD <span className="text-[9px] text-neutral-400 dark:text-neutral-500">7680x4320</span></button>
+                                {Object.entries(EXPORT_RESOLUTIONS).map(([key, value]) => (
+                                  <button
+                                    key={key}
+                                    onClick={() => {
+                                      setExportResolution(key as keyof typeof EXPORT_RESOLUTIONS);
+                                      setIsExportDropdownOpen(false);
+                                    }}
+                                    className={`text-left px-3 py-2 text-xs rounded flex items-center justify-between transition-colors ${exportResolution === key ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10' : 'text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800'}`}
+                                  >
+                                    {value.label} <span className={`text-[9px] ${exportResolution === key ? 'text-emerald-500/70' : 'text-neutral-400 dark:text-neutral-500'}`}>{value.width}x{value.height}</span>
+                                  </button>
+                                ))}
                               </div>
                             </div>
                           </div>
@@ -1348,7 +1897,13 @@ export default function Home() {
                         </div>
 
                         {/* Export Button */}
-                        <button className="px-4 py-1.5 bg-gradient-to-br from-cyan-500 dark:from-cyan-600 to-blue-500 dark:to-blue-600 hover:from-cyan-600 hover:dark:from-cyan-500 hover:to-blue-600 hover:dark:to-blue-500 text-white text-xs font-bold uppercase tracking-wider rounded-lg shadow-[0_0_15px_rgba(34,211,238,0.3)] hover:shadow-[0_0_20px_rgba(34,211,238,0.5)] transition-all flex items-center gap-2 transform hover:-translate-y-0.5">
+                        <button
+                          onClick={handleExport}
+                          disabled={isExporting}
+                          className="px-4 py-1.5 bg-gradient-to-br from-cyan-500 dark:from-cyan-600 to-blue-500 dark:to-blue-600 hover:from-cyan-600 hover:dark:from-cyan-500 hover:to-blue-600 hover:dark:to-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold uppercase tracking-wider rounded-lg shadow-[0_0_15px_rgba(34,211,238,0.3)] hover:shadow-[0_0_20px_rgba(34,211,238,0.5)] transition-all flex items-center gap-2 transform hover:-translate-y-0.5 disabled:transform-none"
+                          title={`Export ${playbackScope === 'all' ? 'all compiled scenes' : 'selected scene'} to MP4`}
+                        >
+                          {isExporting ? <Loader2 size={12} className="animate-spin" /> : null}
                           Export <Send size={12} className="-mt-0.5" />
                         </button>
                       </div>
@@ -1360,16 +1915,18 @@ export default function Home() {
 
                       <div className="absolute inset-0 flex items-center justify-center">
                         <Stage
-                          beat={storyData && storyData.beats.length > 0 ? storyData.beats[selectedSceneIndex] : null}
+                          beat={selectedBeat}
+                          compiledScene={selectedCompiledScene}
+                          frameRate={fps}
                           isPlaying={isPlaying}
-                          availableRigs={
-                            storyData 
-                            ? storyData.actors_detected.reduce((acc, actor) => {
-                                if (actor.drafted_rig) acc[actor.id] = actor.drafted_rig;
-                                return acc;
-                              }, {} as Record<string, DraftsmanData>)
-                            : {}
-                          }
+                          playheadTime={currentTimeSeconds}
+                          onTimelineReady={handleTimelineReady}
+                          onPlayheadUpdate={handlePlayheadUpdate}
+                          onPlayComplete={handlePlayComplete}
+                          availableRigs={availableRigs}
+                          selectedActorId={selectedActorId}
+                          onActorSelect={handleActorSelect}
+                          onActorPositionChange={handleActorPositionChange}
                         />
                       </div>
 
@@ -1400,7 +1957,7 @@ export default function Home() {
                           </div>
                           {/* FPS selector */}
                           <div className="flex items-center bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded overflow-hidden shadow-sm">
-                            {([12, 24, 30] as const).map(f => (
+                            {([12, 24, 30, 60] as const).map(f => (
                               <button
                                 key={f}
                                 onClick={() => setFps(f)}
@@ -1428,8 +1985,20 @@ export default function Home() {
 
                           {/* Playback Modes */}
                           <div className="flex items-center gap-1 bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-800/80 rounded p-1 shadow-sm dark:shadow-none transition-colors">
-                            <button className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 shadow-sm transition-colors" title="Play this scene only">Scene</button>
-                            <button className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors" title="Play all scenes sequentially">All</button>
+                            <button
+                              onClick={() => setPlaybackScope("scene")}
+                              className={`px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded transition-colors ${playbackScope === 'scene' ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 shadow-sm' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800/50'}`}
+                              title="Export or operate on this scene only"
+                            >
+                              Scene
+                            </button>
+                            <button
+                              onClick={() => setPlaybackScope("all")}
+                              className={`px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded transition-colors ${playbackScope === 'all' ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 shadow-sm' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800/50'}`}
+                              title="Export all compiled scenes sequentially"
+                            >
+                              All
+                            </button>
                           </div>
 
                           <button className="text-neutral-400 dark:text-neutral-600 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors p-1.5 rounded hover:bg-neutral-100 dark:hover:bg-neutral-900" title="Toggle Loop">
@@ -1439,6 +2008,11 @@ export default function Home() {
 
                         {/* Right Side: frame counter */}
                         <div className="w-48 flex justify-end items-center gap-2 shrink-0">
+                          {exportProgress && (
+                            <span className="max-w-40 truncate text-[9px] font-mono text-cyan-600 dark:text-cyan-400" title={exportProgress}>
+                              {exportProgress}
+                            </span>
+                          )}
                           <span className="text-[10px] font-mono text-neutral-500 dark:text-neutral-500">{fps}fps</span>
                           <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-500 font-bold bg-emerald-50 dark:bg-emerald-500/10 px-2 py-1 rounded border border-emerald-200 dark:border-emerald-500/20 shadow-sm dark:shadow-none transition-colors">
                             {String(currentFrame).padStart(3, '0')} / {String(totalFrames).padStart(3, '0')}
@@ -1517,58 +2091,86 @@ export default function Home() {
                               </div>
 
                               {/* Actor Layers */}
-                              {Array.from(new Set(beat.actions.map(a => a.actor_id))).map(actorId => {
-                                const action = beat.actions.find(a => a.actor_id === actorId);
+                              {(beat.compiled_scene?.instance_tracks.length
+                                ? beat.compiled_scene.instance_tracks.map(track => ({
+                                    actorId: track.actor_id,
+                                    bindings: track.clip_bindings,
+                                  }))
+                                : Array.from(new Set(beat.actions.map(a => a.actor_id))).map(actorId => ({
+                                    actorId,
+                                    bindings: beat.actions
+                                      .map((action, idx) => ({ action, idx }))
+                                      .filter(entry => entry.action.actor_id === actorId)
+                                      .map(entry => ({
+                                        id: `${actorId}:${entry.idx}:${entry.action.motion}`,
+                                        actor_id: actorId,
+                                        source_action_index: entry.idx,
+                                        motion: entry.action.motion,
+                                        style: entry.action.style,
+                                        clip_id: entry.action.motion,
+                                        start_time: entry.action.animation_overrides?.delay ?? 0,
+                                        duration_seconds: entry.action.duration_seconds || 2,
+                                        start_transform: {
+                                          x: entry.action.spatial_transform?.x ?? 960,
+                                          y: entry.action.spatial_transform?.y ?? 950,
+                                          scale: entry.action.spatial_transform?.scale ?? 0.5,
+                                          z_index: entry.action.spatial_transform?.z_index ?? 10,
+                                        },
+                                      })),
+                                  }))
+                              ).map(({ actorId, bindings }) => {
                                 const actorData = storyData.actors_detected.find(a => a.id === actorId);
-                                const isSelected = selectedActionIndex !== null && beat.actions[selectedActionIndex]?.actor_id === actorId;
                                 const hasRig = !!actorData?.drafted_rig;
-
-                                // Width of the timeline clip = fraction of totalDuration
-                                const clipWidthPct = Math.min(100, ((action?.duration_seconds || 2) / totalDuration) * 100);
-                                const isIdleMotion = !action || ['idle', 'stare'].includes(action.motion.toLowerCase());
+                                const hasIdleClip = !!actorData?.drafted_rig?.rig_data.animation_clips?.idle;
 
                                 return (
                                   <div key={`track-${actorId}`} className="h-9 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
                                     <div className="w-48 h-full flex items-center gap-2 px-3 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors">
-                                      {/* Actor thumbnail */}
                                       <div className="w-5 h-5 rounded shrink-0 bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
                                         {actorReferences[actorId]
                                           ? <img src={actorReferences[actorId]} alt="" className="w-full h-full object-cover" />
-                                          : <div className="w-full h-full flex items-center justify-center text-[8px] text-neutral-400">?</div>
-                                        }
+                                          : <div className="w-full h-full flex items-center justify-center text-[8px] text-neutral-400">?</div>}
                                       </div>
                                       <span className="text-[10px] text-neutral-700 dark:text-neutral-300 font-medium truncate flex-1">{actorData?.name || actorId}</span>
                                       {hasRig && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" title="Rig ready" />}
                                     </div>
                                     <div className="flex-1 h-full relative overflow-hidden">
-                                      {/* Ambient loop strip (always present behind the clip) */}
-                                      <div className="absolute inset-y-1.5 left-0 right-0 rounded"
-                                        style={{ background: 'repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(99,102,241,0.08) 8px, rgba(99,102,241,0.08) 9px)', border: '1px solid rgba(99,102,241,0.15)' }}>
-                                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-indigo-300 dark:text-indigo-700 select-none">idle ↻</span>
-                                      </div>
-
-                                      {/* Timeline action clip (on top of ambient strip) */}
-                                      {action && !isIdleMotion && (
+                                      {hasIdleClip && (
                                         <div
-                                          className={`absolute left-0 inset-y-1.5 rounded flex items-center px-2 cursor-pointer transition-colors z-10 ${
-                                            isSelected
-                                              ? 'bg-cyan-500/40 border border-cyan-400 text-cyan-700 dark:text-cyan-300'
-                                              : 'bg-blue-100 dark:bg-blue-600/25 border border-blue-300 dark:border-blue-500/50 hover:bg-blue-200 dark:hover:bg-blue-600/35 text-blue-700 dark:text-blue-300'
-                                          }`}
-                                          style={{ width: `${clipWidthPct}%` }}
-                                          onClick={() => {
-                                            const idx = beat.actions.findIndex(a => a === action);
-                                            setSelectedActionIndex(idx);
-                                          }}
+                                          className="absolute inset-y-1.5 left-0 right-0 rounded"
+                                          style={{ background: 'repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(99,102,241,0.08) 8px, rgba(99,102,241,0.08) 9px)', border: '1px solid rgba(99,102,241,0.15)' }}
                                         >
-                                          {/* Start keyframe diamond */}
-                                          <span className="absolute -left-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
-                                          <span className="text-[9px] font-mono truncate pl-1">{action.motion}</span>
-                                          {action.style && <span className="text-[8px] font-mono text-blue-400 dark:text-blue-500 ml-1 truncate">({action.style})</span>}
-                                          {/* End keyframe diamond */}
-                                          <span className="absolute -right-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
+                                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-indigo-300 dark:text-indigo-700 select-none">idle ↻</span>
                                         </div>
                                       )}
+
+                                      {bindings.map((binding: ClipBinding) => {
+                                        const clipStartPct = Math.min(100, ((binding.start_time || 0) / totalDuration) * 100);
+                                        const clipWidthPct = Math.min(100, ((binding.duration_seconds || 2) / totalDuration) * 100);
+                                        const isSelected = selectedActionIndex === binding.source_action_index;
+                                        const isIdleMotion = ['idle', 'stare'].includes(binding.motion.toLowerCase());
+                                        if (isIdleMotion) return null;
+                                        return (
+                                          <div
+                                            key={binding.id}
+                                            className={`absolute inset-y-1.5 rounded flex items-center px-2 cursor-pointer transition-colors z-10 ${
+                                              isSelected
+                                                ? 'bg-cyan-500/40 border border-cyan-400 text-cyan-700 dark:text-cyan-300'
+                                                : 'bg-blue-100 dark:bg-blue-600/25 border border-blue-300 dark:border-blue-500/50 hover:bg-blue-200 dark:hover:bg-blue-600/35 text-blue-700 dark:text-blue-300'
+                                            }`}
+                                            style={{ left: `${clipStartPct}%`, width: `${clipWidthPct}%` }}
+                                            onClick={() => {
+                                              setSelectedActionIndex(binding.source_action_index);
+                                              setSelectedActorId(actorId);
+                                            }}
+                                          >
+                                            <span className="absolute -left-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
+                                            <span className="text-[9px] font-mono truncate pl-1">{binding.motion}</span>
+                                            {binding.style && <span className="text-[8px] font-mono text-blue-400 dark:text-blue-500 ml-1 truncate">({binding.style})</span>}
+                                            <span className="absolute -right-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
+                                          </div>
+                                        );
+                                      })}
                                     </div>
                                   </div>
                                 );
@@ -1605,13 +2207,14 @@ export default function Home() {
                   if (!beat) {
                     return <div className="mt-8 text-center text-[10px] text-neutral-400 dark:text-neutral-600 font-mono transition-colors">Awaiting story data...</div>;
                   }
+                  const selectedBindingRef = findCompiledBinding(beat.compiled_scene, selectedActionIndex);
 
                   // ── Animation Overview (shown when nothing selected) ──────
                   if (selectedActionIndex === null || !beat.actions[selectedActionIndex]) {
                     return (
                       <div className="space-y-5">
                         <div>
-                          <h3 className="text-[9px] font-bold uppercase tracking-widest text-neutral-400 dark:text-neutral-600 mb-2">Scene Animations</h3>
+                          <h3 className="text-[9px] font-bold uppercase tracking-widest text-neutral-400 dark:text-neutral-600 mb-2">Compiled Scene Timeline</h3>
                           <div className="space-y-1.5">
                             {/* Background ambient */}
                             <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-800/20">
@@ -1619,38 +2222,47 @@ export default function Home() {
                               <span className="text-[10px] text-neutral-600 dark:text-neutral-400 flex-1">Background ambient</span>
                               <span className="text-[9px] text-indigo-400 font-mono">∞</span>
                             </div>
-                            {/* Per-actor animations */}
-                            {beat.actions.map((action, idx) => {
-                              const actorData = storyData.actors_detected.find(a => a.id === action.actor_id);
-                              const isIdle = ['idle', 'stare'].includes(action.motion.toLowerCase());
-                              return (
-                                <div key={idx} className="rounded border border-neutral-100 dark:border-neutral-800/40 overflow-hidden">
-                                  <div className="px-2 py-1 bg-neutral-50 dark:bg-neutral-900/50 flex items-center gap-1.5">
-                                    <div className="w-3 h-3 rounded-sm bg-neutral-200 dark:bg-neutral-800 overflow-hidden shrink-0">
-                                      {actorReferences[action.actor_id] && <img src={actorReferences[action.actor_id]} alt="" className="w-full h-full object-cover" />}
+                            {beat.compiled_scene?.instance_tracks.length ? (
+                              beat.compiled_scene.instance_tracks.map(track => {
+                                const actorData = storyData.actors_detected.find(a => a.id === track.actor_id);
+                                return (
+                                  <div key={track.actor_id} className="rounded border border-neutral-100 dark:border-neutral-800/40 overflow-hidden">
+                                    <div className="px-2 py-1 bg-neutral-50 dark:bg-neutral-900/50 flex items-center gap-1.5">
+                                      <div className="w-3 h-3 rounded-sm bg-neutral-200 dark:bg-neutral-800 overflow-hidden shrink-0">
+                                        {actorReferences[track.actor_id] && <img src={actorReferences[track.actor_id]} alt="" className="w-full h-full object-cover" />}
+                                      </div>
+                                      <span className="text-[10px] font-semibold text-neutral-600 dark:text-neutral-300 flex-1 truncate">{actorData?.name || track.actor_id}</span>
                                     </div>
-                                    <span className="text-[10px] font-semibold text-neutral-600 dark:text-neutral-300 flex-1 truncate">{actorData?.name || action.actor_id}</span>
+                                    {track.clip_bindings.map(binding => (
+                                      <div
+                                        key={binding.id}
+                                        className="flex items-center gap-2 px-2 py-1 border-t border-neutral-100 dark:border-neutral-800/30 bg-blue-50/50 dark:bg-blue-900/10 cursor-pointer hover:bg-blue-100/60 dark:hover:bg-blue-900/20 transition-colors"
+                                        onClick={() => { setSelectedActionIndex(binding.source_action_index); setSelectedActorId(track.actor_id); }}
+                                      >
+                                        <span className="text-blue-400 text-[9px] font-mono">▶</span>
+                                        <span className="text-[9px] text-neutral-600 dark:text-neutral-400 flex-1">
+                                          {binding.motion} <span className="text-neutral-400">({binding.style})</span>
+                                          <span className="ml-1 text-cyan-500 font-mono">→ {binding.clip_id}</span>
+                                        </span>
+                                        <span className="text-[8px] text-blue-400 font-mono">{binding.start_time.toFixed(1)}s + {binding.duration_seconds.toFixed(1)}s</span>
+                                      </div>
+                                    ))}
                                   </div>
-                                  {/* Ambient row */}
-                                  <div className="flex items-center gap-2 px-2 py-1 border-t border-neutral-100 dark:border-neutral-800/30">
-                                    <span className="text-indigo-400 text-[9px] font-mono">↻</span>
-                                    <span className="text-[9px] text-neutral-500 dark:text-neutral-500 flex-1">idle / breathing</span>
-                                    <span className="text-[8px] text-indigo-400 font-mono">∞</span>
-                                  </div>
-                                  {/* Timeline clip row (only if non-idle) */}
-                                  {!isIdle && (
-                                    <div
-                                      className="flex items-center gap-2 px-2 py-1 border-t border-neutral-100 dark:border-neutral-800/30 bg-blue-50/50 dark:bg-blue-900/10 cursor-pointer hover:bg-blue-100/60 dark:hover:bg-blue-900/20 transition-colors"
-                                      onClick={() => setSelectedActionIndex(idx)}
-                                    >
-                                      <span className="text-blue-400 text-[9px] font-mono">▶</span>
-                                      <span className="text-[9px] text-neutral-600 dark:text-neutral-400 flex-1">{action.motion} <span className="text-neutral-400">({action.style})</span></span>
-                                      <span className="text-[8px] text-blue-400 font-mono">{action.duration_seconds}s</span>
-                                    </div>
-                                  )}
+                                );
+                              })
+                            ) : (
+                              beat.actions.map((action, idx) => (
+                                <div
+                                  key={idx}
+                                  className="flex items-center gap-2 px-2 py-1 border border-neutral-100 dark:border-neutral-800/40 bg-blue-50/50 dark:bg-blue-900/10 cursor-pointer hover:bg-blue-100/60 dark:hover:bg-blue-900/20 transition-colors rounded"
+                                  onClick={() => { setSelectedActionIndex(idx); setSelectedActorId(action.actor_id); }}
+                                >
+                                  <span className="text-blue-400 text-[9px] font-mono">▶</span>
+                                  <span className="text-[9px] text-neutral-600 dark:text-neutral-400 flex-1">{action.motion} <span className="text-neutral-400">({action.style})</span></span>
+                                  <span className="text-[8px] text-blue-400 font-mono">{action.duration_seconds}s</span>
                                 </div>
-                              );
-                            })}
+                              ))
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1658,34 +2270,82 @@ export default function Home() {
                   }
 
                   const action = beat.actions[selectedActionIndex];
-                  const transform = action.spatial_transform || { x: 500, y: 800, scale: 1.0, z_index: 10 };
+                  const binding = selectedBindingRef?.binding;
+                  const transform = binding?.start_transform || action.spatial_transform || { x: 500, y: 800, scale: 1.0, z_index: 10 };
 
                   const updateTransform = (key: keyof typeof transform, value: number) => {
                     setStoryData(prev => {
                       if (!prev) return prev;
                       const newBeats = [...prev.beats];
+                      const currentBeat = newBeats[selectedSceneIndex];
                       const newActions = [...newBeats[selectedSceneIndex].actions];
                       newActions[selectedActionIndex] = {
                         ...newActions[selectedActionIndex],
                         spatial_transform: { ...transform, [key]: value }
                       };
-                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions };
+                      let nextCompiledScene = currentBeat.compiled_scene;
+                      const nextBindingRef = findCompiledBinding(nextCompiledScene, selectedActionIndex);
+                      if (nextCompiledScene && nextBindingRef) {
+                        nextCompiledScene = {
+                          ...nextCompiledScene,
+                          instance_tracks: nextCompiledScene.instance_tracks.map((track, trackIndex) => {
+                            if (trackIndex !== nextBindingRef.trackIndex) return track;
+                            return {
+                              ...track,
+                              transform_track: track.transform_track.map((keyframe, keyframeIndex) =>
+                                keyframeIndex === 0 ? { ...keyframe, [key]: value } : keyframe
+                              ),
+                              clip_bindings: track.clip_bindings.map((clipBinding, bindingIndex) =>
+                                bindingIndex === nextBindingRef.bindingIndex
+                                  ? { ...clipBinding, start_transform: { ...clipBinding.start_transform, [key]: value } }
+                                  : clipBinding
+                              ),
+                            };
+                          }),
+                        };
+                      }
+                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions, compiled_scene: nextCompiledScene };
                       return { ...prev, beats: newBeats };
                     });
                   };
 
-                  const targetTransform = action.target_spatial_transform || { x: transform.x + 200, y: transform.y, scale: transform.scale };
+                  const targetTransform = binding?.end_transform || action.target_spatial_transform || { x: transform.x + 200, y: transform.y, scale: transform.scale, z_index: transform.z_index };
                   
                   const updateTargetTransform = (key: keyof typeof targetTransform, value: number) => {
                     setStoryData(prev => {
                       if (!prev) return prev;
                       const newBeats = [...prev.beats];
+                      const currentBeat = newBeats[selectedSceneIndex];
                       const newActions = [...newBeats[selectedSceneIndex].actions];
                       newActions[selectedActionIndex] = {
                         ...newActions[selectedActionIndex],
                         target_spatial_transform: { ...targetTransform, [key]: value }
                       };
-                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions };
+                      let nextCompiledScene = currentBeat.compiled_scene;
+                      const nextBindingRef = findCompiledBinding(nextCompiledScene, selectedActionIndex);
+                      if (nextCompiledScene && nextBindingRef) {
+                        nextCompiledScene = {
+                          ...nextCompiledScene,
+                          instance_tracks: nextCompiledScene.instance_tracks.map((track, trackIndex) => {
+                            if (trackIndex !== nextBindingRef.trackIndex) return track;
+                            return {
+                              ...track,
+                              transform_track: track.transform_track.map((keyframe, keyframeIndex) =>
+                                keyframeIndex === track.transform_track.length - 1 ? { ...keyframe, [key]: value } : keyframe
+                              ),
+                              clip_bindings: track.clip_bindings.map((clipBinding, bindingIndex) =>
+                                bindingIndex === nextBindingRef.bindingIndex
+                                  ? {
+                                      ...clipBinding,
+                                      end_transform: { ...(clipBinding.end_transform || clipBinding.start_transform), [key]: value },
+                                    }
+                                  : clipBinding
+                              ),
+                            };
+                          }),
+                        };
+                      }
+                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions, compiled_scene: nextCompiledScene };
                       return { ...prev, beats: newBeats };
                     });
                   };
@@ -1694,12 +2354,35 @@ export default function Home() {
                      setStoryData(prev => {
                       if (!prev) return prev;
                       const newBeats = [...prev.beats];
+                      const currentBeat = newBeats[selectedSceneIndex];
                       const newActions = [...newBeats[selectedSceneIndex].actions];
                       newActions[selectedActionIndex] = {
                         ...newActions[selectedActionIndex],
                         duration_seconds: value
                       };
-                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions };
+                      let nextCompiledScene = currentBeat.compiled_scene;
+                      const nextBindingRef = findCompiledBinding(nextCompiledScene, selectedActionIndex);
+                      if (nextCompiledScene && nextBindingRef) {
+                        nextCompiledScene = {
+                          ...nextCompiledScene,
+                          duration_seconds: Math.max(
+                            nextCompiledScene.duration_seconds,
+                            (nextBindingRef.binding.start_time || 0) + value,
+                          ),
+                          instance_tracks: nextCompiledScene.instance_tracks.map((track, trackIndex) => {
+                            if (trackIndex !== nextBindingRef.trackIndex) return track;
+                            return {
+                              ...track,
+                              clip_bindings: track.clip_bindings.map((clipBinding, bindingIndex) =>
+                                bindingIndex === nextBindingRef.bindingIndex
+                                  ? { ...clipBinding, duration_seconds: value }
+                                  : clipBinding
+                              ),
+                            };
+                          }),
+                        };
+                      }
+                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions, compiled_scene: nextCompiledScene };
                       return { ...prev, beats: newBeats };
                     });
                   };
@@ -1708,12 +2391,53 @@ export default function Home() {
                     <div className="flex flex-col gap-5 transition-opacity">
                       <div>
                         <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-1 uppercase tracking-wider flex justify-between">
-                          <span>Selected Action</span>
+                          <span>{binding ? "Selected Binding" : "Selected Action"}</span>
                           <span className="text-cyan-500">{action.actor_id}</span>
                         </div>
                         <div className="w-full h-8 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 flex items-center px-3 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-sm dark:shadow-none transition-colors">
-                          {action.motion}({action.style})
+                          {action.motion}({action.style}){binding ? ` -> ${binding.clip_id}` : ""}
                         </div>
+                      </div>
+
+                      {/* Motion Editor */}
+                      <div>
+                        <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-2 uppercase tracking-wider flex items-center gap-2">
+                          <Play size={12} /> Motion
+                        </div>
+                        <input
+                          list="motion-suggestions"
+                          value={action.motion}
+                          onChange={e => {
+                            const newMotion = e.target.value;
+                            setStoryData(prev => {
+                              if (!prev) return prev;
+                              const newBeats = [...prev.beats];
+                              const newActions = [...newBeats[selectedSceneIndex].actions];
+                              newActions[selectedActionIndex] = {
+                                ...newActions[selectedActionIndex],
+                                motion: newMotion,
+                                // Clear target transform for non-movement motions
+                                target_spatial_transform: motionNeedsTarget(newMotion)
+                                  ? newActions[selectedActionIndex].target_spatial_transform
+                                  : undefined,
+                              };
+                              newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions };
+                              return { ...prev, beats: newBeats };
+                            });
+                          }}
+                          className="w-full h-8 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 px-2 text-xs text-neutral-700 dark:text-neutral-300 shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
+                        />
+                        <datalist id="motion-suggestions">
+                          {Array.from(new Set([
+                            action.motion,
+                            ...(storyData?.actors_detected.find(a => a.id === action.actor_id)?.drafted_rig
+                              ? Object.keys(storyData.actors_detected.find(a => a.id === action.actor_id)?.drafted_rig?.rig_data.animation_clips || {})
+                              : []),
+                            'idle', 'walk', 'run', 'jump', 'swim', 'crawl', 'fly', 'slither', 'glide', 'drive', 'wave', 'sit', 'hide', 'panic', 'celebrate'
+                          ])).map(m => (
+                            <option key={m} value={m} />
+                          ))}
+                        </datalist>
                       </div>
 
                       <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
@@ -1781,7 +2505,7 @@ export default function Home() {
                       </div>
 
                       {/* Target Transform (For Movement) */}
-                      {(action.motion === 'run' || action.motion === 'walk' || action.motion === 'jump') && (
+                      {motionNeedsTarget(action.motion) && (
                         <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
                           <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex items-center gap-2">
                             <Mountain size={12} className="opacity-50" /> Target Destination
@@ -2083,6 +2807,27 @@ export default function Home() {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {exportBeatState && (
+        <div
+          ref={exportStageHostRef}
+          className="pointer-events-none fixed -left-[10000px] top-0 h-[1080px] w-[1920px] opacity-0"
+          aria-hidden="true"
+        >
+          <Stage
+            stageDomId="cartoon2d-export-stage"
+            beat={exportBeatState.beat}
+            compiledScene={exportBeatState.compiledScene}
+            availableRigs={availableRigs}
+            frameRate={fps}
+            disableAmbient={true}
+            isPlaying={false}
+            playheadTime={exportPlayheadTime}
+            onTimelineReady={handleExportTimelineReady}
+            selectedActorId={null}
+          />
         </div>
       )}
 
