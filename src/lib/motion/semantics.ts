@@ -15,13 +15,14 @@ export function inferAutoTargetTransform(
   motion: string,
   start: { x: number; y: number; scale: number },
   durationSeconds: number,
+  stageW = 1920,
 ): { x: number; y: number; scale: number } | undefined {
   if (!motionNeedsTarget(motion)) return undefined;
 
   const travel = Math.max(220, Math.round(durationSeconds * 180));
-  const preferredDirection = start.x <= 960 ? 1 : -1;
+  const preferredDirection = start.x <= stageW / 2 ? 1 : -1;
   const unclampedX = start.x + travel * preferredDirection;
-  const clampedX = Math.max(140, Math.min(1780, unclampedX));
+  const clampedX = Math.max(140, Math.min(stageW - 140, unclampedX));
 
   return {
     x: clampedX,

@@ -2,19 +2,58 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import Stage from "@/components/Stage";
-import { Send, Play, Image as ImageIcon, ImageOff, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, ChevronUp, Loader2, Film, Trash2, Pencil, Plus, Copy, Mountain } from "lucide-react";
+import { Send, Play, Image as ImageIcon, ImageOff, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, ChevronUp, Loader2, Film, Trash2, Pencil, Plus, Copy, Mountain, Bug } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { processScenePromptStream, processSceneImageEdit } from "@/app/actions/scene";
-import { ClipBinding, CompiledSceneData, StoryGenerationData } from "@/lib/schema/story";
-import { loadStoryFromStorage, saveStoryToStorage, clearStoryStorage, getProjectsList, createProject, deleteProject, updateProjectTitle, ProjectMetadata, loadActorIdentities, saveActorIdentity } from "@/lib/storage/db";
+import { ClipBinding, CompiledSceneData, StoryBeatData, StoryGenerationData, getStageDims, StageOrientation } from "@/lib/schema/story";
+import { loadStoryFromStorage, saveStoryToStorage, clearStoryStorage, getProjectsList, createProject, deleteProject, updateProjectTitle, ProjectMetadata, loadActorIdentities, saveActorIdentity, updateProjectOrientation } from "@/lib/storage/db";
 import { generateMotionClipForRig, processDraftsmanPrompt } from "@/app/actions/draftsman";
 import { processSetDesignerPrompt } from "@/app/actions/set_designer";
 import { DraftsmanData } from "@/lib/schema/rig";
 import { RigViewer } from "@/components/RigViewer";
-import { inferAutoTargetTransform, motionNeedsTarget, normalizeMotionKey } from "@/lib/motion/semantics";
+import { IKLab } from "@/components/IKLab";
+import { RigClipPreview } from "@/components/RigClipPreview";
+import { inferAutoTargetTransform, motionNeedsTarget, normalizeMotionKey, suggestMotionAliases } from "@/lib/motion/semantics";
 import { compileBeatToScene } from "@/lib/motion/compiler";
+import { motionClipToIKPlayback, resolvePlayableMotionClip } from "@/lib/motion/compiled_ik";
+import { estimateMotionClipDuration } from "@/lib/motion/intent";
 
 import { ThemeToggle } from "@/components/ThemeToggle";
+
+const GEMINI_31_FLASH_IMAGE_INPUT_TOKEN_USD = 0.0000005;
+const GEMINI_31_FLASH_IMAGE_TEXT_OUTPUT_TOKEN_USD = 0.000003;
+const GEMINI_31_FLASH_IMAGE_IMAGE_OUTPUT_TOKEN_USD = 0.00006;
+const GEMINI_31_FLASH_IMAGE_512_OUTPUT_TOKENS = 747;
+const GEMINI_31_FLASH_IMAGE_512_MIN_IMAGE_COST_USD =
+  Number((GEMINI_31_FLASH_IMAGE_512_OUTPUT_TOKENS * GEMINI_31_FLASH_IMAGE_IMAGE_OUTPUT_TOKEN_USD).toFixed(5));
+const GEMINI_31_PRO_PREVIEW_STANDARD_INPUT_TOKEN_USD = 0.000002;
+const GEMINI_31_PRO_PREVIEW_STANDARD_TEXT_OUTPUT_TOKEN_USD = 0.000012;
+const GEMINI_31_PRO_PREVIEW_LARGE_INPUT_TOKEN_USD = 0.000004;
+const GEMINI_31_PRO_PREVIEW_LARGE_TEXT_OUTPUT_TOKEN_USD = 0.000018;
+const GEMINI_31_PRO_PREVIEW_PROMPT_THRESHOLD = 200000;
+
+function estimateStoryboardGenerationCost(promptTokens: number, candidateTokens: number, imageCount: number) {
+  const imageOutputTokens = Math.min(candidateTokens, imageCount * GEMINI_31_FLASH_IMAGE_512_OUTPUT_TOKENS);
+  const textOutputTokens = Math.max(0, candidateTokens - imageOutputTokens);
+  const totalCost =
+    (promptTokens * GEMINI_31_FLASH_IMAGE_INPUT_TOKEN_USD) +
+    (textOutputTokens * GEMINI_31_FLASH_IMAGE_TEXT_OUTPUT_TOKEN_USD) +
+    (imageOutputTokens * GEMINI_31_FLASH_IMAGE_IMAGE_OUTPUT_TOKEN_USD);
+
+  return { totalCost, imageOutputTokens, textOutputTokens };
+}
+
+function estimateProPreviewTextCost(promptTokens: number, candidateTokens: number) {
+  const usesLargePromptRates = promptTokens > GEMINI_31_PRO_PREVIEW_PROMPT_THRESHOLD;
+  const inputRate = usesLargePromptRates
+    ? GEMINI_31_PRO_PREVIEW_LARGE_INPUT_TOKEN_USD
+    : GEMINI_31_PRO_PREVIEW_STANDARD_INPUT_TOKEN_USD;
+  const outputRate = usesLargePromptRates
+    ? GEMINI_31_PRO_PREVIEW_LARGE_TEXT_OUTPUT_TOKEN_USD
+    : GEMINI_31_PRO_PREVIEW_STANDARD_TEXT_OUTPUT_TOKEN_USD;
+
+  return (promptTokens * inputRate) + (candidateTokens * outputRate);
+}
 
 function findCompiledBinding(compiledScene: CompiledSceneData | null | undefined, actionIndex: number | null) {
   if (!compiledScene || actionIndex === null) return null;
@@ -28,13 +67,232 @@ function findCompiledBinding(compiledScene: CompiledSceneData | null | undefined
   return null;
 }
 
+function buildClipPreviewScene(actorId: string, clipName: string, rig: DraftsmanData, stageDims: { width: number; height: number } = { width: 1920, height: 1080 }): {
+  beat: StoryBeatData;
+  compiledScene: CompiledSceneData;
+} {
+  const motionClip = rig.rig_data.motion_clips?.[clipName];
+  const durationSeconds = estimateMotionClipDuration(motionClip);
+  const playableClip = resolvePlayableMotionClip({
+    rig,
+    clipId: clipName,
+    motionClip,
+    durationSeconds,
+  });
+  const compiledIKPlayback = motionClipToIKPlayback(clipName, playableClip);
+  const view = playableClip?.view;
+
+  const cx = stageDims.width / 2;
+  const cy = Math.round(stageDims.height * 0.8);
+
+  const beat: StoryBeatData = {
+    scene_number: 1,
+    narrative: `${actorId} previewing ${clipName}`,
+    camera: { zoom: 1, pan: "static" },
+    audio: [],
+    actions: [
+      {
+        actor_id: actorId,
+        motion: clipName,
+        style: "preview",
+        duration_seconds: durationSeconds,
+        spatial_transform: {
+          x: cx,
+          y: cy,
+          scale: 0.9,
+          z_index: 10,
+        },
+      },
+    ],
+    comic_panel_prompt: "",
+  };
+
+  const compiledScene: CompiledSceneData = {
+    duration_seconds: durationSeconds,
+    background_ambient: [],
+    obstacles: [],
+    instance_tracks: [
+      {
+        actor_id: actorId,
+        clip_bindings: [
+          {
+            id: `${actorId}:preview:${clipName}`,
+            actor_id: actorId,
+            source_action_index: 0,
+            motion: clipName,
+            style: "preview",
+            clip_id: clipName,
+            view,
+            start_time: 0,
+            duration_seconds: durationSeconds,
+            ik_playback: compiledIKPlayback,
+            start_transform: {
+              x: cx,
+              y: cy,
+              scale: 0.9,
+              z_index: 10,
+            },
+          },
+        ],
+        transform_track: [
+          {
+            time: 0,
+            x: cx,
+            y: cy,
+            scale: 0.9,
+            z_index: 10,
+          },
+        ],
+      },
+    ],
+  };
+
+  return { beat, compiledScene };
+}
+
+function classifyCompileLogLine(line: string): "paid" | "reused" | "error" | "neutral" {
+  if (line.includes("[PAID]")) return "paid";
+  if (line.includes("[REUSED]")) return "reused";
+  if (line.includes("[BLOCKED]")) return "error";
+  if (line.includes("❌")) return "error";
+  return "neutral";
+}
+
+function renderCompileLogLine(line: string, key: string | number) {
+  const kind = classifyCompileLogLine(line);
+  const badgeClass =
+    kind === "paid"
+      ? "border-amber-400/40 bg-amber-500/10 text-amber-300"
+      : kind === "reused"
+        ? "border-cyan-400/40 bg-cyan-500/10 text-cyan-300"
+        : kind === "error"
+          ? "border-red-400/40 bg-red-500/10 text-red-300"
+          : "border-neutral-700 bg-neutral-900 text-neutral-400";
+
+  const lineClass =
+    kind === "paid"
+      ? "text-amber-300"
+      : kind === "reused"
+        ? "text-cyan-300"
+        : kind === "error"
+          ? "text-red-300"
+          : "text-emerald-400";
+
+  return (
+    <div key={key} className={`leading-relaxed flex items-start gap-2 ${lineClass}`}>
+      {kind !== "neutral" && (
+        <span className={`mt-0.5 shrink-0 rounded border px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider ${badgeClass}`}>
+          {kind}
+        </span>
+      )}
+      <span className="min-w-0 break-words">{line}</span>
+    </div>
+  );
+}
+
+function getBeatImageGenerationCost(
+  beat: StoryBeatData | undefined,
+  beatIndex: number,
+  transientCosts: Record<number, { tokens: number; cost: number }>,
+) {
+  const exactCost = beat?.image_generation_cost || beat?.compile_report?.image_generation_cost || transientCosts[beatIndex];
+  if (exactCost) return exactCost;
+  if (!beat?.image_data) return null;
+
+  return {
+    tokens: GEMINI_31_FLASH_IMAGE_512_OUTPUT_TOKENS,
+    cost: GEMINI_31_FLASH_IMAGE_512_MIN_IMAGE_COST_USD,
+  };
+}
+
+function sanitizeDurationSeconds(value: number | null | undefined, fallback: number = 10) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  return Math.min(Math.max(value, 0.1), 3600);
+}
+
+function extractRigViews(svgData: string): string[] {
+  const matches = Array.from(svgData.matchAll(/id=['"](view_[^'"]+)['"]/g)).map((match) => match[1]);
+  return Array.from(new Set(matches.length > 0 ? matches : ["view_front"]));
+}
+
+function loadClientImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Failed to load image."));
+    image.src = src;
+  });
+}
+
+function findActorReferenceTransform(beat: StoryBeatData, actorId: string) {
+  const compiledTrack = beat.compiled_scene?.instance_tracks.find((track) => track.actor_id === actorId);
+  const compiledBinding = compiledTrack?.clip_bindings[0];
+  if (compiledBinding?.start_transform) {
+    return compiledBinding.start_transform;
+  }
+
+  const action = beat.actions.find((candidate) => candidate.actor_id === actorId);
+  if (action?.spatial_transform) {
+    return action.spatial_transform;
+  }
+
+  return null;
+}
+
+function buildActorReuseKey(actor: StoryGenerationData["actors_detected"][number]) {
+  return [
+    normalizeMotionKey(actor.name),
+    normalizeMotionKey(actor.species),
+  ].join("::");
+}
+
+function cloneAnimationClip<T>(clip: T): T {
+  return JSON.parse(JSON.stringify(clip)) as T;
+}
+
+
+function findReusableActorClip(
+  storyData: StoryGenerationData,
+  actorId: string,
+  motionKey: string,
+) {
+  const sourceActor = storyData.actors_detected.find((actor) => actor.id === actorId);
+  if (!sourceActor) return null;
+
+  const reuseKey = buildActorReuseKey(sourceActor);
+  for (const candidate of storyData.actors_detected) {
+    if (candidate.id === actorId || !candidate.drafted_rig) continue;
+    if (buildActorReuseKey(candidate) !== reuseKey) continue;
+
+    const reusableClipKey = suggestMotionAliases(motionKey).find((alias) =>
+      candidate.drafted_rig?.rig_data.motion_clips?.[alias],
+    );
+    if (!reusableClipKey) continue;
+
+    const reusableClip = candidate.drafted_rig.rig_data.motion_clips?.[reusableClipKey];
+    if (!reusableClip) continue;
+
+    return {
+      clipKey: reusableClipKey,
+      clip: cloneAnimationClip(reusableClip),
+      sourceActorName: candidate.name,
+    };
+  }
+
+  return null;
+}
+
+const BASE_EXPORT_RESOLUTIONS = {
+  "720p": { label: "720p HD", width: 1280, height: 720 },
+  "1080p": { label: "1080p FHD", width: 1920, height: 1080 },
+  "4k": { label: "4K UHD", width: 3840, height: 2160 },
+  "8k": { label: "8K UHD", width: 7680, height: 4320 },
+} as const;
+
 export default function Home() {
-  const EXPORT_RESOLUTIONS = {
-    "720p": { label: "720p HD", width: 1280, height: 720 },
-    "1080p": { label: "1080p FHD", width: 1920, height: 1080 },
-    "4k": { label: "4K UHD", width: 3840, height: 2160 },
-    "8k": { label: "8K UHD", width: 7680, height: 4320 },
-  } as const;
 
   const [prompt, setPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -58,7 +316,10 @@ export default function Home() {
   // Draftsman / Rigging State
   const [draftingActorId, setDraftingActorId] = useState<string | null>(null);
   const [isDrafting, setIsDrafting] = useState(false);
+  const [isAiFixingRig, setIsAiFixingRig] = useState(false);
   const [draftedRig, setDraftedRig] = useState<DraftsmanData | null>(null);
+  const [originalDraftedRig, setOriginalDraftedRig] = useState<DraftsmanData | null>(null);
+  const [rigFixPrompt, setRigFixPrompt] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
 
   // Set Designer State
@@ -75,7 +336,7 @@ export default function Home() {
   // Per-beat image generation cost (from Gemini usage metadata)
   const [beatGenerationCosts, setBeatGenerationCosts] = useState<Record<number, { tokens: number; cost: number }>>({});
   const [playbackScope, setPlaybackScope] = useState<"scene" | "all">("scene");
-  const [exportResolution, setExportResolution] = useState<keyof typeof EXPORT_RESOLUTIONS>("1080p");
+  const [exportResolution, setExportResolution] = useState<keyof typeof BASE_EXPORT_RESOLUTIONS>("1080p");
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState<string | null>(null);
@@ -100,11 +361,36 @@ export default function Home() {
   const [selectedSceneIndex, setSelectedSceneIndex] = useState<number>(0);
   const [selectedActionIndex, setSelectedActionIndex] = useState<number | null>(null);
   const [selectedActorId, setSelectedActorId] = useState<string | null>(null);
+  const [scenePreviewIndex, setScenePreviewIndex] = useState<number | null>(null);
+  const [loopPlayback, setLoopPlayback] = useState(false);
+  const [clipPreviewState, setClipPreviewState] = useState<{ actorId: string; clipName: string } | null>(null);
+  const [clipPreviewPlaying, setClipPreviewPlaying] = useState(true);
+  const [clipPreviewPlayhead, setClipPreviewPlayhead] = useState(0);
 
   // Timeline Playhead & Frame State
   const [playheadPos, setPlayheadPos] = useState<number>(0);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const [fps, setFps] = useState<12 | 24 | 30 | 60>(60);
+  const [showObstacleDebug, setShowObstacleDebug] = useState(false);
+  const [stageOrientation, setStageOrientation] = useState<StageOrientation>("landscape");
+  const stageDims = getStageDims(stageOrientation);
+  const storyboardImageFrameClass = stageOrientation === "portrait"
+    ? "w-full max-w-[17rem] aspect-[9/16] mx-auto"
+    : "w-full aspect-video";
+  const previewImageFrameClass = stageOrientation === "portrait"
+    ? "w-full max-w-[20rem] aspect-[9/16] mx-auto"
+    : "w-full aspect-video";
+  const referenceImageFrameClass = stageOrientation === "portrait"
+    ? "w-36 aspect-[9/16]"
+    : "w-48 aspect-video";
+  const EXPORT_RESOLUTIONS = Object.fromEntries(
+    Object.entries(BASE_EXPORT_RESOLUTIONS).map(([key, value]) => [
+      key,
+      stageOrientation === "portrait"
+        ? { label: value.label, width: value.height, height: value.width }
+        : value,
+    ])
+  ) as { [K in keyof typeof BASE_EXPORT_RESOLUTIONS]: { label: string; width: number; height: number } };
   const timelineRef = useRef<HTMLDivElement>(null);
 
   const selectedBeat = useMemo(
@@ -112,6 +398,32 @@ export default function Home() {
     [storyData, selectedSceneIndex]
   );
   const selectedCompiledScene = selectedBeat?.compiled_scene ?? null;
+  const projectCostSummary = useMemo(() => {
+    if (!storyData) {
+      return { cost: 0, tokens: 0, compiledScenes: 0 };
+    }
+
+    return storyData.beats.reduce((acc, beat, beatIndex) => {
+      const imageCost = getBeatImageGenerationCost(beat, beatIndex, beatGenerationCosts);
+      acc.cost += imageCost?.cost || 0;
+      acc.tokens += imageCost?.tokens || 0;
+      acc.cost += beat.compile_report?.scene_cost_estimate || 0;
+      acc.tokens += beat.compile_report?.total_tokens || 0;
+      if (beat.compiled_scene) acc.compiledScenes += 1;
+      return acc;
+    }, { cost: 0, tokens: 0, compiledScenes: 0 });
+  }, [beatGenerationCosts, storyData]);
+
+  const clipPreviewBundle = useMemo(() => {
+    if (!clipPreviewState || !storyData) return null;
+    const actor = storyData.actors_detected.find(candidate => candidate.id === clipPreviewState.actorId);
+    const rig = actor?.drafted_rig;
+    if (!actor || !rig) return null;
+    return {
+      actor,
+      ...buildClipPreviewScene(actor.id, clipPreviewState.clipName, rig, stageDims),
+    };
+  }, [clipPreviewState, storyData, stageDims]);
 
   const availableRigs = useMemo(
     () =>
@@ -127,24 +439,35 @@ export default function Home() {
   // Total duration of the selected scene (seconds), used for frame math
   const totalDuration = useMemo(() => {
     const compiledDuration = sceneTimelineDurations[selectedSceneIndex];
-    if (compiledDuration && compiledDuration > 0) return compiledDuration;
-    if (selectedCompiledScene?.duration_seconds && selectedCompiledScene.duration_seconds > 0) {
-      return selectedCompiledScene.duration_seconds;
+    if (typeof compiledDuration === "number" && Number.isFinite(compiledDuration) && compiledDuration > 0) {
+      return sanitizeDurationSeconds(compiledDuration);
+    }
+    if (
+      typeof selectedCompiledScene?.duration_seconds === "number" &&
+      Number.isFinite(selectedCompiledScene.duration_seconds) &&
+      selectedCompiledScene.duration_seconds > 0
+    ) {
+      return sanitizeDurationSeconds(selectedCompiledScene.duration_seconds);
     }
 
     if (!selectedBeat || selectedBeat.actions.length === 0) return 10;
-    return Math.max(
+    const fallbackDuration = Math.max(
       2,
       ...selectedBeat.actions.map(a => {
-        const delay = a.animation_overrides?.delay || 0;
-        return delay + (a.duration_seconds || 2);
+        const delay = sanitizeDurationSeconds(a.animation_overrides?.delay, 0);
+        const actionDuration = sanitizeDurationSeconds(a.duration_seconds, 2);
+        return delay + actionDuration;
       }),
     );
+    return sanitizeDurationSeconds(fallbackDuration);
   }, [sceneTimelineDurations, selectedSceneIndex, selectedBeat, selectedCompiledScene]);
 
   const currentTimeSeconds = (playheadPos / 100) * totalDuration;
   const currentFrame = Math.round(currentTimeSeconds * fps);
-  const totalFrames  = Math.round(totalDuration * fps);
+  const totalFrames  = Math.max(1, Math.min(Math.round(totalDuration * fps), 216000));
+  const selectedStageKey = selectedBeat
+    ? `scene-${selectedSceneIndex}-${selectedBeat.scene_number}-${selectedCompiledScene?.duration_seconds ?? selectedBeat.actions.length}`
+    : "scene-empty";
 
   useEffect(() => {
     if (!isDraggingPlayhead) return;
@@ -170,6 +493,18 @@ export default function Home() {
     };
   }, [isDraggingPlayhead]);
 
+  const generateRigDraft = async ({
+    generationReference,
+    description,
+    requiredViews,
+  }: {
+    generationReference: string;
+    description: string;
+    requiredViews?: string[];
+  }) => {
+    return processDraftsmanPrompt(generationReference, description, requiredViews);
+  };
+
   // Playhead callbacks — called by Stage when GSAP timeline ticks or completes
   const handlePlayheadUpdate = (timeSeconds: number) => {
     const pct = totalDuration > 0 ? (timeSeconds / totalDuration) * 100 : 0;
@@ -178,16 +513,47 @@ export default function Home() {
 
   const handlePlayComplete = () => {
     setIsPlaying(false);
-    setPlayheadPos(0);
+    setPlayheadPos(100);
   };
 
   const handleTimelineReady = (durationSeconds: number) => {
+    const safeDuration = sanitizeDurationSeconds(durationSeconds, 0);
+    if (safeDuration <= 0) return;
     setSceneTimelineDurations(prev => {
       const current = prev[selectedSceneIndex];
-      if (current === durationSeconds) return prev;
-      return { ...prev, [selectedSceneIndex]: durationSeconds };
+      if (current === safeDuration) return prev;
+      return { ...prev, [selectedSceneIndex]: safeDuration };
     });
   };
+
+  const handleJumpToStart = () => {
+    setIsPlaying(false);
+    setPlayheadPos(0);
+  };
+
+  const handleJumpToEnd = () => {
+    setIsPlaying(false);
+    setPlayheadPos(100);
+  };
+
+  const handleTogglePlayback = () => {
+    if (!selectedBeat) return;
+    if (isPlaying) {
+      setIsPlaying(false);
+      return;
+    }
+    if (playheadPos >= 99.9) {
+      setPlayheadPos(0);
+    }
+    setIsPlaying(true);
+  };
+
+  useEffect(() => {
+    setIsPlaying(false);
+    setPlayheadPos(0);
+    setSelectedActionIndex(null);
+    setSelectedActorId(null);
+  }, [selectedSceneIndex]);
 
   const waitForAnimationFrames = (count: number = 2) =>
     new Promise<void>((resolve) => {
@@ -275,7 +641,7 @@ export default function Home() {
   // Load from local IndexedDB on mount
   useEffect(() => {
     const initializeApp = async () => {
-      let activeProjectId = null;
+      let activeProjectId: string | null = null;
       try {
         const loadedProjects = await getProjectsList();
 
@@ -300,6 +666,10 @@ export default function Home() {
         // Load project's actor ID registry
         const actors = await loadActorIdentities(activeProjectId);
         setActorReferences(actors);
+
+        // Restore orientation for the active project
+        const activeProject = loadedProjects.find(p => p.id === activeProjectId);
+        setStageOrientation(activeProject?.orientation ?? "landscape");
       } catch (err) {
         console.error("Failed to initialize projects:", err);
       } finally {
@@ -365,6 +735,9 @@ export default function Home() {
       const actors = await loadActorIdentities(id);
       setActorReferences(actors);
 
+      const proj = projects.find(p => p.id === id);
+      setStageOrientation(proj?.orientation ?? "landscape");
+
       setIsProjectDropdownOpen(false);
     } catch (err) {
       console.error("Failed to switch project", err);
@@ -418,6 +791,13 @@ export default function Home() {
     }
   };
 
+  const handleOrientationChange = async (orientation: StageOrientation) => {
+    setStageOrientation(orientation);
+    if (currentProjectId) {
+      await updateProjectOrientation(currentProjectId, orientation);
+    }
+  };
+
   // --- Generation Handlers ---
 
   const handleGenerate = async () => {
@@ -443,7 +823,7 @@ export default function Home() {
     }
 
     try {
-      const stream = await processScenePromptStream(prompt, contextBeats, { singleBeat: generateMode === 'single' }, actorReferences);
+      const stream = await processScenePromptStream(prompt, contextBeats, { singleBeat: generateMode === 'single', orientation: stageOrientation }, actorReferences);
       for await (const chunk of stream) {
         if (chunk.type === 'error') {
           setError(chunk.error);
@@ -503,14 +883,28 @@ export default function Home() {
           });
         } else if (chunk.type === 'usage') {
           // Store generation cost split evenly across the newly generated beats
+          // gemini-3.1-flash-image-preview pricing:
+          // input $0.50/M, text output $3.00/M, image output $60.00/M.
+          // 0.5K output images use 747 output tokens each ($0.045/image).
           const totalTokens = chunk.promptTokens + chunk.candidateTokens;
-          const totalCost = (chunk.promptTokens * 0.00000125) + (chunk.candidateTokens * 0.000005);
+          const { totalCost } = estimateStoryboardGenerationCost(
+            chunk.promptTokens,
+            chunk.candidateTokens,
+            chunk.imageCount,
+          );
           setStoryData(prev => {
             if (!prev) return prev;
             const newBeatCount = prev.beats.length - initialBeatsLength;
             if (newBeatCount <= 0) return prev;
             const costPerBeat = totalCost / newBeatCount;
             const tokensPerBeat = Math.round(totalTokens / newBeatCount);
+            const newBeats = [...prev.beats];
+            for (let i = initialBeatsLength; i < newBeats.length; i++) {
+              newBeats[i] = {
+                ...newBeats[i],
+                image_generation_cost: { tokens: tokensPerBeat, cost: costPerBeat },
+              };
+            }
             setBeatGenerationCosts(prevCosts => {
               const updated = { ...prevCosts };
               for (let i = initialBeatsLength; i < prev.beats.length; i++) {
@@ -518,7 +912,7 @@ export default function Home() {
               }
               return updated;
             });
-            return prev;
+            return { ...prev, beats: newBeats };
           });
         }
       }
@@ -544,7 +938,7 @@ export default function Home() {
       // We MUST compress the image on the client before sending it over the network to the server function.
       const compressedImage = await downscaleBase64Image(originalImage, 512);
 
-      const result = await processSceneImageEdit(compressedImage, editPrompt);
+      const result = await processSceneImageEdit(compressedImage, editPrompt, stageOrientation);
 
       if (result.error) {
         setError(result.error);
@@ -590,7 +984,7 @@ export default function Home() {
     }
 
     try {
-      const stream = await processScenePromptStream(insertPrompt, contextBeats, { singleBeat: true }, actorReferences);
+      const stream = await processScenePromptStream(insertPrompt, contextBeats, { singleBeat: true, orientation: stageOrientation }, actorReferences);
       for await (const chunk of stream) {
         if (chunk.type === 'error') {
           setError(chunk.error);
@@ -642,6 +1036,29 @@ export default function Home() {
                 });
               }
             }
+            return { ...prev, beats: newBeats };
+          });
+        } else if (chunk.type === 'usage') {
+          // gemini-3.1-flash-image-preview:
+          // input $0.50/M, text output $3.00/M, image output $60.00/M.
+          // 0.5K output images use 747 output tokens each ($0.045/image).
+          const totalTokens = chunk.promptTokens + chunk.candidateTokens;
+          const { totalCost } = estimateStoryboardGenerationCost(
+            chunk.promptTokens,
+            chunk.candidateTokens,
+            chunk.imageCount,
+          );
+          setStoryData(prev => {
+            if (!prev || !prev.beats[insertIndex]) return prev;
+            const newBeats = [...prev.beats];
+            newBeats[insertIndex] = {
+              ...newBeats[insertIndex],
+              image_generation_cost: { tokens: totalTokens, cost: totalCost },
+            };
+            setBeatGenerationCosts(prevCosts => ({
+              ...prevCosts,
+              [insertIndex]: { tokens: totalTokens, cost: totalCost },
+            }));
             return { ...prev, beats: newBeats };
           });
         }
@@ -716,17 +1133,19 @@ export default function Home() {
     let totalCostEst = 0;
     let compileStatus: "success" | "error" = "error";
 
-    const logUsage = (usage: any, label?: string) => {
+    const logUsage = (usage: { promptTokenCount?: number; candidatesTokenCount?: number } | undefined, label?: string) => {
       const promptTokens = usage?.promptTokenCount || 0;
       const candidateTokens = usage?.candidatesTokenCount || 0;
       const total = promptTokens + candidateTokens;
       totalTokens += total;
 
-      // Gemini 1.5 Pro approx cost (USD)
-      const cost = (promptTokens * 0.00000125) + (candidateTokens * 0.000005);
+      // gemini-3.1-pro-preview pricing:
+      // input $2.00/M and text output $12.00/M up to 200k prompt tokens,
+      // then $4.00/M input and $18.00/M output above that threshold.
+      const cost = estimateProPreviewTextCost(promptTokens, candidateTokens);
       totalCostEst += cost;
 
-      addLog(`   [${label || 'Usage'}: ${total} tokens | ~$${cost.toFixed(4)}]`);
+      addLog(`[PAID] ${label || 'Usage'}: ${total} tokens | ~$${cost.toFixed(4)}`);
     };
 
     try {
@@ -736,7 +1155,7 @@ export default function Home() {
         addLog("> Extracting 3-layer parallax environment...");
 
         apiCalls++;
-        const result = await processSetDesignerPrompt(workingBeat.image_data, workingBeat.narrative);
+        const result = await processSetDesignerPrompt(workingBeat.image_data, workingBeat.narrative, stageOrientation);
 
         setStoryData(prev => {
           if (!prev) return prev;
@@ -745,11 +1164,11 @@ export default function Home() {
           return { ...prev, beats: newBeats };
         });
 
-        addLog("✓ Environment vector rig compiled.");
+        addLog("[PAID] ✓ Environment vector rig compiled.");
         logUsage(result.usage, "Set Designer");
         workingBeat = { ...workingBeat, drafted_background: result.data };
       } else {
-        addLog("✓ Environment rig found in cache.");
+        addLog("[REUSED] ✓ Environment rig found in cache.");
       }
 
       // 2. Generate Actors if missing
@@ -792,9 +1211,17 @@ export default function Home() {
             addLog(`> Starting Draftsman AI for '${actor.name}'...`);
             addLog(`> Rigging A-Pose skeleton & visemes (${viewsArray.join(', ')})...`);
 
-            apiCalls++;
             const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}`;
-            const result = await processDraftsmanPrompt(actorReferences[actorId], description, viewsArray);
+            const generatedRig = await generateRigDraft({
+              generationReference: actorReferences[actorId],
+              description,
+              requiredViews: viewsArray,
+            });
+            apiCalls += 1;
+            logUsage(generatedRig.usage, `Draftsman (${actor.name})`);
+            const result = {
+              data: generatedRig.data,
+            };
 
             setStoryData(prev => {
               if (!prev) return prev;
@@ -807,10 +1234,9 @@ export default function Home() {
             });
 
             actorRig = result.data;
-            addLog(`✓ '${actor.name}' SVG rig assembled.`);
-            logUsage(result.usage, `Draftsman (${actor.name})`);
+            addLog(`[PAID] ✓ '${actor.name}' SVG rig assembled.`);
           } else if (actorRig) {
-            addLog(`✓ '${actor.name}' rig found in cache.`);
+            addLog(`[REUSED] ✓ '${actor.name}' rig found in cache.`);
           }
 
           if (actorRig) {
@@ -819,33 +1245,70 @@ export default function Home() {
 
             for (const actorAction of actorActions) {
               const motionKey = normalizeMotionKey(actorAction.motion);
-              if (nextRig.rig_data.animation_clips?.[motionKey]) continue;
+              const existingClipKey = suggestMotionAliases(motionKey).find(
+                (alias) => nextRig.rig_data.motion_clips?.[alias],
+              );
+              if (existingClipKey) {
+                addLog(`[REUSED] ✓ Motion '${motionKey}' reused for '${actor.name}' from clip '${existingClipKey}'.`);
+                continue;
+              }
+
+              const reusableClip = findReusableActorClip(storyData, actorId, motionKey);
+              if (reusableClip) {
+                nextRig = {
+                  ...nextRig,
+                  rig_data: {
+                    ...nextRig.rig_data,
+                    motion_clips: {
+                      ...(nextRig.rig_data.motion_clips || {}),
+                      [motionKey]: reusableClip.clip,
+                    },
+                  },
+                };
+                addLog(`[REUSED] ✓ Motion '${motionKey}' copied for '${actor.name}' from '${reusableClip.sourceActorName}:${reusableClip.clipKey}'.`);
+                continue;
+              }
 
               addLog(`> Compiling motion '${motionKey}' for '${actor.name}'...`);
               apiCalls++;
 
-              const clipResult = await generateMotionClipForRig({
-                rig: nextRig,
-                motion: motionKey,
-                style: actorAction.style,
-                durationSeconds: actorAction.duration_seconds,
-                actorName: actor.name,
-                actorDescription: actor.visual_description,
-                sceneNarrative: workingBeat.narrative,
-              });
+              let clipResult;
+              try {
+                clipResult = await generateMotionClipForRig({
+                  rig: nextRig,
+                  motion: motionKey,
+                  style: actorAction.style,
+                  durationSeconds: actorAction.duration_seconds,
+                  actorName: actor.name,
+                  actorDescription: actor.visual_description,
+                  sceneNarrative: workingBeat.narrative,
+                });
+              } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : String(error);
+                addLog(`[BLOCKED] Motion '${motionKey}' blocked for '${actor.name}': ${message}`);
+                continue;
+              }
 
               nextRig = {
                 ...nextRig,
                 rig_data: {
                   ...nextRig.rig_data,
-                  animation_clips: {
-                    ...(nextRig.rig_data.animation_clips || {}),
+                  motion_clips: {
+                    ...(nextRig.rig_data.motion_clips || {}),
                     [motionKey]: clipResult.clip,
                   },
                 },
               };
 
-              addLog(`✓ Motion '${motionKey}' compiled for '${actor.name}'.`);
+              addLog(`[PAID] ✓ Motion '${motionKey}' compiled for '${actor.name}'.`);
+              if (clipResult.stabilization?.stabilized) {
+                addLog(`[CHECK] Motion stabilized: ${clipResult.stabilization.refinedChains} chain${clipResult.stabilization.refinedChains === 1 ? "" : "s"} solved, ${clipResult.stabilization.suppressedKeyframes} unsafe keyframe${clipResult.stabilization.suppressedKeyframes === 1 ? "" : "s"} removed.`);
+              }
+              if (clipResult.stabilization?.validationWarnings?.length) {
+                clipResult.stabilization.validationWarnings.slice(0, 2).forEach((warning: string) => {
+                  addLog(`[REVIEW] Motion validation: ${warning}.`);
+                });
+              }
               logUsage(clipResult.usage, `Motion (${actor.name}:${motionKey})`);
             }
 
@@ -866,36 +1329,81 @@ export default function Home() {
         }
       }
 
-      const compiledScene = compileBeatToScene(workingBeat, sceneRigs);
+      const previousCompiledScene = index > 0 ? storyData.beats[index - 1]?.compiled_scene ?? null : null;
+      const compiledScene = compileBeatToScene(workingBeat, sceneRigs, previousCompiledScene, stageOrientation);
       setStoryData(prev => {
         if (!prev) return prev;
         const newBeats = [...prev.beats];
         newBeats[index] = { ...newBeats[index], compiled_scene: compiledScene };
         return { ...prev, beats: newBeats };
       });
+
+      const bindingByActionIndex = new Map(
+        compiledScene.instance_tracks.flatMap(track =>
+          track.clip_bindings.map(binding => [binding.source_action_index, binding] as const),
+        ),
+      );
+
+      const blockedActionLogs: string[] = [];
+      workingBeat.actions.forEach((action, actionIndex) => {
+        const actor = storyData.actors_detected.find(candidate => candidate.id === action.actor_id);
+        const actorLabel = actor?.name || action.actor_id;
+        const rig = sceneRigs[action.actor_id];
+        const binding = bindingByActionIndex.get(actionIndex);
+        const normalizedMotion = normalizeMotionKey(action.motion);
+
+        if (!rig) {
+          blockedActionLogs.push(`[BLOCKED] Scene action '${normalizedMotion}' for '${actorLabel}' has no rig. No playable actor clip was bound.`);
+          return;
+        }
+
+        if (!binding) {
+          const availableClips = Object.keys(rig.rig_data.motion_clips || {});
+          blockedActionLogs.push(
+            `[BLOCKED] Scene action '${normalizedMotion}' for '${actorLabel}' has no playable clip. Available reusable clips: ${availableClips.length ? availableClips.join(", ") : "none"}.`,
+          );
+        }
+      });
+
       addLog(`✓ Compiled scene timeline (${compiledScene.instance_tracks.length} track${compiledScene.instance_tracks.length === 1 ? "" : "s"}, ${compiledScene.duration_seconds.toFixed(2)}s).`);
+      blockedActionLogs.forEach(addLog);
+      if (compiledScene.background_ambient.length > 0) {
+        addLog(`✓ Compiled background ambient (${compiledScene.background_ambient.length} binding${compiledScene.background_ambient.length === 1 ? "" : "s"}).`);
+      }
+      if (compiledScene.obstacles.length > 0) {
+        addLog(`✓ Detected ${compiledScene.obstacles.length} scene obstacle${compiledScene.obstacles.length === 1 ? "" : "s"} for collision clamping.`);
+      }
+      const collisionBindings = compiledScene.instance_tracks.flatMap(track =>
+        track.clip_bindings.filter(binding => !!binding.collision),
+      );
+      if (collisionBindings.length > 0) {
+        addLog(`✓ Applied ${collisionBindings.length} collision stop${collisionBindings.length === 1 ? "" : "s"}.`);
+        collisionBindings.slice(0, 3).forEach((binding) => {
+          addLog(`✓ ${binding.actor_id} "${binding.motion}" stopped at obstacle "${binding.collision?.obstacle_id}".`);
+        });
+      }
 
       addLog("✓ Stage ready. Dispatching GSAP context...");
       addLog("─────────────────────────────");
-      const imageGen = beatGenerationCosts[index];
+      const imageGen = getBeatImageGenerationCost(workingBeat, index, beatGenerationCosts);
       if (imageGen) {
-        addLog(`Image gen: ~$${imageGen.cost.toFixed(5)} | ${imageGen.tokens.toLocaleString()} tokens`);
+        addLog(`[PAID] Image gen: ~$${imageGen.cost.toFixed(5)} | ${imageGen.tokens.toLocaleString()} tokens`);
       }
-      addLog(`API Calls: ${apiCalls} | Total tokens: ${totalTokens}`);
-      addLog(`Scene cost: ~$${totalCostEst.toFixed(5)}`);
+      addLog(`[PAID] API Calls: ${apiCalls} | Total tokens: ${totalTokens}`);
+      addLog(`[PAID] Scene cost: ~$${totalCostEst.toFixed(5)}`);
       addLog("─────────────────────────────");
-      compileStatus = "success";
+      compileStatus = blockedActionLogs.length > 0 ? "error" : "success";
 
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Animation prep failed", err);
-      addLog(`❌ Error: ${err.message || 'Pipeline failed'}`);
+      addLog(`❌ Error: ${err instanceof Error ? err.message : 'Pipeline failed'}`);
     } finally {
       // Persist logs so they remain visible below the scene image
       setCompletedAnimLogs(prev => ({ ...prev, [index]: [...localLogs] }));
       setStoryData(prev => {
         if (!prev || !prev.beats[index]) return prev;
         const newBeats = [...prev.beats];
-        const imageGen = beatGenerationCosts[index];
+        const imageGen = getBeatImageGenerationCost(workingBeat, index, beatGenerationCosts);
         newBeats[index] = {
           ...newBeats[index],
           compile_report: {
@@ -1244,6 +1752,51 @@ export default function Home() {
               )}
               <span className="min-w-[1.5rem] text-center text-xs bg-cyan-200/60 dark:bg-cyan-900/40 px-1.5 py-0.5 rounded-md text-cyan-800 dark:text-cyan-300">{storyData?.beats.length || 0}</span>
             </div>
+            {storyData && storyData.beats.length > 0 && (
+              <div className="mt-1 space-y-1 pl-2 pr-1">
+                {storyData.beats.map((beat, index) => (
+                  <div
+                    key={`scene-nav-${index}`}
+                    onClick={() => setSelectedSceneIndex(index)}
+                    className={`px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${selectedSceneIndex === index ? 'bg-cyan-100 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : 'hover:bg-neutral-100 dark:hover:bg-neutral-800/50'}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-md overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
+                        {beat.image_data ? (
+                          <img
+                            src={beat.image_data}
+                            alt={`Scene ${index + 1}`}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
+                            <LayoutList size={12} />
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">Scene {index + 1}</div>
+                        <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
+                          {beat.narrative}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setScenePreviewIndex(index);
+                          setEditPrompt("");
+                        }}
+                        className="p-1.5 rounded text-neutral-400 hover:text-cyan-500 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors opacity-0 group-hover:opacity-100"
+                        title="Inspect scene"
+                      >
+                        <LayoutList size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
             {/* Actors Section */}
             <div>
               <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
@@ -1253,7 +1806,11 @@ export default function Home() {
                 <div className="mt-1 space-y-1 pl-2 pr-1">
                   {storyData.actors_detected.map(actor => (
                     (() => {
-                      const clipNames = Object.keys(actor.drafted_rig?.rig_data.animation_clips || {}).sort();
+                      const hasRig = !!actor.drafted_rig;
+                      const clipNames = Array.from(new Set([
+                        ...Object.keys(actor.drafted_rig?.rig_data.motion_clips || {}),
+                        ...Object.keys(actor.drafted_rig?.rig_data.animation_clips || {}),
+                      ])).sort();
                       return (
                     <div
                       key={actor.id}
@@ -1280,9 +1837,9 @@ export default function Home() {
                           <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">{actor.name}</div>
                           <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
                             {actor.species}
-                            {actor.drafted_rig && (
+                            {hasRig && (
                               <span className="ml-1 text-cyan-600 dark:text-cyan-400">
-                                • {clipNames.length} action{clipNames.length === 1 ? "" : "s"}
+                                • object{clipNames.length > 0 ? ` + ${clipNames.length} action${clipNames.length === 1 ? "" : "s"}` : ""}
                               </span>
                             )}
                           </div>
@@ -1295,7 +1852,9 @@ export default function Home() {
                               e.stopPropagation();
                               setDraftingActorId(actor.id);
                               // Load cached rig if it exists, otherwise prepare for new generation
-                              setDraftedRig(actor.drafted_rig || null);
+                              setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                              setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                              setRigFixPrompt("");
                               setDraftError(null);
                             }}
                             className={`p-1.5 rounded transition-colors group-hover:opacity-100 ${actor.drafted_rig
@@ -1316,16 +1875,39 @@ export default function Home() {
                         )}
                       </div>
 
-                      {selectedActorId === actor.id && clipNames.length > 0 && (
+                      {selectedActorId === actor.id && hasRig && (
                         <div className="mt-2 flex flex-wrap gap-1 pl-10">
+                          <button
+                            key={`${actor.id}-base-object`}
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDraftingActorId(actor.id);
+                              setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                              setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                              setRigFixPrompt("");
+                              setDraftError(null);
+                            }}
+                            className="inline-flex items-center rounded-full border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-0.5 text-[9px] font-mono text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
+                            title={`Open the base SVG rig for ${actor.name}`}
+                          >
+                            object
+                          </button>
                           {clipNames.map(clipName => (
-                            <span
+                            <button
                               key={`${actor.id}-${clipName}`}
-                              className="inline-flex items-center rounded-full border border-cyan-200 dark:border-cyan-800/50 bg-cyan-50 dark:bg-cyan-900/20 px-2 py-0.5 text-[9px] font-mono text-cyan-700 dark:text-cyan-300"
-                              title={`Reusable motion clip on ${actor.name}`}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setClipPreviewState({ actorId: actor.id, clipName });
+                                setClipPreviewPlayhead(0);
+                                setClipPreviewPlaying(true);
+                              }}
+                              className="inline-flex items-center rounded-full border border-cyan-200 dark:border-cyan-800/50 bg-cyan-50 dark:bg-cyan-900/20 px-2 py-0.5 text-[9px] font-mono text-cyan-700 dark:text-cyan-300 hover:bg-cyan-100 dark:hover:bg-cyan-900/30 transition-colors"
+                              title={`Preview reusable motion clip on ${actor.name}`}
                             >
                               {clipName}
-                            </span>
+                            </button>
                           ))}
                         </div>
                       )}
@@ -1429,9 +2011,17 @@ export default function Home() {
                 )}
 
                 <div className="mt-10 flex-1 flex flex-col min-h-0 overflow-hidden">
-                  <h2 className="text-sm font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest mb-4 flex items-center gap-2.5 shrink-0">
-                    <LayoutList size={16} className="text-blue-500 dark:text-blue-400" /> Storyboard Timeline
-                  </h2>
+                  <div className="mb-4 flex items-center justify-between gap-3 shrink-0">
+                    <h2 className="text-sm font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest flex items-center gap-2.5">
+                      <LayoutList size={16} className="text-blue-500 dark:text-blue-400" /> Storyboard Timeline
+                    </h2>
+                    <div className="flex items-center gap-2 rounded-full border border-amber-200/70 bg-amber-50/80 px-3 py-1 text-[10px] font-mono text-amber-800 shadow-sm dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300">
+                      <span className="uppercase tracking-wider text-amber-600 dark:text-amber-400">Project</span>
+                      <span className="font-semibold">~${projectCostSummary.cost.toFixed(4)}</span>
+                      <span className="text-amber-500/80 dark:text-amber-400/80">{projectCostSummary.tokens.toLocaleString()} tokens</span>
+                      <span className="text-emerald-600 dark:text-emerald-400">{projectCostSummary.compiledScenes}/{storyData?.beats.length || 0} compiled</span>
+                    </div>
+                  </div>
 
                   {/* Timeline Scroll Area */}
                   <div className="flex-1 overflow-y-auto space-y-2 pr-1 pb-8 custom-scrollbar">
@@ -1447,7 +2037,15 @@ export default function Home() {
                         </p>
                       </div>
                     ) : (
-                      storyData.beats.map((beat, index) => (
+                      storyData.beats.map((beat, index) => {
+                        const imageGenCost = getBeatImageGenerationCost(beat, index, beatGenerationCosts);
+                        const hasExactImageGenCost = !!(
+                          beat.image_generation_cost ||
+                          beat.compile_report?.image_generation_cost ||
+                          beatGenerationCosts[index]
+                        );
+
+                        return (
                         <div key={index} onClick={() => setSelectedSceneIndex(index)} className="cursor-pointer relative pl-1">
                           {/* Node Dot */}
                           <div className={`absolute left-0 top-6 w-3 h-3 rounded-full border-2 z-10 transition-all ${selectedSceneIndex === index ? 'bg-cyan-500 border-white shadow-[0_0_15px_rgba(34,211,238,0.8)] scale-125' : 'bg-white dark:bg-[#111] border-neutral-300 dark:border-neutral-700'}`} />
@@ -1561,7 +2159,7 @@ export default function Home() {
                             </div>
 
                             {/* Image area */}
-                            <div className="w-full aspect-video bg-neutral-100 dark:bg-[#1a1a1a] flex items-center justify-center overflow-hidden relative">
+                            <div className={`${storyboardImageFrameClass} bg-neutral-100 dark:bg-[#1a1a1a] flex items-center justify-center overflow-hidden relative`}>
                               {beat.image_data ? (
                                 /* eslint-disable-next-line @next/next/no-img-element */
                                 <img src={beat.image_data} alt={`Scene ${beat.scene_number}`} className="w-full h-full object-cover" />
@@ -1616,11 +2214,11 @@ export default function Home() {
                             </div>
 
                             {/* Image generation cost badge */}
-                            {beatGenerationCosts[index] && (
+                            {imageGenCost && (
                               <div className="px-3 py-1 bg-neutral-50 dark:bg-[#0a0a0a] border-t border-neutral-100 dark:border-neutral-800/50 flex items-center gap-2 text-[9px] font-mono text-neutral-400 dark:text-neutral-600">
                                 <span className="text-neutral-500 dark:text-neutral-500">Image gen:</span>
-                                <span className="text-amber-600 dark:text-amber-500 font-semibold">~${beatGenerationCosts[index].cost.toFixed(5)}</span>
-                                <span className="text-neutral-400 dark:text-neutral-600">{beatGenerationCosts[index].tokens.toLocaleString()} tokens</span>
+                                <span className="text-amber-600 dark:text-amber-500 font-semibold">~${imageGenCost.cost.toFixed(5)}</span>
+                                <span className="text-neutral-400 dark:text-neutral-600">{imageGenCost.tokens.toLocaleString()} tokens</span>
                               </div>
                             )}
 
@@ -1711,7 +2309,9 @@ export default function Home() {
                                     <Loader2 size={12} className="animate-spin text-emerald-500 opacity-50" />
                                   </div>
                                   {animatingLogs.map((log, i) => (
-                                    <div key={i} className="animate-in fade-in slide-in-from-bottom-1 leading-relaxed">{log}</div>
+                                    <div key={i} className="animate-in fade-in slide-in-from-bottom-1">
+                                      {renderCompileLogLine(log, i)}
+                                    </div>
                                   ))}
                                 </div>
                                   );
@@ -1744,9 +2344,7 @@ export default function Home() {
                                       ✕
                                     </button>
                                   </div>
-                                  {persistedLogs.map((log, i) => (
-                                    <div key={i} className="leading-relaxed">{log}</div>
-                                  ))}
+                                  {persistedLogs.map((log, i) => renderCompileLogLine(log, i))}
                                 </div>
                                   );
                                 }
@@ -1776,19 +2374,35 @@ export default function Home() {
                                 }
 
                                 return (
-                                // Idle: show Animate button
-                                <div className="p-2">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleAnimateScene(index);
-                                    }}
-                                    disabled={isGenerating || !beat.image_data}
-                                    className="w-full py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm flex items-center justify-center gap-2 transition-all group/animate"
-                                  >
-                                    <Play size={14} className="fill-white group-hover/animate:scale-110 transition-transform" /> Animate Scene
-                                  </button>
-                                </div>
+                                  <div className="p-2 space-y-2">
+                                    {beat.image_data ? (
+                                      <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 max-h-28 overflow-y-auto flex flex-col gap-0.5 rounded-lg shadow-inner relative custom-scrollbar">
+                                        <div>
+                                          {imageGenCost
+                                            ? hasExactImageGenCost
+                                              ? "✓ Storyboard panel generated."
+                                              : "✓ Storyboard panel generated. Showing fallback 0.5K image estimate."
+                                            : "✓ Storyboard panel generated. Waiting for usage metadata..."}
+                                        </div>
+                                        {imageGenCost ? (
+                                          <>
+                                            {renderCompileLogLine(`[PAID] Image gen: ~$${imageGenCost.cost.toFixed(5)} | ${imageGenCost.tokens.toLocaleString()} tokens`, `${index}-image-cost`)}
+                                            <div className="text-cyan-300">Ready for vector drafting and animation compile.</div>
+                                          </>
+                                        ) : null}
+                                      </div>
+                                    ) : null}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleAnimateScene(index);
+                                      }}
+                                      disabled={isGenerating || !beat.image_data}
+                                      className="w-full py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm flex items-center justify-center gap-2 transition-all group/animate"
+                                    >
+                                      <Play size={14} className="fill-white group-hover/animate:scale-110 transition-transform" /> Animate Scene
+                                    </button>
+                                  </div>
                                 );
                               })()}
                             </div>
@@ -1827,7 +2441,7 @@ export default function Home() {
                             )}
                           </div>
                         </div>
-                      ))
+                      )})
                     )}
 
                   </div>
@@ -1871,7 +2485,7 @@ export default function Home() {
                                   <button
                                     key={key}
                                     onClick={() => {
-                                      setExportResolution(key as keyof typeof EXPORT_RESOLUTIONS);
+                                      setExportResolution(key as keyof typeof BASE_EXPORT_RESOLUTIONS);
                                       setIsExportDropdownOpen(false);
                                     }}
                                     className={`text-left px-3 py-2 text-xs rounded flex items-center justify-between transition-colors ${exportResolution === key ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10' : 'text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800'}`}
@@ -1887,10 +2501,18 @@ export default function Home() {
 
                           {/* Orientation Toggles */}
                           <div className="flex items-center gap-0.5">
-                            <button className="p-1.5 text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 rounded" title="Landscape (16:9)">
+                            <button
+                              onClick={() => handleOrientationChange("landscape")}
+                              className={`p-1.5 rounded transition-colors ${stageOrientation === "landscape" ? "text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10" : "text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800/50"}`}
+                              title="Landscape (16:9)"
+                            >
                               <div className="w-4 h-3 border-2 border-current rounded-[2px]" />
                             </button>
-                            <button className="p-1.5 text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded transition-colors" title="Portrait (9:16)">
+                            <button
+                              onClick={() => handleOrientationChange("portrait")}
+                              className={`p-1.5 rounded transition-colors ${stageOrientation === "portrait" ? "text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10" : "text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800/50"}`}
+                              title="Portrait (9:16)"
+                            >
                               <div className="w-3 h-4 border-2 border-current rounded-[2px]" />
                             </button>
                           </div>
@@ -1913,12 +2535,15 @@ export default function Home() {
                       {/* Stage Grid Pattern */}
                       <div className="absolute inset-0 bg-[linear-gradient(rgba(0,0,0,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(0,0,0,0.03)_1px,transparent_1px)] dark:bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:40px_40px] [mask-image:radial-gradient(ellipse_80%_80%_at_50%_50%,#000_10%,transparent_100%)]" />
 
-                      <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="absolute inset-0 grid place-items-center">
                         <Stage
+                          key={selectedStageKey}
                           beat={selectedBeat}
                           compiledScene={selectedCompiledScene}
                           frameRate={fps}
+                          showObstacleDebug={showObstacleDebug}
                           isPlaying={isPlaying}
+                          loopOnComplete={loopPlayback}
                           playheadTime={currentTimeSeconds}
                           onTimelineReady={handleTimelineReady}
                           onPlayheadUpdate={handlePlayheadUpdate}
@@ -1927,6 +2552,7 @@ export default function Home() {
                           selectedActorId={selectedActorId}
                           onActorSelect={handleActorSelect}
                           onActorPositionChange={handleActorPositionChange}
+                          stageOrientation={stageOrientation}
                         />
                       </div>
 
@@ -1949,12 +2575,31 @@ export default function Home() {
                     <div className="flex-1 rounded-2xl border border-neutral-200 dark:border-neutral-800/60 bg-white/90 dark:bg-[#0a0a0a]/90 backdrop-blur-xl shadow-lg dark:shadow-2xl mx-6 mb-6 flex flex-col overflow-hidden transition-colors duration-300">
 
                       {/* 1. Timeline Toolbar (Global Transport Controls) */}
-                      <div className="h-12 border-b border-neutral-200 dark:border-neutral-800/60 bg-neutral-50 dark:bg-[#0a0a0a] flex items-center px-4 shrink-0 shadow-sm z-30 relative transition-colors duration-300">
+                      <div className="min-h-12 border-b border-neutral-200 dark:border-neutral-800/60 bg-neutral-50 dark:bg-[#0a0a0a] flex flex-wrap items-center gap-3 px-4 py-2 shrink-0 shadow-sm z-30 relative transition-colors duration-300">
                         {/* Left Side: Scene info + FPS */}
-                        <div className="w-48 flex items-center gap-2 shrink-0">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
                           <div className="text-[10px] font-bold text-neutral-600 dark:text-neutral-300 uppercase tracking-widest bg-white dark:bg-neutral-900 px-2 py-1.5 rounded border border-neutral-200 dark:border-neutral-800 shadow-sm dark:shadow-none transition-colors">
                             Scene {selectedSceneIndex + 1}
                           </div>
+                          {storyData && storyData.beats.length > 1 && (
+                            <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar max-w-40">
+                              {storyData.beats.map((beat, index) => (
+                                <button
+                                  key={`timeline-scene-tab-${beat.scene_number}-${index}`}
+                                  type="button"
+                                  onClick={() => setSelectedSceneIndex(index)}
+                                  className={`shrink-0 rounded border px-1.5 py-1 text-[9px] font-bold transition-colors ${
+                                    selectedSceneIndex === index
+                                      ? "border-cyan-400 bg-cyan-500 text-white"
+                                      : "border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                                  }`}
+                                  title={`Switch to Scene ${beat.scene_number}`}
+                                >
+                                  {beat.scene_number}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                           {/* FPS selector */}
                           <div className="flex items-center bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded overflow-hidden shadow-sm">
                             {([12, 24, 30, 60] as const).map(f => (
@@ -1965,18 +2610,47 @@ export default function Home() {
                               >{f}</button>
                             ))}
                           </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowObstacleDebug(prev => !prev)}
+                            className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-[9px] font-bold transition-colors ${
+                              showObstacleDebug
+                                ? "border-amber-400 bg-amber-500 text-black"
+                                : "border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                            }`}
+                            title="Toggle obstacle debug overlay"
+                          >
+                            <Bug size={10} />
+                            Collision
+                          </button>
                         </div>
 
                         {/* Center: Transport Controls */}
-                        <div className="flex-1 flex justify-center items-center gap-6">
+                        <div className="flex min-w-0 flex-1 items-center justify-center gap-4">
                           <div className="flex items-center gap-2">
-                            <button className="w-7 h-7 rounded flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors group" title="Step Back">
+                            <button
+                              type="button"
+                              onClick={handleJumpToStart}
+                              className="w-7 h-7 rounded flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors group"
+                              title="Jump to start"
+                            >
                               <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current" xmlns="http://www.w3.org/2000/svg"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
                             </button>
-                            <button onClick={() => setIsPlaying(!isPlaying)} className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all group ${isPlaying ? 'bg-amber-500 hover:bg-amber-400 text-[#0a0a0a] shadow-[0_0_10px_rgba(245,158,11,0.3)]' : 'bg-emerald-500 hover:bg-emerald-400 text-white dark:text-[#0a0a0a] shadow-[0_0_10px_rgba(16,185,129,0.3)] hover:shadow-[0_0_15px_rgba(16,185,129,0.4)]'}`} title={isPlaying ? "Pause" : "Play"}>
+                            <button
+                              type="button"
+                              onClick={handleTogglePlayback}
+                              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all group ${isPlaying ? 'bg-amber-500 hover:bg-amber-400 text-[#0a0a0a] shadow-[0_0_10px_rgba(245,158,11,0.3)]' : 'bg-emerald-500 hover:bg-emerald-400 text-white dark:text-[#0a0a0a] shadow-[0_0_10px_rgba(16,185,129,0.3)] hover:shadow-[0_0_15px_rgba(16,185,129,0.4)]'}`}
+                              title={isPlaying ? "Pause" : "Play"}
+                              disabled={!selectedBeat}
+                            >
                               {isPlaying ? <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> : <Play size={15} className="fill-current ml-0.5 group-hover:scale-110 transition-transform" />}
                             </button>
-                            <button className="w-7 h-7 rounded flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors group" title="Step Forward">
+                            <button
+                              type="button"
+                              onClick={handleJumpToEnd}
+                              className="w-7 h-7 rounded flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors group"
+                              title="Jump to end"
+                            >
                               <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current" xmlns="http://www.w3.org/2000/svg"><path d="M4 18l8.5-6L4 6v12zm13-12v12h2V6h-2z" /></svg>
                             </button>
                           </div>
@@ -2001,13 +2675,22 @@ export default function Home() {
                             </button>
                           </div>
 
-                          <button className="text-neutral-400 dark:text-neutral-600 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors p-1.5 rounded hover:bg-neutral-100 dark:hover:bg-neutral-900" title="Toggle Loop">
+                          <button
+                            type="button"
+                            onClick={() => setLoopPlayback(prev => !prev)}
+                            className={`transition-colors p-1.5 rounded ${
+                              loopPlayback
+                                ? "text-emerald-500 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20"
+                                : "text-neutral-400 dark:text-neutral-600 hover:text-emerald-500 dark:hover:text-emerald-400 hover:bg-neutral-100 dark:hover:bg-neutral-900"
+                            }`}
+                            title={loopPlayback ? "Loop playback enabled" : "Enable loop playback"}
+                          >
                             <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12A9 9 0 0 0 6 5.3L3 8" /><path d="M21 3v5h-5" /><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7" /><path d="M3 21v-5h5" /></svg>
                           </button>
                         </div>
 
                         {/* Right Side: frame counter */}
-                        <div className="w-48 flex justify-end items-center gap-2 shrink-0">
+                        <div className="ml-auto flex items-center gap-2 shrink-0">
                           {exportProgress && (
                             <span className="max-w-40 truncate text-[9px] font-mono text-cyan-600 dark:text-cyan-400" title={exportProgress}>
                               {exportProgress}
@@ -2081,12 +2764,36 @@ export default function Home() {
                                   {beat.drafted_background && <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 ml-auto shrink-0" title="Background generated" />}
                                 </div>
                                 <div className="flex-1 h-full relative overflow-hidden">
-                                  {/* Ambient loop strip — full width, always on */}
-                                  <div className="absolute inset-y-1.5 left-0 right-0 rounded bg-repeating-gradient opacity-50 dark:opacity-30"
-                                    style={{ background: 'repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(99,102,241,0.15) 8px, rgba(99,102,241,0.15) 9px)' }}>
-                                    <div className="absolute inset-0 border border-indigo-200 dark:border-indigo-700/30 rounded" />
-                                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[9px] font-mono text-indigo-400 dark:text-indigo-500 select-none">ambient ↻</span>
-                                  </div>
+                                  {beat.compiled_scene?.background_ambient?.length ? (
+                                    beat.compiled_scene.background_ambient.map(binding => {
+                                      const duration = totalDuration > 0 ? totalDuration : Math.max(beat.compiled_scene?.duration_seconds || 1, 1);
+                                      const left = `${(binding.start_time / duration) * 100}%`;
+                                      const width = `${Math.max((binding.duration_seconds / duration) * 100, 3)}%`;
+                                      return (
+                                        <div
+                                          key={binding.id}
+                                          className="absolute inset-y-1.5 rounded bg-repeating-gradient opacity-50 dark:opacity-30"
+                                          style={{
+                                            left,
+                                            width,
+                                            background: 'repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(99,102,241,0.15) 8px, rgba(99,102,241,0.15) 9px)',
+                                          }}
+                                          title={`${binding.target_id} (${binding.label})`}
+                                        >
+                                          <div className="absolute inset-0 border border-indigo-200 dark:border-indigo-700/30 rounded" />
+                                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[9px] font-mono text-indigo-400 dark:text-indigo-500 select-none truncate max-w-[85%]">
+                                            {binding.label} ↻
+                                          </span>
+                                        </div>
+                                      );
+                                    })
+                                  ) : (
+                                    <div className="absolute inset-y-1.5 left-0 right-0 rounded bg-repeating-gradient opacity-20 dark:opacity-10"
+                                      style={{ background: 'repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(99,102,241,0.15) 8px, rgba(99,102,241,0.15) 9px)' }}>
+                                      <div className="absolute inset-0 border border-indigo-200 dark:border-indigo-700/20 rounded" />
+                                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[9px] font-mono text-indigo-300 dark:text-indigo-700 select-none">no bg motion</span>
+                                    </div>
+                                  )}
                                 </div>
                               </div>
 
@@ -2121,7 +2828,7 @@ export default function Home() {
                               ).map(({ actorId, bindings }) => {
                                 const actorData = storyData.actors_detected.find(a => a.id === actorId);
                                 const hasRig = !!actorData?.drafted_rig;
-                                const hasIdleClip = !!actorData?.drafted_rig?.rig_data.animation_clips?.idle;
+                                const hasIdleClip = !!actorData?.drafted_rig?.rig_data.motion_clips?.idle;
 
                                 return (
                                   <div key={`track-${actorId}`} className="h-9 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
@@ -2149,6 +2856,7 @@ export default function Home() {
                                         const clipWidthPct = Math.min(100, ((binding.duration_seconds || 2) / totalDuration) * 100);
                                         const isSelected = selectedActionIndex === binding.source_action_index;
                                         const isIdleMotion = ['idle', 'stare'].includes(binding.motion.toLowerCase());
+                                        const bindingLabel = binding.clip_id === "base_object" ? `${binding.motion} • object` : binding.motion;
                                         if (isIdleMotion) return null;
                                         return (
                                           <div
@@ -2165,7 +2873,7 @@ export default function Home() {
                                             }}
                                           >
                                             <span className="absolute -left-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
-                                            <span className="text-[9px] font-mono truncate pl-1">{binding.motion}</span>
+                                            <span className="text-[9px] font-mono truncate pl-1">{bindingLabel}</span>
                                             {binding.style && <span className="text-[8px] font-mono text-blue-400 dark:text-blue-500 ml-1 truncate">({binding.style})</span>}
                                             <span className="absolute -right-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
                                           </div>
@@ -2216,11 +2924,35 @@ export default function Home() {
                         <div>
                           <h3 className="text-[9px] font-bold uppercase tracking-widest text-neutral-400 dark:text-neutral-600 mb-2">Compiled Scene Timeline</h3>
                           <div className="space-y-1.5">
-                            {/* Background ambient */}
-                            <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-800/20">
-                              <span className="text-indigo-400 text-[9px] font-mono">↻</span>
-                              <span className="text-[10px] text-neutral-600 dark:text-neutral-400 flex-1">Background ambient</span>
-                              <span className="text-[9px] text-indigo-400 font-mono">∞</span>
+                            <div className="rounded border border-indigo-100 dark:border-indigo-800/20 overflow-hidden">
+                              <div className="flex items-center gap-2 px-2 py-1.5 bg-indigo-50 dark:bg-indigo-900/10">
+                                <span className="text-indigo-400 text-[9px] font-mono">↻</span>
+                                <span className="text-[10px] text-neutral-600 dark:text-neutral-400 flex-1">Background ambient</span>
+                                <span className="text-[9px] text-indigo-400 font-mono">
+                                  {beat.compiled_scene?.background_ambient?.length || 0} bind
+                                </span>
+                              </div>
+                              {beat.compiled_scene?.background_ambient?.length ? (
+                                beat.compiled_scene.background_ambient.map(binding => (
+                                  <div
+                                    key={binding.id}
+                                    className="flex items-center gap-2 px-2 py-1 border-t border-indigo-100/60 dark:border-indigo-800/20 bg-indigo-50/40 dark:bg-indigo-900/5"
+                                  >
+                                    <span className="text-indigo-400 text-[9px] font-mono">≈</span>
+                                    <span className="text-[9px] text-neutral-600 dark:text-neutral-400 flex-1">
+                                      {binding.target_id}
+                                      <span className="ml-1 text-indigo-400 font-mono">({binding.label})</span>
+                                    </span>
+                                    <span className="text-[8px] text-indigo-400 font-mono">
+                                      {binding.start_time.toFixed(1)}s + {binding.duration_seconds.toFixed(1)}s
+                                    </span>
+                                  </div>
+                                ))
+                              ) : (
+                                <div className="px-2 py-1.5 border-t border-indigo-100/60 dark:border-indigo-800/20 bg-indigo-50/20 dark:bg-indigo-900/5 text-[9px] text-neutral-500 dark:text-neutral-400">
+                                  No compiled background motion.
+                                </div>
+                              )}
                             </div>
                             {beat.compiled_scene?.instance_tracks.length ? (
                               beat.compiled_scene.instance_tracks.map(track => {
@@ -2242,7 +2974,7 @@ export default function Home() {
                                         <span className="text-blue-400 text-[9px] font-mono">▶</span>
                                         <span className="text-[9px] text-neutral-600 dark:text-neutral-400 flex-1">
                                           {binding.motion} <span className="text-neutral-400">({binding.style})</span>
-                                          <span className="ml-1 text-cyan-500 font-mono">→ {binding.clip_id}</span>
+                                          <span className="ml-1 text-cyan-500 font-mono">→ {binding.clip_id === "base_object" ? "object" : binding.clip_id}</span>
                                         </span>
                                         <span className="text-[8px] text-blue-400 font-mono">{binding.start_time.toFixed(1)}s + {binding.duration_seconds.toFixed(1)}s</span>
                                       </div>
@@ -2387,6 +3119,36 @@ export default function Home() {
                     });
                   };
 
+                  const updateCollisionBehavior = (value: "halt" | "slide" | "bounce") => {
+                    setStoryData(prev => {
+                      if (!prev) return prev;
+                      const newBeats = [...prev.beats];
+                      const currentBeat = newBeats[selectedSceneIndex];
+                      const newActions = [...currentBeat.actions];
+                      const currentAction = newActions[selectedActionIndex];
+                      newActions[selectedActionIndex] = {
+                        ...currentAction,
+                        animation_overrides: {
+                          ...(currentAction.animation_overrides || {}),
+                          collision_behavior: value,
+                        },
+                      };
+                      const nextBeat = {
+                        ...currentBeat,
+                        actions: newActions,
+                      };
+                      const previousCompiledScene = selectedSceneIndex > 0
+                        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+                        : null;
+                      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+                      newBeats[selectedSceneIndex] = {
+                        ...nextBeat,
+                        compiled_scene: recompiled,
+                      };
+                      return { ...prev, beats: newBeats };
+                    });
+                  };
+
                   return (
                     <div className="flex flex-col gap-5 transition-opacity">
                       <div>
@@ -2395,8 +3157,14 @@ export default function Home() {
                           <span className="text-cyan-500">{action.actor_id}</span>
                         </div>
                         <div className="w-full h-8 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 flex items-center px-3 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-sm dark:shadow-none transition-colors">
-                          {action.motion}({action.style}){binding ? ` -> ${binding.clip_id}` : ""}
+                          {action.motion}({action.style}){binding ? ` -> ${binding.clip_id === "base_object" ? "object" : binding.clip_id}` : ""}
                         </div>
+                        {binding?.collision && (
+                          <div className="mt-2 text-[11px] text-amber-600 dark:text-amber-300">
+                            Collision stop: {binding.collision.obstacle_id} at x={Math.round(binding.collision.stop_x)}
+                            {binding.collision.stop_time !== undefined ? ` @ ${binding.collision.stop_time.toFixed(2)}s` : ""}
+                          </div>
+                        )}
                       </div>
 
                       {/* Motion Editor */}
@@ -2431,7 +3199,7 @@ export default function Home() {
                           {Array.from(new Set([
                             action.motion,
                             ...(storyData?.actors_detected.find(a => a.id === action.actor_id)?.drafted_rig
-                              ? Object.keys(storyData.actors_detected.find(a => a.id === action.actor_id)?.drafted_rig?.rig_data.animation_clips || {})
+                              ? Object.keys(storyData.actors_detected.find(a => a.id === action.actor_id)?.drafted_rig?.rig_data.motion_clips || {})
                               : []),
                             'idle', 'walk', 'run', 'jump', 'swim', 'crawl', 'fly', 'slither', 'glide', 'drive', 'wave', 'sit', 'hide', 'panic', 'celebrate'
                           ])).map(m => (
@@ -2439,6 +3207,30 @@ export default function Home() {
                           ))}
                         </datalist>
                       </div>
+
+                      {binding && (
+                        <div>
+                          <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-2 uppercase tracking-wider flex items-center gap-2">
+                            <Bug size={12} /> Collision Response
+                          </div>
+                          <div className="grid grid-cols-3 gap-2">
+                            {(["halt", "slide", "bounce"] as const).map((mode) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => updateCollisionBehavior(mode)}
+                                className={`rounded border px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                                  (binding.collision_behavior || "halt") === mode
+                                    ? "border-amber-400 bg-amber-500 text-black"
+                                    : "border-neutral-200 dark:border-neutral-700/50 bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                                }`}
+                              >
+                                {mode}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
                         <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex items-center gap-2">
@@ -2615,7 +3407,7 @@ export default function Home() {
                   <>
                     {!beat.drafted_background && !isDraftingBackground && (
                       <div className="flex flex-col items-center max-w-sm text-center">
-                        <div className="w-48 aspect-video mb-6 rounded-xl overflow-hidden shadow-lg border-2 border-cyan-500/30">
+                        <div className={`${referenceImageFrameClass} mb-6 rounded-xl overflow-hidden shadow-lg border-2 border-cyan-500/30`}>
                           {beat.image_data ? (
                             /* eslint-disable-next-line @next/next/no-img-element */
                             <img src={beat.image_data} alt="Reference" className="w-full h-full object-cover" />
@@ -2636,7 +3428,7 @@ export default function Home() {
                             setIsDraftingBackground(true);
                             setDraftBackgroundError(null);
                             try {
-                              const result = await processSetDesignerPrompt(beat.image_data, beat.narrative);
+                              const result = await processSetDesignerPrompt(beat.image_data, beat.narrative, stageOrientation);
 
                               setStoryData(prev => {
                                 if (!prev) return prev;
@@ -2647,8 +3439,8 @@ export default function Home() {
                                 };
                                 return { ...prev, beats: newBeats };
                               });
-                            } catch (err: any) {
-                              setDraftBackgroundError(err.message || "Failed to generate background.");
+                            } catch (err: unknown) {
+                              setDraftBackgroundError(err instanceof Error ? err.message : "Failed to generate background.");
                             } finally {
                               setIsDraftingBackground(false);
                             }
@@ -2663,7 +3455,7 @@ export default function Home() {
                     {isDraftingBackground && (
                       <div className="flex flex-col items-center">
                         <div className="relative mb-6">
-                          <div className="w-48 aspect-video rounded-xl overflow-hidden opacity-50 blur-sm">
+                          <div className={`${referenceImageFrameClass} rounded-xl overflow-hidden opacity-50 blur-sm`}>
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             {beat.image_data && <img src={beat.image_data} alt="Reference" className="w-full h-full object-cover" />}
                           </div>
@@ -2715,6 +3507,8 @@ export default function Home() {
                 onClick={() => {
                   setDraftingActorId(null);
                   setDraftedRig(null);
+                  setOriginalDraftedRig(null);
+                  setRigFixPrompt("");
                   setDraftError(null);
                 }}
                 className="p-2 -mr-2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
@@ -2729,10 +3523,10 @@ export default function Home() {
 
               {!draftedRig && !isDrafting && (
                 <div className="flex flex-col items-center max-w-sm text-center">
-                  <div className="w-24 h-24 mb-6 rounded-xl overflow-hidden shadow-lg border-2 border-cyan-500/30">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={actorReferences[draftingActorId]} alt="Reference" className="w-full h-full object-cover" />
-                  </div>
+                    <div className="w-24 h-24 mb-6 rounded-xl overflow-hidden shadow-lg border-2 border-cyan-500/30">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={actorReferences[draftingActorId]} alt="Reference" className="w-full h-full object-cover" />
+                    </div>
                   <h4 className="text-lg font-bold text-neutral-800 dark:text-neutral-200 mb-2">Generate Animatable Rig</h4>
                   <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-8">
                     The Draftsman AI will analyze this character and redraw them as a structured SVG vector puppet, complete with interaction pivot points.
@@ -2745,23 +3539,31 @@ export default function Home() {
                         const actor = storyData?.actors_detected.find(a => a.id === draftingActorId);
                         if (!actor || !actorReferences[draftingActorId]) throw new Error("Missing actor data");
                         const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}`;
+                        const generatedRig = await generateRigDraft({
+                          generationReference: actorReferences[draftingActorId],
+                          description,
+                        });
 
-                        const result = await processDraftsmanPrompt(actorReferences[draftingActorId], description);
-
-                        // Cache the generated rig into the global story data
+                        // Cache the generated rig into the global story data, preserving compiled motion_clips
                         setStoryData(prev => {
                           if (!prev) return prev;
                           return {
                             ...prev,
-                            actors_detected: prev.actors_detected.map(a =>
-                              a.id === draftingActorId ? { ...a, drafted_rig: result.data } : a
-                            )
+                            actors_detected: prev.actors_detected.map(a => {
+                              if (a.id !== draftingActorId) return a;
+                              const existingClips = a.drafted_rig?.rig_data.motion_clips;
+                              const newRig = (existingClips && Object.keys(existingClips).length > 0)
+                                ? { ...generatedRig.data, rig_data: { ...generatedRig.data.rig_data, motion_clips: existingClips } }
+                                : generatedRig.data;
+                              return { ...a, drafted_rig: newRig };
+                            })
                           };
                         });
 
-                        setDraftedRig(result.data);
-                      } catch (err: any) {
-                        setDraftError(err.message || "Failed to generate rig.");
+                        setDraftedRig(generatedRig.data);
+                        setOriginalDraftedRig(JSON.parse(JSON.stringify(generatedRig.data)));
+                      } catch (err: unknown) {
+                        setDraftError(err instanceof Error ? err.message : "Failed to generate rig.");
                       } finally {
                         setIsDrafting(false);
                       }
@@ -2798,13 +3600,311 @@ export default function Home() {
               {draftedRig && (
                 <div className="w-full h-full flex flex-col">
                   <div className="bg-emerald-100/50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 text-xs px-4 py-2 rounded-lg mb-4 text-center border border-emerald-200 dark:border-emerald-800/50">
-                    Draftsman Success: Found {draftedRig.rig_data.bones.length} bones, {draftedRig.rig_data.visemes?.length || 0} visemes, and {draftedRig.rig_data.emotions?.length || 0} emotions. Hover points to inspect rig.
+                    Draftsman Success: Found {draftedRig.rig_data.bones.length} bones, {draftedRig.rig_data.visemes?.length || 0} visemes, and {draftedRig.rig_data.emotions?.length || 0} emotions.
+                    Use the IK lab to drag effectors, inspect constraints, pin nodes, and stress-test the rig before saving.
                   </div>
-                  <div className="flex-1 min-h-0 bg-neutral-100 dark:bg-neutral-900 rounded-xl overflow-hidden relative shadow-inner">
-                    <RigViewer data={draftedRig} />
+                  <div className="mb-4 rounded-lg border border-cyan-200/70 bg-cyan-50/60 px-4 py-3 dark:border-cyan-800/60 dark:bg-cyan-950/20">
+                    <label className="mb-2 block text-[11px] font-semibold uppercase tracking-wider text-cyan-700 dark:text-cyan-300">
+                      AI Rig Fix
+                    </label>
+                    <div className="flex items-start gap-2">
+                      <textarea
+                        value={rigFixPrompt}
+                        onChange={(event) => setRigFixPrompt(event.target.value)}
+                        placeholder="e.g. restore the missing tail and keep the side profile silhouette clean"
+                        className="min-h-[64px] flex-1 rounded-lg border border-cyan-200/80 bg-white px-3 py-2 text-xs text-neutral-700 shadow-sm outline-none transition-colors focus:border-cyan-400 dark:border-cyan-800/60 dark:bg-neutral-950 dark:text-neutral-200"
+                      />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!draftedRig || !draftingActorId || !rigFixPrompt.trim()) return;
+                          const actor = storyData?.actors_detected.find(a => a.id === draftingActorId);
+                          const actorReference = actorReferences[draftingActorId];
+                          if (!actor || !actorReference) {
+                            setDraftError("Missing actor reference for AI rig fix.");
+                            return;
+                          }
+
+                          setIsAiFixingRig(true);
+                          setDraftError(null);
+
+                          try {
+                            const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}. CRITICAL FIX REQUEST: ${rigFixPrompt}. Preserve the same character identity, proportions, rig structure, and existing good parts. Repair only the missing or malformed parts while keeping the current views usable.`;
+                            const generatedRig = await generateRigDraft({
+                              generationReference: actorReference,
+                              description,
+                              requiredViews: extractRigViews(draftedRig.svg_data),
+                            });
+
+                            setStoryData(prev => {
+                              if (!prev) return prev;
+                              return {
+                                ...prev,
+                                actors_detected: prev.actors_detected.map(a => {
+                                  if (a.id !== draftingActorId) return a;
+                                  const existingClips = a.drafted_rig?.rig_data.motion_clips;
+                                  const newRig = (existingClips && Object.keys(existingClips).length > 0)
+                                    ? { ...generatedRig.data, rig_data: { ...generatedRig.data.rig_data, motion_clips: existingClips } }
+                                    : generatedRig.data;
+                                  return { ...a, drafted_rig: newRig };
+                                })
+                              };
+                            });
+
+                            setDraftedRig(generatedRig.data);
+                            setOriginalDraftedRig(JSON.parse(JSON.stringify(generatedRig.data)));
+                          } catch (error: unknown) {
+                            setDraftError(error instanceof Error ? error.message : "Failed to apply AI rig fix.");
+                          } finally {
+                            setIsAiFixingRig(false);
+                          }
+                        }}
+                        disabled={isAiFixingRig || !rigFixPrompt.trim()}
+                        className="shrink-0 rounded-lg bg-cyan-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {isAiFixingRig ? "Fixing..." : "Apply AI Fix"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mb-4 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!originalDraftedRig) return;
+                        setDraftedRig(JSON.parse(JSON.stringify(originalDraftedRig)));
+                      }}
+                      className="px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 text-xs font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+                    >
+                      Reset Fixes
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!draftingActorId || !draftedRig) return;
+                        setStoryData(prev => {
+                          if (!prev) return prev;
+                          return {
+                            ...prev,
+                            actors_detected: prev.actors_detected.map(a =>
+                              a.id === draftingActorId ? { ...a, drafted_rig: draftedRig } : a
+                            )
+                          };
+                        });
+                        setOriginalDraftedRig(JSON.parse(JSON.stringify(draftedRig)));
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold transition-colors"
+                    >
+                      Save Rig Fixes
+                    </button>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-hidden relative">
+                    <IKLab
+                      data={draftedRig}
+                      onChange={setDraftedRig}
+                    />
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {clipPreviewState && clipPreviewBundle && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-2xl w-full max-w-5xl flex flex-col overflow-hidden max-h-[92vh]">
+            <div className="px-6 py-4 border-b border-neutral-100 dark:border-neutral-800/60 flex items-center justify-between bg-neutral-50/50 dark:bg-[#0a0a0a]/50">
+              <div>
+                <h3 className="font-semibold text-neutral-800 dark:text-neutral-200">
+                  {clipPreviewBundle.actor.name} - {clipPreviewState.clipName}
+                </h3>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+                  Reusable actor clip preview
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setClipPreviewPlaying(prev => !prev)}
+                  className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
+                    clipPreviewPlaying
+                      ? "bg-amber-500 text-[#0a0a0a] hover:bg-amber-400"
+                      : "bg-emerald-500 text-white hover:bg-emerald-400"
+                  }`}
+                  title={clipPreviewPlaying ? "Pause preview" : "Play preview"}
+                >
+                  {clipPreviewPlaying ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                  ) : (
+                    <Play size={16} className="fill-current ml-0.5" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setClipPreviewState(null);
+                    setClipPreviewPlaying(false);
+                    setClipPreviewPlayhead(0);
+                  }}
+                  className="p-2 -mr-2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 items-stretch">
+              <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800/60 bg-white/80 dark:bg-[#0a0a0a]/80 shadow-lg overflow-hidden min-h-[420px]">
+                <RigClipPreview
+                  key={`${clipPreviewBundle.actor.id}:${clipPreviewState.clipName}:${fps}`}
+                  rig={clipPreviewBundle.actor.drafted_rig!}
+                  clipId={clipPreviewState.clipName}
+                  frameRate={fps}
+                  isPlaying={clipPreviewPlaying}
+                  playheadTime={clipPreviewPlayhead}
+                  loop={true}
+                  onPlayheadUpdate={(timeSeconds) => {
+                    const duration = clipPreviewBundle.compiledScene.duration_seconds || 1;
+                    setClipPreviewPlayhead(Math.min(duration, timeSeconds));
+                  }}
+                />
+              </div>
+
+              <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800/60 bg-neutral-50 dark:bg-[#0a0a0a]/70 p-4 space-y-4">
+                <div>
+                  <h4 className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 dark:text-neutral-400 mb-2">Clip</h4>
+                  <div className="rounded-lg border border-cyan-200 dark:border-cyan-800/50 bg-cyan-50 dark:bg-cyan-900/20 px-3 py-2 text-xs font-mono text-cyan-700 dark:text-cyan-300">
+                    {clipPreviewState.clipName}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 dark:text-neutral-400 mb-2">Actor</h4>
+                  <div className="text-sm font-semibold text-neutral-700 dark:text-neutral-200">{clipPreviewBundle.actor.name}</div>
+                  <div className="text-xs text-neutral-500 dark:text-neutral-400">{clipPreviewBundle.actor.species}</div>
+                </div>
+                <div>
+                  <h4 className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 dark:text-neutral-400 mb-2">Preview Duration</h4>
+                  <div className="text-sm text-neutral-700 dark:text-neutral-200">
+                    {clipPreviewBundle.compiledScene.duration_seconds.toFixed(2)}s @ {fps}fps
+                  </div>
+                </div>
+                <div>
+                  <h4 className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 dark:text-neutral-400 mb-2">Playback</h4>
+                  <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                    This preview loops continuously so you can inspect the reusable action without the scene resetting.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {scenePreviewIndex !== null && storyData?.beats[scenePreviewIndex] && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-2xl w-full max-w-6xl flex flex-col overflow-hidden max-h-[92vh]">
+            <div className="px-6 py-4 border-b border-neutral-100 dark:border-neutral-800/60 flex items-center justify-between bg-neutral-50/50 dark:bg-[#0a0a0a]/50">
+              <div>
+                <h3 className="font-semibold text-neutral-800 dark:text-neutral-200">
+                  Scene {scenePreviewIndex + 1}
+                </h3>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+                  Inspect and fix scene panel
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setScenePreviewIndex(null);
+                  setEditPrompt("");
+                }}
+                className="p-2 -mr-2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+              </button>
+            </div>
+
+            <div className="p-6 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-6 items-stretch overflow-y-auto">
+              <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800/60 bg-white/80 dark:bg-[#0a0a0a]/80 shadow-lg overflow-hidden min-h-[420px]">
+                <div className={`${previewImageFrameClass} bg-neutral-100 dark:bg-[#1a1a1a] flex items-center justify-center overflow-hidden relative`}>
+                  {storyData.beats[scenePreviewIndex].image_data ? (
+                    <img
+                      src={storyData.beats[scenePreviewIndex].image_data}
+                      alt={`Scene ${scenePreviewIndex + 1}`}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-xs font-mono text-neutral-500 dark:text-neutral-400">
+                      No panel image
+                    </div>
+                  )}
+                </div>
+                <div className="p-4 border-t border-neutral-100 dark:border-neutral-800/50">
+                  <textarea
+                    value={storyData.beats[scenePreviewIndex].narrative}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setStoryData(prev => {
+                        if (!prev) return prev;
+                        const newBeats = [...prev.beats];
+                        newBeats[scenePreviewIndex] = { ...newBeats[scenePreviewIndex], narrative: value };
+                        return { ...prev, beats: newBeats };
+                      });
+                    }}
+                    className="w-full min-h-28 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 text-sm text-neutral-800 dark:text-neutral-200 resize-none focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800/60 bg-neutral-50 dark:bg-[#0a0a0a]/70 p-4 space-y-4">
+                <div>
+                  <h4 className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 dark:text-neutral-400 mb-2">AI Fix Scene</h4>
+                  <textarea
+                    value={editPrompt}
+                    onChange={(e) => setEditPrompt(e.target.value)}
+                    placeholder="Describe what to fix in this scene image..."
+                    className="w-full min-h-28 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 text-xs text-neutral-800 dark:text-neutral-200 resize-none focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
+                  />
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleEditImageSubmit(scenePreviewIndex)}
+                      disabled={isEditingImage || !editPrompt.trim()}
+                      className="px-3 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:bg-cyan-800 disabled:text-white/50 text-white text-xs font-semibold transition-colors"
+                    >
+                      {isEditingImage ? "Rendering..." : "Apply AI Fix"}
+                    </button>
+                    {storyData.beats[scenePreviewIndex].drafted_background && (
+                      <button
+                        type="button"
+                        onClick={() => setDraftingBackgroundSceneIndex(scenePreviewIndex)}
+                        className="px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 text-xs font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+                      >
+                        Open Background
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 dark:text-neutral-400 mb-2">Actions</h4>
+                  <div className="space-y-1.5">
+                    {storyData.beats[scenePreviewIndex].actions.map((action, actionIndex) => (
+                      <div
+                        key={`scene-preview-action-${actionIndex}`}
+                        className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-3 py-2"
+                      >
+                        <div className="text-xs font-mono text-cyan-700 dark:text-cyan-300">
+                          {action.actor_id}:{action.motion}({action.style})
+                        </div>
+                        <div className="mt-1 text-[10px] text-neutral-500 dark:text-neutral-400">
+                          {action.duration_seconds.toFixed(2)}s
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2827,6 +3927,7 @@ export default function Home() {
             playheadTime={exportPlayheadTime}
             onTimelineReady={handleExportTimelineReady}
             selectedActorId={null}
+            stageOrientation={stageOrientation}
           />
         </div>
       )}

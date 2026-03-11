@@ -1,15 +1,15 @@
 "use server";
 
 import { streamStorySequence, editSceneImage } from "@/lib/ai/director";
-import { StoryGenerationData } from "@/lib/schema/story";
+import { StoryGenerationData, StageOrientation } from "@/lib/schema/story";
 
 export type StreamResult =
     | { type: 'story', data: StoryGenerationData }
     | { type: 'image', index: number, data: string }
-    | { type: 'usage', promptTokens: number, candidateTokens: number }
+    | { type: 'usage', promptTokens: number, candidateTokens: number, imageCount: number }
     | { type: 'error', error: string };
 
-export async function* processScenePromptStream(prompt: string, contextBeats?: StoryGenerationData['beats'], options?: { singleBeat?: boolean }, actorReferences?: Record<string, string>): AsyncGenerator<StreamResult, void, unknown> {
+export async function* processScenePromptStream(prompt: string, contextBeats?: StoryGenerationData['beats'], options?: { singleBeat?: boolean; orientation?: StageOrientation }, actorReferences?: Record<string, string>): AsyncGenerator<StreamResult, void, unknown> {
     if (!prompt || prompt.trim() === "") {
         yield { type: 'error', error: "Prompt cannot be empty." };
         return;
@@ -27,13 +27,13 @@ export async function* processScenePromptStream(prompt: string, contextBeats?: S
     }
 }
 
-export async function processSceneImageEdit(base64Image: string, editPrompt: string): Promise<{ data?: string, error?: string }> {
+export async function processSceneImageEdit(base64Image: string, editPrompt: string, orientation: StageOrientation = "landscape"): Promise<{ data?: string, error?: string }> {
     if (!base64Image || !editPrompt || editPrompt.trim() === "") {
         return { error: "Image and edit prompt are required." };
     }
 
     try {
-        const newImage = await editSceneImage(base64Image, editPrompt);
+        const newImage = await editSceneImage(base64Image, editPrompt, orientation);
         return { data: newImage };
     } catch (error: unknown) {
         console.error("Server Action Image Edit Error:", error);

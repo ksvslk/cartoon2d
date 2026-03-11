@@ -1,18 +1,19 @@
 import gsap from "gsap";
-import { CompiledSceneData, StoryBeatData } from "../schema/story";
-import { DraftsmanData, AnimationKeyframe } from "../schema/rig";
+import { ClipBindingIKPlayback, CompiledSceneData, StoryBeatData } from "../schema/story";
+import { DraftsmanData, RigMotionClip } from "../schema/rig";
 import { inferAutoTargetTransform, motionNeedsTarget, normalizeMotionKey, suggestMotionAliases } from "./semantics";
+import {
+  OBJECT_ANIM_PATTERNS,
+  addAmbientBindingToTimeline,
+  detectAmbientElements,
+  playAmbientLoopOnElement,
+} from "./ambient";
+import { createIKPlaybackActor, IKPlaybackActor, setPlaybackIntent, stagePlaybackView, syncPlaybackActors } from "../ik/playback";
+import { motionClipToIKPlayback, resolvePlayableMotionClip } from "./compiled_ik";
+import { estimateMotionClipDuration } from "./intent";
 
 const ALL_VIEWS = ["view_front", "view_side_right", "view_3q_right", "view_top", "view_back"] as const;
-
-/** Show one view, hide all others for an actor group (immediate gsap.set). */
-function switchView(actorId: string, targetView: string) {
-  ALL_VIEWS.forEach(v => {
-    gsap.set(`#actor_group_${actorId} #${v}`, {
-      display: v === targetView ? "inline" : "none",
-    });
-  });
-}
+const BASE_OBJECT_CLIP_ID = "base_object";
 
 export interface AnimationContext {
   container: HTMLElement;
@@ -20,6 +21,12 @@ export interface AnimationContext {
   compiledScene?: CompiledSceneData | null;
   availableRigs: Record<string, DraftsmanData>;
 }
+
+type StoredMotionClip = NonNullable<NonNullable<DraftsmanData["rig_data"]["motion_clips"]>[string]>;
+
+type TimelineWithIKSync = gsap.core.Timeline & {
+  __ikSync?: () => void;
+};
 
 // ── Style Modulation ──────────────────────────────────────────────────────────
 
@@ -54,78 +61,92 @@ function calcRepeat(availableTime: number, tweenDuration: number, yoyo: boolean)
   return Math.max(0, Math.ceil(availableTime / cycle) - 1);
 }
 
-/** Scale a property value by amplitude, capping opacity at 1. */
+/** Scale a property value by amplitude without anatomy-specific weighting. */
+function propMotionWeight(prop: string): number {
+  if (prop === "opacity") return 1;
+  if (prop === "rotation") return 0.7;
+  if (prop === "x" || prop === "y") return 0.45;
+  if (prop === "scaleX" || prop === "scaleY") return 0.4;
+  return 1;
+}
+
 function scaleProp(prop: string, value: number, amp: number): number {
-  const scaled = value * amp;
+  const scaled = value * amp * propMotionWeight(prop);
   return prop === "opacity" ? Math.min(1, scaled) : scaled;
 }
 
-// ── Object Ambient Patterns ───────────────────────────────────────────────────
-// SVG element IDs matching these patterns receive looping ambient animations.
+function getActorNaturalOrigin(container: HTMLElement, actorId: string): {
+  naturalCX: number;
+  naturalBottom: number;
+} {
+  const group = container.querySelector<SVGGElement>(`#actor_group_${actorId}`);
+  return {
+    naturalCX: parseFloat(group?.dataset.naturalCx || "500"),
+    naturalBottom: parseFloat(group?.dataset.naturalBottom || "1000"),
+  };
+}
 
-export const OBJECT_ANIM_PATTERNS: Array<{
-  regex: RegExp;
-  label: string;
-  animate: (el: Element) => void;
-}> = [
-  {
-    regex: /fire|flame|blaze/i,
-    label: "flicker",
-    animate: (el) => gsap.to(el, {
-      scaleY: 1.12, scaleX: 0.92,
-      duration: 0.12, yoyo: true, repeat: -1, ease: "none",
-      transformOrigin: "center bottom",
-    }),
-  },
-  {
-    regex: /smoke|steam|mist|vapor/i,
-    label: "rise",
-    animate: (el) => gsap.to(el, {
-      y: "-=18", opacity: 0.3,
-      duration: 2 + Math.random() * 0.8, yoyo: true, repeat: -1, ease: "sine.inOut",
-    }),
-  },
-  {
-    regex: /water|wave|ripple|river|ocean|sea|lake/i,
-    label: "ripple",
-    animate: (el) => gsap.to(el, {
-      x: "+=10", duration: 1.5, yoyo: true, repeat: -1, ease: "sine.inOut",
-    }),
-  },
-  {
-    regex: /leaf|foliage|tree|bush|grass|plant|vine/i,
-    label: "sway",
-    animate: (el) => gsap.to(el, {
-      rotation: 4,
-      duration: 1.8 + Math.random() * 0.6, yoyo: true, repeat: -1, ease: "sine.inOut",
-      transformOrigin: "center bottom",
-    }),
-  },
-  {
-    regex: /flag|banner|cloth|curtain|drape/i,
-    label: "wave",
-    animate: (el) => gsap.to(el, {
-      rotation: 6,
-      duration: 0.9, yoyo: true, repeat: -1, ease: "sine.inOut",
-      transformOrigin: "left center",
-    }),
-  },
-  {
-    regex: /cloud/i,
-    label: "drift",
-    animate: (el) => gsap.to(el, {
-      x: "+=30",
-      duration: 8 + Math.random() * 4, yoyo: true, repeat: -1, ease: "sine.inOut",
-    }),
-  },
-  {
-    regex: /light|lamp|glow|blink|flash/i,
-    label: "pulse",
-    animate: (el) => gsap.to(el, {
-      opacity: 0.4, duration: 1.2, yoyo: true, repeat: -1, ease: "sine.inOut",
-    }),
-  },
-];
+function timelineVarsForTransform(
+  container: HTMLElement,
+  actorId: string,
+  transform: { x: number; y: number; scale: number },
+  facingSign: number,
+): gsap.TweenVars {
+  const { naturalCX, naturalBottom } = getActorNaturalOrigin(container, actorId);
+  return {
+    x: transform.x - naturalCX,
+    y: transform.y - naturalBottom,
+    scaleX: facingSign * transform.scale,
+    scaleY: transform.scale,
+    svgOrigin: `${naturalCX} ${naturalBottom}`,
+  };
+}
+
+function addCompiledTransformTrack(
+  tl: gsap.core.Timeline,
+  container: HTMLElement,
+  actorId: string,
+  transformTrack: Array<{ time: number; x: number; y: number; scale: number }>,
+) {
+  const sorted = [...transformTrack].sort((a, b) => a.time - b.time);
+  if (sorted.length === 0) return;
+
+  let facingSign = 1;
+  for (let i = 0; i < sorted.length; i += 1) {
+    const current = sorted[i];
+    const next = sorted[i + 1];
+
+    if (next) {
+      const deltaX = next.x - current.x;
+      if (deltaX < -10) facingSign = -1;
+      else if (deltaX > 10) facingSign = 1;
+    }
+
+    tl.set(
+      `#actor_group_${actorId}`,
+      timelineVarsForTransform(container, actorId, current, facingSign),
+      current.time,
+    );
+
+    if (!next) continue;
+    const segmentDuration = next.time - current.time;
+    if (segmentDuration <= 0) continue;
+
+    const deltaX = next.x - current.x;
+    if (deltaX < -10) facingSign = -1;
+    else if (deltaX > 10) facingSign = 1;
+
+    tl.to(
+      `#actor_group_${actorId}`,
+      {
+        ...timelineVarsForTransform(container, actorId, next, facingSign),
+        duration: segmentDuration,
+        ease: "power1.inOut",
+      },
+      current.time,
+    );
+  }
+}
 
 export function detectObjectAnimations(container: HTMLElement): Array<{ id: string; label: string }> {
   const result: Array<{ id: string; label: string }> = [];
@@ -141,88 +162,171 @@ export function detectObjectAnimations(container: HTMLElement): Array<{ id: stri
   return result;
 }
 
-// ── Generic Clip Player (ambient use only) ───────────────────────────────────
+function displayKeyframesForClip(motionClip: StoredMotionClip | undefined) {
+  return motionClip?.displayKeyframes || [];
+}
 
-/**
- * Plays a named animation clip with repeat: -1 looping (for ambient idle).
- * Falls back to a simple whole-body pulse if the clip is missing.
- */
-function playClip(
-  actorId: string,
-  clipName: string,
-  rig: DraftsmanData | undefined,
-  container: HTMLElement,
-) {
-  const rawClip = rig?.rig_data.animation_clips?.[clipName];
+function viewForClip(motionClip: StoredMotionClip | undefined): string | undefined {
+  return motionClip?.view;
+}
 
-  let keyframes: AnimationKeyframe[];
-  let clipView: string | undefined;
+function estimateClipDuration(motionClip: StoredMotionClip | undefined): number {
+  return estimateMotionClipDuration(motionClip);
+}
 
-  if (!rawClip) {
-    console.warn(`[ambient] No clip "${clipName}" for actor "${actorId}" — using fallback pulse`);
-    gsap.to(`#actor_group_${actorId}`, {
-      scaleY: 1.04, scaleX: 0.97,
-      duration: 1.6, yoyo: true, repeat: -1, ease: "sine.inOut",
-      transformOrigin: "center bottom",
+function addDirectOpacityKeyframes(params: {
+  timeline: gsap.core.Timeline;
+  actorId: string;
+  keyframes: NonNullable<RigMotionClip["displayKeyframes"]>;
+  amp: number;
+  spd: number;
+  startDelay: number;
+  actionDuration: number;
+}): void {
+  const { timeline, actorId, keyframes, amp, spd, startDelay, actionDuration } = params;
+
+  keyframes
+    .forEach((keyframe) => {
+      const scaledTo = scaleProp(keyframe.prop, keyframe.to, amp);
+      const scaledFrom = keyframe.from !== undefined
+        ? scaleProp(keyframe.prop, keyframe.from, amp)
+        : undefined;
+      const duration = (keyframe.duration || 0.5) / spd;
+      const delay = (keyframe.delay ?? 0) / spd;
+      const yoyo = keyframe.yoyo ?? false;
+      const repeat = keyframe.repeat === -1
+        ? calcRepeat(actionDuration - delay, duration, yoyo)
+        : (keyframe.repeat ?? 0);
+      const tweenVars: gsap.TweenVars = {
+        opacity: scaledTo,
+        duration,
+        yoyo,
+        repeat,
+        ease: keyframe.ease ?? "sine.inOut",
+        overwrite: "auto",
+      };
+      const target = `#actor_group_${actorId} [id="${keyframe.boneId}"]`;
+
+      if (scaledFrom !== undefined) {
+        timeline.fromTo(target, { opacity: scaledFrom }, tweenVars, startDelay + delay);
+      } else {
+        timeline.to(target, tweenVars, startDelay + delay);
+      }
     });
-    return;
-  }
+}
 
-  if (Array.isArray(rawClip)) {
-    keyframes = rawClip;
-  } else {
-    keyframes = rawClip.keyframes;
-    clipView  = rawClip.view;
-  }
-
-  if (keyframes.length === 0) {
-    console.warn(`[ambient] Clip "${clipName}" for actor "${actorId}" has 0 keyframes`);
-    return;
-  }
-
-  console.log(`[ambient] Playing clip "${clipName}" (view: ${clipView ?? "none"}) on "${actorId}" — ${keyframes.length} keyframes`);
+function addCanonicalIKPlayback(params: {
+  timeline: gsap.core.Timeline;
+  actor: IKPlaybackActor | null;
+  clipView?: string;
+  compiledIK?: ClipBindingIKPlayback;
+  amp: number;
+  spd: number;
+  startDelay: number;
+  actionDuration: number;
+}): boolean {
+  const { timeline, actor, clipView, compiledIK, amp, spd, startDelay, actionDuration } = params;
+  if (!actor || !compiledIK?.motion_intent) return false;
 
   if (clipView) {
-    switchView(actorId, clipView);
+    stagePlaybackView(timeline, actor, clipView, startDelay);
   }
 
-  const pivotMap: Record<string, { x: number; y: number }> = {};
-  rig!.rig_data.bones.forEach(b => {
-    if (b.pivot) pivotMap[b.id] = b.pivot;
+  timeline.call(() => {
+    setPlaybackIntent(actor, {
+      ...compiledIK.motion_intent,
+      duration: compiledIK.motion_intent.duration,
+      rotationTracks: (compiledIK.motion_intent.rotationTracks || []).map((track) => ({
+        ...track,
+        samples: track.samples.map((sample) => ({
+          ...sample,
+          rotation: scaleProp("rotation", sample.rotation, amp),
+        })),
+      })),
+      axialWaves: compiledIK.motion_intent.axialWaves.map((wave) => ({
+        ...wave,
+        amplitudeDeg: scaleProp("rotation", wave.amplitudeDeg, amp),
+        frequency: wave.frequency,
+      })),
+    });
+  }, undefined, startDelay);
+
+  timeline.set(actor.playbackState, { clipTimeSeconds: 0 }, startDelay);
+  timeline.to(actor.playbackState, {
+    clipTimeSeconds: (compiledIK.motion_intent.duration || actionDuration) * spd,
+    duration: actionDuration,
+    ease: "none",
+    overwrite: "auto",
+  }, startDelay);
+
+  return true;
+}
+
+function playAmbientIKClip(
+  actorId: string,
+  rig: DraftsmanData | undefined,
+  container: HTMLElement,
+): void {
+  if (!rig) {
+    console.warn(`[ambient] No rig found for actor "${actorId}"`);
+    return;
+  }
+
+  const motionClip = rig.rig_data.motion_clips?.idle;
+  if (!motionClip) {
+    console.warn(`[ambient] No clip "idle" for actor "${actorId}" — skipping ambient clip playback`);
+    return;
+  }
+
+  const playableClip = resolvePlayableMotionClip({
+    rig,
+    clipId: "idle",
+    motionClip,
+  });
+  const compiledIK = motionClipToIKPlayback("idle", playableClip);
+  const ikActor = createIKPlaybackActor(container, actorId, rig);
+
+  if (!compiledIK || !ikActor) {
+    console.warn(`[ambient] No canonical IK playback for actor "${actorId}" idle clip`);
+    return;
+  }
+
+  const timeline = gsap.timeline({
+    defaults: { overwrite: "auto" },
+    onUpdate: () => syncPlaybackActors([ikActor]),
+  });
+  const clipView = compiledIK.view ?? viewForClip(playableClip);
+  ikActor.renderState.currentView = clipView ?? ikActor.defaultView;
+  const clipDuration = Math.max(2, estimateClipDuration(playableClip));
+
+  addCanonicalIKPlayback({
+    timeline,
+    actor: ikActor,
+    clipView,
+    compiledIK,
+    amp: 1,
+    spd: 1,
+    startDelay: 0,
+    actionDuration: clipDuration,
+  });
+  addDirectOpacityKeyframes({
+    timeline,
+    actorId,
+    keyframes: displayKeyframesForClip(playableClip),
+    amp: 1,
+    spd: 1,
+    startDelay: 0,
+    actionDuration: clipDuration,
   });
 
-  keyframes.forEach(k => {
-    const pivot = pivotMap[k.bone];
-
-    const tweenVars: gsap.TweenVars = {
-      [k.prop]: k.to,
-      duration: k.duration,
-      yoyo:     k.yoyo   ?? false,
-      repeat:   k.repeat ?? 0,
-      ease:     k.ease   ?? "sine.inOut",
-      delay:    k.delay  ?? 0,
-      overwrite: "auto",
-    };
-
-    if (pivot) tweenVars.svgOrigin = `${pivot.x} ${pivot.y}`;
-
-    // Use attribute selector — bone IDs may start with digits (e.g. "3q_torso"),
-    // which makes #3q_torso an invalid CSS selector.
-    const target = `#actor_group_${actorId} [id="${k.bone}"]`;
-
-    if (k.from !== undefined) {
-      gsap.fromTo(target, { [k.prop]: k.from }, tweenVars);
-    } else {
-      gsap.to(target, tweenVars);
-    }
-  });
+  syncPlaybackActors([ikActor]);
 }
 
 // ── Ambient Layer ─────────────────────────────────────────────────────────────
 
 /**
  * Always-on looping animations:
- *  • Character idle clip from rig (falls back to simple breathing if missing).
+ *  • Character idle clip from canonical IK playback.
  *  • Object ambient loops (fire, smoke, etc.) detected by ID pattern.
  */
 export function animateAmbient(context: AnimationContext): gsap.Context {
@@ -234,15 +338,9 @@ export function animateAmbient(context: AnimationContext): gsap.Context {
   return gsap.context(() => {
     // Object ambient — scan all SVG elements with recognised ID patterns
     const matchedObjects: string[] = [];
-    container.querySelectorAll("[id]").forEach(el => {
-      const id = el.getAttribute("id") || "";
-      for (const { regex, label, animate } of OBJECT_ANIM_PATTERNS) {
-        if (regex.test(id)) {
-          animate(el);
-          matchedObjects.push(`${id} (${label})`);
-          break;
-        }
-      }
+    detectAmbientElements(container).forEach(({ id, label, element }) => {
+      playAmbientLoopOnElement(element, label);
+      matchedObjects.push(`${id} (${label})`);
     });
     if (matchedObjects.length > 0) {
       console.log(`[ambient] Object loops: ${matchedObjects.join(", ")}`);
@@ -255,8 +353,8 @@ export function animateAmbient(context: AnimationContext): gsap.Context {
         console.warn(`[ambient] No rig found for actor "${actorId}"`);
         return;
       }
-      if (rig.rig_data.animation_clips?.idle) {
-        playClip(actorId, "idle", rig, container);
+      if (rig.rig_data.motion_clips?.idle) {
+        playAmbientIKClip(actorId, rig, container);
       }
     });
   }, container);
@@ -269,7 +367,7 @@ export function animateAmbient(context: AnimationContext): gsap.Context {
  *
  * For each action:
  *   1. Spatial translation (walk/run/jump movement) added at timeline position 0.
- *   2. Bone-level animation clips with style modulation (amplitude + speed).
+ *   2. Canonical IK playback drivers with style modulation (amplitude + speed).
  *
  * Infinite repeat (-1) keyframes are converted to finite counts so the timeline
  * has a definite duration and can be seeked/scrubbed by the playhead.
@@ -282,12 +380,41 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
   const compiledBindings = compiledScene?.instance_tracks.flatMap(track => track.clip_bindings) ?? [];
   console.log(`[timeline] Building timeline for scene ${beat.scene_number} — ${compiledBindings.length > 0 ? `${compiledBindings.length} compiled bindings` : `${beat.actions.length} semantic actions`}`);
 
-  const tl = gsap.timeline({ paused: true, defaults: { overwrite: "auto" } });
+  const tl = gsap.timeline({ paused: true, defaults: { overwrite: "auto" } }) as TimelineWithIKSync;
+  const ikActors = new Map<string, IKPlaybackActor>();
+  const ensureIKActor = (actorId: string, rig: DraftsmanData | undefined): IKPlaybackActor | null => {
+    if (!rig?.rig_data.ik?.nodes.length) return null;
+    const existing = ikActors.get(actorId);
+    if (existing) return existing;
+    const created = createIKPlaybackActor(container, actorId, rig);
+    if (!created) return null;
+    ikActors.set(actorId, created);
+    return created;
+  };
+
+  const backgroundBindings = compiledScene?.background_ambient ?? [];
+  backgroundBindings.forEach(binding => {
+    const target = [
+      `#bg_sky[id="${binding.target_id}"]`,
+      `#bg_midground[id="${binding.target_id}"]`,
+      `#bg_foreground[id="${binding.target_id}"]`,
+      `#bg_sky [id="${binding.target_id}"]`,
+      `#bg_midground [id="${binding.target_id}"]`,
+      `#bg_foreground [id="${binding.target_id}"]`,
+    ].join(", ");
+    addAmbientBindingToTimeline(tl, target, binding);
+  });
+  if (backgroundBindings.length > 0) {
+    console.log(`[timeline]   background ambient bindings=${backgroundBindings.length}`);
+  }
 
   if (compiledScene && compiledScene.instance_tracks.length > 0) {
     compiledScene.instance_tracks.forEach(track => {
       const id = track.actor_id;
       const rig = availableRigs[id];
+      const ikActor = ensureIKActor(id, rig);
+
+      addCompiledTransformTrack(tl, container, id, track.transform_track);
 
       track.clip_bindings.forEach(binding => {
         const m = normalizeMotionKey(binding.motion);
@@ -295,128 +422,76 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
         const amp = binding.amplitude ?? 1.0;
         const spd = binding.speed ?? 1.0;
         const startDelay = binding.start_time ?? 0;
+        const isBaseObjectBinding = binding.clip_id === BASE_OBJECT_CLIP_ID;
+        const motionClip = !isBaseObjectBinding ? rig?.rig_data.motion_clips?.[binding.clip_id] : undefined;
+        const playableClip = !isBaseObjectBinding && rig
+          ? resolvePlayableMotionClip({
+              rig,
+              clipId: binding.clip_id,
+              motionClip,
+              style: binding.style,
+              durationSeconds: actionDuration,
+            })
+          : motionClip;
+        const compiledIK = !isBaseObjectBinding
+          ? motionClipToIKPlayback(binding.clip_id, playableClip) ?? binding.ik_playback
+          : undefined;
+        const clipView = compiledIK?.view ?? binding.view ?? viewForClip(playableClip);
 
         console.log(`[timeline]   actor="${id}" clip="${binding.clip_id}" motion="${m}" → amp=${amp.toFixed(2)} spd=${spd.toFixed(2)} delay=${startDelay}`);
-
-        const startX = binding.start_transform.x;
-        const startY = binding.start_transform.y;
-        const startScale = binding.start_transform.scale;
-        const endX = binding.end_transform?.x;
-        const endY = binding.end_transform?.y;
-        const endScale = binding.end_transform?.scale;
-        const deltaX = endX !== undefined ? endX - startX : 0;
-        const deltaY = endY !== undefined ? endY - startY : 0;
-        const isMoving = motionNeedsTarget(m) || Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10;
-
-        if (isMoving && deltaX < -10) {
-          const group = container.querySelector<SVGGElement>(`#actor_group_${id}`);
-          if (group) {
-            const naturalCX = parseFloat(group.dataset.naturalCx || "500");
-            const naturalBottom = parseFloat(group.dataset.naturalBottom || "1000");
-            tl.set(`#actor_group_${id}`, {
-              scaleX: -startScale,
-              svgOrigin: `${naturalCX} ${naturalBottom}`,
-            }, startDelay);
-          }
-        }
-
-        if (isMoving || endScale !== undefined) {
-          const moveVars: gsap.TweenVars = { duration: actionDuration, ease: "power1.inOut" };
-          if (Math.abs(deltaX) > 10) moveVars.x = `+=${deltaX}`;
-          if (Math.abs(deltaY) > 10) moveVars.y = `+=${deltaY}`;
-          if (endScale !== undefined) {
-            const flipped = deltaX < -10;
-            moveVars.scaleX = flipped ? -endScale : endScale;
-            moveVars.scaleY = endScale;
-          }
-          tl.to(`#actor_group_${id}`, moveVars, startDelay);
-        }
 
         if (!rig) {
           console.warn(`[timeline]   No rig found for actor "${id}" — skipping bone animation`);
           return;
         }
 
-        const availableClips = Object.keys(rig.rig_data.animation_clips ?? {});
-        const rawClip = rig.rig_data.animation_clips?.[binding.clip_id];
-
-        if (!rawClip) {
-          console.warn(`[timeline]   No clip "${binding.clip_id}" for actor "${id}" — available: [${availableClips.join(", ")}] — using fallback pulse`);
-          const tweenDur = 1.6 / spd;
-          tl.to(`#actor_group_${id}`, {
-            scaleY: 1 + (0.04 * amp),
-            scaleX: 1 - (0.03 * amp),
-            duration: tweenDur,
-            yoyo: true,
-            repeat: calcRepeat(actionDuration, tweenDur, true),
-            ease: "sine.inOut",
-            transformOrigin: "center bottom",
-          }, startDelay);
-          return;
-        }
-
-        let keyframes: AnimationKeyframe[];
-        let clipView: string | undefined = binding.view;
-
-        if (Array.isArray(rawClip)) {
-          keyframes = rawClip;
-        } else {
-          keyframes = rawClip.keyframes;
-          clipView = clipView ?? rawClip.view;
-        }
-
-        if (keyframes.length === 0) {
-          console.warn(`[timeline]   Clip "${binding.clip_id}" for actor "${id}" has 0 keyframes`);
-          return;
-        }
-
         if (clipView) {
-          ALL_VIEWS.forEach(v => {
-            tl.set(`#actor_group_${id} #${v}`, {
-              display: v === clipView ? "inline" : "none",
-            }, startDelay);
-          });
+          if (ikActor) {
+            stagePlaybackView(tl, ikActor, clipView, startDelay);
+          } else {
+            ALL_VIEWS.forEach(v => {
+              tl.set(`#actor_group_${id} #${v}`, {
+                display: v === clipView ? "inline" : "none",
+              }, startDelay);
+            });
+          }
         }
 
-        const pivotMap: Record<string, { x: number; y: number }> = {};
-        rig.rig_data.bones.forEach(b => {
-          if (b.pivot) pivotMap[b.id] = b.pivot;
+        if (isBaseObjectBinding) {
+          return;
+        }
+
+        const availableClips = Object.keys(rig.rig_data.motion_clips ?? {});
+        if (!compiledIK && !playableClip) {
+          console.warn(`[timeline]   No canonical clip "${binding.clip_id}" for actor "${id}" — available: [${availableClips.join(", ")}] — skipping actor motion`);
+          return;
+        }
+
+        addCanonicalIKPlayback({
+          timeline: tl,
+          actor: ikActor,
+          clipView,
+          compiledIK,
+          amp,
+          spd,
+          startDelay,
+          actionDuration,
         });
-
-        keyframes.forEach(k => {
-          const pivot = pivotMap[k.bone];
-          const scaledTo = scaleProp(k.prop, k.to, amp);
-          const scaledFrom = k.from !== undefined ? scaleProp(k.prop, k.from, amp) : undefined;
-          const tweenDur = (k.duration || 0.5) / spd;
-          const boneDelay = (k.delay ?? 0) / spd;
-          const yoyo = k.yoyo ?? false;
-
-          const repeat = k.repeat === -1
-            ? calcRepeat(actionDuration - boneDelay, tweenDur, yoyo)
-            : (k.repeat ?? 0);
-
-          const tweenVars: gsap.TweenVars = {
-            [k.prop]: scaledTo,
-            duration: tweenDur,
-            yoyo,
-            repeat,
-            ease: k.ease ?? "sine.inOut",
-            overwrite: "auto",
-          };
-
-          if (pivot) tweenVars.svgOrigin = `${pivot.x} ${pivot.y}`;
-
-          const target = `#actor_group_${id} [id="${k.bone}"]`;
-          const position = startDelay + boneDelay;
-
-          if (scaledFrom !== undefined) {
-            tl.fromTo(target, { [k.prop]: scaledFrom }, tweenVars, position);
-          } else {
-            tl.to(target, tweenVars, position);
-          }
+        addDirectOpacityKeyframes({
+          timeline: tl,
+          actorId: id,
+          keyframes: displayKeyframesForClip(playableClip),
+          amp,
+          spd,
+          startDelay,
+          actionDuration,
         });
       });
     });
+
+    tl.__ikSync = () => {
+      syncPlaybackActors(Array.from(ikActors.values()));
+    };
 
     console.log(`[timeline] Built — duration: ${tl.duration().toFixed(2)}s, tweens: ${tl.getChildren().length}`);
     return tl;
@@ -425,6 +500,7 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
   beat.actions.forEach(action => {
     const id             = action.actor_id;
     const rig            = availableRigs[id];
+    const ikActor        = ensureIKActor(id, rig);
     const m              = normalizeMotionKey(action.motion);
     const actionDuration = action.duration_seconds || 2;
     const overrides      = action.animation_overrides;
@@ -481,100 +557,70 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
       tl.to(`#actor_group_${id}`, moveVars, startDelay);
     }
 
-    // ── 2. Bone animation from rig clip ────────────────────────────────────
+    // ── 2. Canonical IK animation from rig clip ────────────────────────────
     if (!rig) {
       console.warn(`[timeline]   No rig found for actor "${id}" — skipping bone animation`);
       return;
     }
 
-    const availableClips = Object.keys(rig.rig_data.animation_clips ?? {});
-    const resolvedClipKey = suggestMotionAliases(m).find(alias => rig.rig_data.animation_clips?.[alias]);
-    const rawClip = resolvedClipKey ? rig.rig_data.animation_clips?.[resolvedClipKey] : undefined;
+    const availableClips = Object.keys(rig.rig_data.motion_clips ?? {});
+    const resolvedClipKey = suggestMotionAliases(m).find(alias => rig.rig_data.motion_clips?.[alias]);
+    const motionClip = resolvedClipKey ? rig.rig_data.motion_clips?.[resolvedClipKey] : undefined;
+    const playableClip = resolvedClipKey
+      ? resolvePlayableMotionClip({
+          rig,
+          clipId: resolvedClipKey,
+          motionClip,
+          style: action.style,
+          durationSeconds: actionDuration,
+        })
+      : undefined;
+    const compiledIK = resolvedClipKey ? motionClipToIKPlayback(resolvedClipKey, playableClip) : undefined;
+    const clipView = compiledIK?.view ?? viewForClip(playableClip);
 
-    if (!rawClip) {
-      console.warn(`[timeline]   No clip "${m}" for actor "${id}" — available: [${availableClips.join(", ")}] — using fallback pulse`);
-      // Fallback: whole-body pulse scaled by amplitude/speed
-      const tweenDur = 1.6 / spd;
-      tl.to(`#actor_group_${id}`, {
-        scaleY: 1 + (0.04 * amp),
-        scaleX: 1 - (0.03 * amp),
-        duration: tweenDur,
-        yoyo: true,
-        repeat: calcRepeat(actionDuration, tweenDur, true),
-        ease: "sine.inOut",
-        transformOrigin: "center bottom",
-      }, startDelay);
+    if (!compiledIK && !playableClip) {
+      console.warn(`[timeline]   No canonical clip "${m}" for actor "${id}" — available: [${availableClips.join(", ")}] — skipping actor motion`);
       return;
     }
-
-    let keyframes: AnimationKeyframe[];
-    let clipView: string | undefined;
-
-    if (Array.isArray(rawClip)) {
-      keyframes = rawClip;
-    } else {
-      keyframes = rawClip.keyframes;
-      clipView  = rawClip.view;
-    }
-
-    if (keyframes.length === 0) {
-      console.warn(`[timeline]   Clip "${m}" for actor "${id}" has 0 keyframes`);
-      return;
-    }
-
-    console.log(`[timeline]   Clip "${resolvedClipKey ?? m}" → view="${clipView ?? "none"}" ${keyframes.length} keyframes`);
+    console.log(`[timeline]   Clip "${resolvedClipKey ?? m}" → view="${clipView ?? "none"}" intentFamily="${playableClip?.intent.family || "none"}"`);
 
     // Switch to the appropriate view at the action start
     if (clipView) {
-      ALL_VIEWS.forEach(v => {
-        tl.set(`#actor_group_${id} #${v}`, {
-          display: v === clipView ? "inline" : "none",
-        }, startDelay);
-      });
+      if (ikActor) {
+        stagePlaybackView(tl, ikActor, clipView, startDelay);
+      } else {
+        ALL_VIEWS.forEach(v => {
+          tl.set(`#actor_group_${id} #${v}`, {
+            display: v === clipView ? "inline" : "none",
+          }, startDelay);
+        });
+      }
     }
 
-    // Build pivot lookup map
-    const pivotMap: Record<string, { x: number; y: number }> = {};
-    rig!.rig_data.bones.forEach(b => {
-      if (b.pivot) pivotMap[b.id] = b.pivot;
+    addCanonicalIKPlayback({
+      timeline: tl,
+      actor: ikActor,
+      clipView,
+      compiledIK,
+      amp,
+      spd,
+      startDelay,
+      actionDuration,
     });
-
-    keyframes.forEach(k => {
-      const pivot = pivotMap[k.bone];
-
-      // Apply amplitude (scale rotation/position) and speed
-      const scaledTo   = scaleProp(k.prop, k.to, amp);
-      const scaledFrom = k.from !== undefined ? scaleProp(k.prop, k.from, amp) : undefined;
-      const tweenDur   = (k.duration || 0.5) / spd;
-      const boneDelay  = (k.delay ?? 0) / spd;
-      const yoyo       = k.yoyo ?? false;
-
-      const repeat = k.repeat === -1
-        ? calcRepeat(actionDuration - boneDelay, tweenDur, yoyo)
-        : (k.repeat ?? 0);
-
-      const tweenVars: gsap.TweenVars = {
-        [k.prop]: scaledTo,
-        duration: tweenDur,
-        yoyo,
-        repeat,
-        ease: k.ease ?? "sine.inOut",
-        overwrite: "auto",
-      };
-
-      if (pivot) tweenVars.svgOrigin = `${pivot.x} ${pivot.y}`;
-
-      // Use attribute selector — bone IDs may start with digits (e.g. "3q_torso")
-      const target   = `#actor_group_${id} [id="${k.bone}"]`;
-      const position = startDelay + boneDelay;   // timeline insert position
-
-      if (scaledFrom !== undefined) {
-        tl.fromTo(target, { [k.prop]: scaledFrom }, tweenVars, position);
-      } else {
-        tl.to(target, tweenVars, position);
-      }
+    addDirectOpacityKeyframes({
+      timeline: tl,
+      actorId: id,
+      keyframes: displayKeyframesForClip(playableClip),
+      amp,
+      spd,
+      startDelay,
+      actionDuration,
     });
   });
+
+  tl.__ikSync = () => {
+    syncPlaybackActors(Array.from(ikActors.values()));
+  };
 
   console.log(`[timeline] Built — duration: ${tl.duration().toFixed(2)}s, tweens: ${tl.getChildren().length}`);
   return tl;

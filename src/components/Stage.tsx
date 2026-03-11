@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import gsap from "gsap";
-import { CompiledSceneData, StoryBeatData } from "@/lib/schema/story";
+import { CompiledSceneData, StoryBeatData, StageOrientation, getStageDims } from "@/lib/schema/story";
 import { DraftsmanData } from "@/lib/schema/rig";
 import DOMPurify from 'dompurify';
 import { animateAmbient, buildTimeline } from "@/lib/motion/core";
+import { applyDeterministicRigAssembly } from "@/lib/svg/assembly";
+import { showRigView } from "@/lib/ik/svgPose";
 
 interface StageProps {
     beat: StoryBeatData | null;
@@ -14,9 +16,11 @@ interface StageProps {
     frameRate?: number;
     stageDomId?: string;
     disableAmbient?: boolean;
+    showObstacleDebug?: boolean;
     isPlaying?: boolean;
     /** Current playhead position in seconds. Drives timeline seek when not playing. */
     playheadTime?: number;
+    loopOnComplete?: boolean;
     /** Called when a new GSAP timeline is compiled for the selected beat. */
     onTimelineReady?: (durationSeconds: number) => void;
     /** Called on every GSAP frame tick during playback with the current timeline time. */
@@ -26,6 +30,7 @@ interface StageProps {
     selectedActorId?: string | null;
     onActorSelect?: (actorId: string | null) => void;
     onActorPositionChange?: (actorId: string, x: number, y: number) => void;
+    stageOrientation?: StageOrientation;
 }
 
 interface DragState {
@@ -36,6 +41,10 @@ interface DragState {
     offsetY: number;
 }
 
+type TimelineWithIKSync = gsap.core.Timeline & {
+    __ikSync?: () => void;
+};
+
 export default function Stage({
     beat,
     compiledScene = null,
@@ -43,15 +52,24 @@ export default function Stage({
     frameRate = 60,
     stageDomId,
     disableAmbient = false,
+    showObstacleDebug = false,
     isPlaying = false,
     playheadTime = 0,
+    loopOnComplete = false,
     onTimelineReady,
     onPlayheadUpdate,
     onPlayComplete,
     selectedActorId,
     onActorSelect,
     onActorPositionChange,
+    stageOrientation = "landscape",
 }: StageProps) {
+    const { width: stageW, height: stageH } = getStageDims(stageOrientation);
+    const stageFrameClass = `shadow-2xl bg-black rounded-lg overflow-hidden border border-neutral-800 ${
+        stageOrientation === "portrait"
+            ? "h-full aspect-[9/16]"
+            : "w-full aspect-video"
+    }`;
     const containerRef = useRef<HTMLDivElement>(null);
 
     // Refs so animation effects always see the latest values without re-running on them.
@@ -66,9 +84,11 @@ export default function Stage({
     const onPlayheadUpdateRef = useRef(onPlayheadUpdate);
     const onPlayCompleteRef   = useRef(onPlayComplete);
     const onTimelineReadyRef  = useRef(onTimelineReady);
+    const loopOnCompleteRef   = useRef(loopOnComplete);
     useEffect(() => { onPlayheadUpdateRef.current = onPlayheadUpdate; }, [onPlayheadUpdate]);
     useEffect(() => { onPlayCompleteRef.current   = onPlayComplete;   }, [onPlayComplete]);
     useEffect(() => { onTimelineReadyRef.current  = onTimelineReady;  }, [onTimelineReady]);
+    useEffect(() => { loopOnCompleteRef.current   = loopOnComplete;   }, [loopOnComplete]);
 
     // Tracks whether we are currently playing (for seek guard)
     const isPlayingRef = useRef(isPlaying);
@@ -87,15 +107,19 @@ export default function Stage({
     const dragRef = useRef<DragState | null>(null);
     const isDraggingRef = useRef(false);
 
+    const syncTimelineIK = useCallback((timeline: gsap.core.Timeline | null) => {
+        (timeline as TimelineWithIKSync | null)?.__ikSync?.();
+    }, []);
+
     // ── SVG coordinate conversion ──────────────────────────────────────────────
     const toSvgCoords = useCallback((clientX: number, clientY: number) => {
-        if (!containerRef.current) return { x: 960, y: 540 };
+        if (!containerRef.current) return { x: stageW / 2, y: stageH / 2 };
         const rect = containerRef.current.getBoundingClientRect();
         return {
-            x: ((clientX - rect.left) / rect.width) * 1920,
-            y: ((clientY - rect.top) / rect.height) * 1080,
+            x: ((clientX - rect.left) / rect.width) * stageW,
+            y: ((clientY - rect.top) / rect.height) * stageH,
         };
-    }, []);
+    }, [stageW, stageH]);
 
     // ── Selection overlay update ───────────────────────────────────────────────
     const updateSelectionOverlay = useCallback((actorId: string | null | undefined) => {
@@ -152,7 +176,7 @@ export default function Stage({
             selRect.setAttribute("width", String(maxX - minX + pad * 2));
             selRect.setAttribute("height", String(maxY - minY + pad * 2));
             selRect.setAttribute("display", "");
-        } catch (_) {
+        } catch {
             selRect.setAttribute("display", "none");
         }
     }, []);
@@ -173,12 +197,14 @@ export default function Stage({
             const bgDoc = parser.parseFromString(beat.drafted_background.svg_data, "image/svg+xml");
             masterSvgElement = bgDoc.querySelector("svg") as SVGSVGElement;
         } else {
-            const fallbackStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" class="w-full h-full">
-              <rect width="1920" height="1080" fill="#111"/>
+            const gridRows = Math.ceil(stageH / 108) + 1;
+            const gridCols = Math.ceil(stageW / 96) + 1;
+            const fallbackStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${stageW} ${stageH}" class="w-full h-full">
+              <rect width="${stageW}" height="${stageH}" fill="#111"/>
               <g id="bg_sky"/>
               <g id="bg_midground">
-                ${Array.from({length:11}).map((_,i)=>`<line x1="0" y1="${i*108}" x2="1920" y2="${i*108}" stroke="#222" stroke-width="2"/>`).join('')}
-                ${Array.from({length:20}).map((_,i)=>`<line x1="${i*96}" y1="0" x2="${i*96}" y2="1080" stroke="#222" stroke-width="2"/>`).join('')}
+                ${Array.from({length:gridRows}).map((_,i)=>`<line x1="0" y1="${i*108}" x2="${stageW}" y2="${i*108}" stroke="#222" stroke-width="2"/>`).join('')}
+                ${Array.from({length:gridCols}).map((_,i)=>`<line x1="${i*96}" y1="0" x2="${i*96}" y2="${stageH}" stroke="#222" stroke-width="2"/>`).join('')}
               </g>
               <g id="bg_foreground"/>
             </svg>`;
@@ -229,6 +255,15 @@ export default function Stage({
             while (rigSvg.firstChild) {
                 actorGroup.appendChild(rigSvg.firstChild);
             }
+
+            const initialView =
+                track?.clip_bindings[0]?.view ||
+                rig.rig_data.ik?.defaultView ||
+                Object.keys(rig.rig_data.ik?.views || {}).sort()[0];
+            if (initialView) {
+                showRigView(actorGroup, initialView);
+            }
+
             actorLayer.appendChild(actorGroup);
             actorIdx++;
         });
@@ -253,6 +288,36 @@ export default function Stage({
         overlayGroup.appendChild(selRect);
         masterSvgElement.appendChild(overlayGroup);
 
+        if (showObstacleDebug && compiledScene?.obstacles?.length) {
+            const obstacleGroup = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "g");
+            obstacleGroup.setAttribute("id", "__obstacle_overlay");
+            obstacleGroup.setAttribute("pointer-events", "none");
+
+            compiledScene.obstacles.forEach((obstacle) => {
+                const rect = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "rect");
+                rect.setAttribute("x", String(obstacle.x));
+                rect.setAttribute("y", String(obstacle.y));
+                rect.setAttribute("width", String(obstacle.width));
+                rect.setAttribute("height", String(obstacle.height));
+                rect.setAttribute("fill", "rgba(245, 158, 11, 0.14)");
+                rect.setAttribute("stroke", "#f59e0b");
+                rect.setAttribute("stroke-width", "3");
+                rect.setAttribute("stroke-dasharray", "12 6");
+                obstacleGroup.appendChild(rect);
+
+                const label = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "text");
+                label.setAttribute("x", String(obstacle.x + 10));
+                label.setAttribute("y", String(obstacle.y + 24));
+                label.setAttribute("fill", "#fbbf24");
+                label.setAttribute("font-size", "20");
+                label.setAttribute("font-family", "monospace");
+                label.textContent = obstacle.id;
+                obstacleGroup.appendChild(label);
+            });
+
+            masterSvgElement.appendChild(obstacleGroup);
+        }
+
         masterSvgElement.setAttribute("class", "w-full h-full max-w-none max-h-none");
 
         const cleanSvg = DOMPurify.sanitize(masterSvgElement.outerHTML, { USE_PROFILES: { svg: true } });
@@ -262,13 +327,20 @@ export default function Stage({
         // so their bottom-center lands exactly at the target (x, y).
         const domSvg = containerRef.current.querySelector("svg");
 
+        actorsInScene.forEach(({ actorId }) => {
+            const rig = availableRigs[actorId];
+            const actorGroup = domSvg?.querySelector<SVGGElement>(`#actor_group_${actorId}`);
+            if (!rig || !actorGroup) return;
+            applyDeterministicRigAssembly(actorGroup, rig);
+        });
+
         const posCtx = gsap.context(() => {
             Object.entries(targetTransforms).forEach(([id, t]) => {
                 const group = domSvg?.querySelector(`#actor_group_${id}`) as SVGGElement | null;
                 if (!group) return;
 
-                let naturalCX = 960;
-                let naturalBottom = 1050;
+                let naturalCX = stageW / 2;
+                let naturalBottom = stageH * 0.97;
 
                 try {
                     const bbox = group.getBBox();
@@ -276,7 +348,7 @@ export default function Stage({
                         naturalCX = bbox.x + bbox.width / 2;
                         naturalBottom = bbox.y + bbox.height;
                     }
-                } catch (_) { /* getBBox failed — use fallbacks */ }
+                } catch { /* getBBox failed — use fallbacks */ }
 
                 group.dataset.naturalCx     = naturalCX.toString();
                 group.dataset.naturalBottom = naturalBottom.toString();
@@ -307,14 +379,36 @@ export default function Stage({
             beat,
             compiledScene,
             availableRigs,
+        }) as TimelineWithIKSync;
+        tl.eventCallback("onUpdate",   () => {
+            syncTimelineIK(tl);
+            onPlayheadUpdateRef.current?.(tl.time());
         });
-        tl.eventCallback("onUpdate",   () => { onPlayheadUpdateRef.current?.(tl.time()); });
         tl.eventCallback("onComplete", () => {
           console.log("[stage] Timeline complete");
+          if (loopOnCompleteRef.current) {
+            tl.pause(0);
+            syncTimelineIK(tl);
+            onPlayheadUpdateRef.current?.(0);
+            requestAnimationFrame(() => tl.play(0));
+            return;
+          }
           onPlayCompleteRef.current?.();
         });
         gsapTimelineRef.current = tl;
         onTimelineReadyRef.current?.(tl.duration());
+
+        if (isPlayingRef.current) {
+            if (ambientCtxRef.current) {
+                ambientCtxRef.current.revert();
+                ambientCtxRef.current = null;
+            }
+            tl.play(playheadTime);
+            syncTimelineIK(tl);
+        } else {
+            tl.pause(playheadTime);
+            syncTimelineIK(tl);
+        }
 
         // Update selection overlay after assembly
         updateSelectionOverlay(selectedActorId);
@@ -325,7 +419,7 @@ export default function Stage({
             if (gsapTimelineRef.current) { gsapTimelineRef.current.kill(); gsapTimelineRef.current = null; }
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [beat, compiledScene, availableRigs]);
+    }, [beat, compiledScene, availableRigs, showObstacleDebug, stageOrientation]);
 
     // ── Effect 2: Play / Pause ────────────────────────────────────────────────
     useEffect(() => {
@@ -358,8 +452,8 @@ export default function Stage({
         const tl = gsapTimelineRef.current;
         if (!tl) return;
         tl.seek(playheadTime, true);  // suppress callbacks to avoid feedback loop
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [playheadTime]);
+        syncTimelineIK(tl);
+    }, [playheadTime, syncTimelineIK]);
 
     // ── Effect 4: Selection overlay sync ─────────────────────────────────────
     useEffect(() => {
@@ -412,7 +506,6 @@ export default function Stage({
         isDraggingRef.current = false;
 
         e.preventDefault();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [onActorSelect, toSvgCoords]);
 
     const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -442,7 +535,7 @@ export default function Stage({
         if (!dragRef.current) return;
 
         if (isDraggingRef.current) {
-            const { actorId, naturalCX, naturalBottom, offsetX, offsetY } = dragRef.current;
+            const { actorId, offsetX, offsetY } = dragRef.current;
             const svgCoords = toSvgCoords(e.clientX, e.clientY);
             const newFeetX = svgCoords.x - offsetX;
             const newFeetY = svgCoords.y - offsetY;
@@ -459,7 +552,7 @@ export default function Stage({
             return;
         }
         // Commit position on leave too
-        const { actorId, naturalCX, naturalBottom, offsetX, offsetY } = dragRef.current;
+        const { actorId, offsetX, offsetY } = dragRef.current;
         const svgCoords = toSvgCoords(e.clientX, e.clientY);
         const newFeetX = svgCoords.x - offsetX;
         const newFeetY = svgCoords.y - offsetY;
@@ -470,18 +563,27 @@ export default function Stage({
 
     if (!beat) {
         return (
-            <div className="w-full h-full flex items-center justify-center text-neutral-500 text-xs font-mono uppercase tracking-widest">
-                Select a scene from the timeline to stage it.
+            <div className="w-full h-full grid place-items-center p-4">
+                <div className={`${stageFrameClass} grid place-items-center px-6 text-center`}>
+                    <div className="space-y-2">
+                        <div className="text-neutral-500 text-xs font-mono uppercase tracking-widest">
+                            {stageOrientation === "portrait" ? "Portrait Stage" : "Landscape Stage"}
+                        </div>
+                        <div className="text-neutral-600 text-[11px]">
+                            Select a scene or generate a new one.
+                        </div>
+                    </div>
+                </div>
             </div>
         );
     }
 
     return (
-        <div className="w-full h-full flex items-center justify-center p-4">
+        <div className="w-full h-full grid place-items-center p-4">
             <div
                 ref={containerRef}
                 id={stageDomId}
-                className="w-full aspect-video max-w-[1920px] shadow-2xl bg-black rounded-lg overflow-hidden border border-neutral-800"
+                className={stageFrameClass}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}

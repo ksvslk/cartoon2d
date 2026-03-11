@@ -1,5 +1,17 @@
 import { z } from "zod";
-import { DraftsmanSchema } from "./rig";
+import { DraftsmanSchema, RigMotionIntentSchema, RigMotionIntentRootSampleSchema } from "./rig";
+import { MotionSpecSchema } from "./motion_spec";
+
+export type StageOrientation = "landscape" | "portrait";
+
+export const STAGE_DIMENSIONS = {
+  landscape: { width: 1920, height: 1080 },
+  portrait:  { width: 1080, height: 1920 },
+} as const;
+
+export function getStageDims(orientation: StageOrientation) {
+  return STAGE_DIMENSIONS[orientation];
+}
 
 export const ActorSchema = z.object({
     id: z.string().describe("A unique identifier for this actor, e.g., 'actor-john'"),
@@ -27,6 +39,7 @@ export const AnimationOverridesSchema = z.object({
     amplitude: z.number().optional().describe("How large the motion is (1.0 = normal, 2.0 = double, 0.5 = half)."),
     speed: z.number().optional().describe("Animation speed multiplier (1.0 = normal, 2.0 = double speed, 0.5 = half speed)."),
     delay: z.number().optional().describe("Seconds to wait before this action's animation starts."),
+    collision_behavior: z.enum(["halt", "slide", "bounce"]).optional().describe("How the motion should respond if it collides with a scene obstacle."),
 });
 
 export const SpatialTransformSchema = z.object({
@@ -40,20 +53,36 @@ export const TransformKeyframeSchema = SpatialTransformSchema.extend({
     time: z.number().describe("Timeline time in seconds for this transform keyframe."),
 });
 
+export const ClipBindingIKPlaybackSchema = z.object({
+    source_clip_id: z.string().describe("Original reusable rig clip ID that produced this compiled IK playback block."),
+    view: z.string().optional().describe("Preferred view to display while this IK playback block is active."),
+    motion_spec: MotionSpecSchema.optional().describe("Optional semantic summary associated with this playback block."),
+    motion_intent: RigMotionIntentSchema.describe("Solver-native motion intent used by runtime playback."),
+    sampled_root_motion: z.array(RigMotionIntentRootSampleSchema).default([]).describe("Optional cached root-motion samples for the binding."),
+});
+
 export const ClipBindingSchema = z.object({
     id: z.string().describe("Unique binding id inside the scene timeline."),
     actor_id: z.string().describe("The actor bound to this clip."),
     source_action_index: z.number().describe("Original semantic action index that produced this binding."),
     motion: z.string().describe("Original semantic motion name."),
     style: z.string().optional().describe("Original style modifier."),
-    clip_id: z.string().describe("Resolved reusable clip id on the actor rig."),
+    clip_id: z.string().describe("Resolved reusable clip id on the actor rig, or 'base_object' for transform-only fallback."),
     view: z.string().optional().describe("The rig view used by this clip."),
     start_time: z.number().describe("Timeline start time in seconds."),
     duration_seconds: z.number().describe("Binding duration in seconds."),
     amplitude: z.number().optional().describe("Resolved amplitude multiplier."),
     speed: z.number().optional().describe("Resolved speed multiplier."),
+    collision_behavior: z.enum(["halt", "slide", "bounce"]).optional().describe("Resolved collision behavior for this clip binding."),
     start_transform: SpatialTransformSchema.describe("Transform at clip start."),
     end_transform: SpatialTransformSchema.optional().describe("Transform at clip end, if the clip moves through space."),
+    collision: z.object({
+        obstacle_id: z.string().describe("Obstacle id that constrained this binding."),
+        stop_x: z.number().describe("Resolved X position where the actor was clamped or stopped."),
+        stop_y: z.number().optional().describe("Resolved Y position where the actor was clamped or stopped."),
+        stop_time: z.number().optional().describe("Timeline time in seconds when the collision stop occurred."),
+    }).optional().describe("Optional collision result baked into this binding."),
+    ik_playback: ClipBindingIKPlaybackSchema.optional().describe("Optional canonical IK playback data compiled from the reusable rig clip."),
 });
 
 export const SceneInstanceTrackSchema = z.object({
@@ -62,8 +91,26 @@ export const SceneInstanceTrackSchema = z.object({
     transform_track: z.array(TransformKeyframeSchema).describe("Explicit transform keyframes baked for this actor in scene time."),
 });
 
+export const BackgroundAmbientBindingSchema = z.object({
+    id: z.string().describe("Unique background animation binding id inside the scene timeline."),
+    target_id: z.string().describe("SVG element id inside the background that should animate."),
+    label: z.enum(["flicker", "rise", "ripple", "sway", "wave", "drift", "pulse"]).describe("Ambient animation label applied to the background target."),
+    start_time: z.number().describe("Timeline start time in seconds."),
+    duration_seconds: z.number().describe("Binding duration in seconds."),
+});
+
+export const SceneObstacleSchema = z.object({
+    id: z.string().describe("Unique obstacle id inside the scene."),
+    x: z.number().describe("Obstacle min X in stage coordinates."),
+    y: z.number().describe("Obstacle min Y in stage coordinates."),
+    width: z.number().describe("Obstacle width in stage coordinates."),
+    height: z.number().describe("Obstacle height in stage coordinates."),
+});
+
 export const CompiledSceneSchema = z.object({
     duration_seconds: z.number().describe("Total compiled duration of the scene timeline."),
+    background_ambient: z.array(BackgroundAmbientBindingSchema).default([]).describe("Compiled background ambient bindings that play during scene playback."),
+    obstacles: z.array(SceneObstacleSchema).default([]).describe("Compiled obstacle regions derived from the background for collision/clamping."),
     instance_tracks: z.array(SceneInstanceTrackSchema).describe("Explicit per-actor scene timeline tracks."),
 });
 
@@ -78,6 +125,11 @@ export const CompileReportSchema = z.object({
         cost: z.number(),
         tokens: z.number(),
     }).optional().describe("Optional image generation usage shown under the storyboard image."),
+});
+
+export const ImageGenerationCostSchema = z.object({
+    cost: z.number().describe("Estimated USD cost for the storyboard image generation."),
+    tokens: z.number().describe("Image generation token count."),
 });
 
 export const ActionSchema = z.object({
@@ -102,6 +154,7 @@ export const StoryBeatSchema = z.object({
     actions: z.array(ActionSchema).describe("Semantic motions that actors perform during this beat."),
     comic_panel_prompt: z.string().describe("A highly optimized text prompt suitable for an Image Generation model to draw a static comic panel of this specific beat."),
     image_data: z.string().optional().describe("Base64 data URL of the generated comic panel image."),
+    image_generation_cost: ImageGenerationCostSchema.optional().describe("Persisted image generation usage for this storyboard beat."),
     drafted_background: DraftsmanSchema.optional().describe("The generated structured SVG background specific to this scene panel."),
     compiled_scene: CompiledSceneSchema.optional().describe("Persisted compiled scene graph used for playback, editing, and timeline rendering."),
     compile_report: CompileReportSchema.optional().describe("Persisted compile console and metrics for this scene.")
@@ -124,7 +177,10 @@ export type ActorData = z.infer<typeof ActorSchema>;
 export type AnimationOverrides = z.infer<typeof AnimationOverridesSchema>;
 export type SpatialTransform = z.infer<typeof SpatialTransformSchema>;
 export type TransformKeyframe = z.infer<typeof TransformKeyframeSchema>;
+export type ClipBindingIKPlayback = z.infer<typeof ClipBindingIKPlaybackSchema>;
 export type ClipBinding = z.infer<typeof ClipBindingSchema>;
 export type SceneInstanceTrack = z.infer<typeof SceneInstanceTrackSchema>;
+export type BackgroundAmbientBinding = z.infer<typeof BackgroundAmbientBindingSchema>;
+export type SceneObstacle = z.infer<typeof SceneObstacleSchema>;
 export type CompiledSceneData = z.infer<typeof CompiledSceneSchema>;
 export type CompileReportData = z.infer<typeof CompileReportSchema>;

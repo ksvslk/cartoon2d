@@ -1,12 +1,19 @@
 import { GoogleGenAI } from "@google/genai";
-import { StoryGenerationSchema, StoryGenerationData } from "../schema/story";
+import { StoryGenerationSchema, StoryGenerationData, StageOrientation, getStageDims } from "../schema/story";
 
 // Ensure the API key exists in your environment or Next.js config
 const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY
 });
 
-export async function* streamStorySequence(prompt: string, contextBeats?: StoryGenerationData['beats'], options?: { singleBeat?: boolean }, actorReferences?: Record<string, string>) {
+export async function* streamStorySequence(prompt: string, contextBeats?: StoryGenerationData['beats'], options?: { singleBeat?: boolean; orientation?: StageOrientation }, actorReferences?: Record<string, string>) {
+    const orientation = options?.orientation ?? "landscape";
+    const { width: stageW, height: stageH } = getStageDims(orientation);
+    const aspectRatio = orientation === "portrait" ? "9:16" : "16:9";
+    const compositionInstruction = orientation === "portrait"
+        ? "PORTRAIT COMPOSITION IS MANDATORY: Fill the entire 9:16 frame with a true vertical composition. Do NOT place a wide horizontal scene inside the portrait canvas. Do NOT add blurred top/bottom filler bands, duplicated scenery, soft-focus padding, inset panels, poster frames, or letterboxing. The final image must read as one full-bleed portrait illustration that uses the whole canvas intentionally."
+        : "LANDSCAPE COMPOSITION IS MANDATORY: Fill the entire 16:9 frame with a true widescreen composition. Do NOT add inset panels, poster frames, blurred side padding, or letterboxing. The final image must read as one full-bleed landscape illustration.";
+
     const systemInstruction = `You are the Lead Creative Director for a 2D animation studio.
 
 Your job is to take a user's raw prompt and break it down into a highly structured, cinematic storyboard sequence.
@@ -80,15 +87,17 @@ CRITICAL: Your response MUST contain TWO things:
 - Then, for EACH beat, generate a vivid, colorful flat 2D style illustration based on the comic_panel_prompt.
 - EXTREME 2D FLATNESS REQUIRED: The art style MUST be composed of highly abstract, minimal vector-like solid color shapes. NO shading, NO gradients, NO 3D rendering, NO photorealism.
 - CHARACTER ANGLES: Draw characters from the most cinematically appropriate angle for the scene — front view for dialogue, side profile for walking, 3/4 view for natural depth. Keep angles consistent within a scene.
+- SUBJECT/BACKGROUND CONTRAST IS CRITICAL: The active characters must remain clearly readable against the background at a glance. Use strong silhouette separation, opposing value bands, simplified backdrops behind the subject, or subtle rim separation so tails, fins, limbs, and body edges never disappear into dark scenery.
+- ${compositionInstruction}
 - DO NOT include any text, speech bubbles, or onomatopoeia (e.g., "BANG!", "CRASH!") in the images. These are handled by the audio/narrative data.
 - Output each image immediately after the JSON.
 - Keep actions as simple semantic verbs.
 - actors_detected must list ALL characters.
 
 ## Spatial Transform Rules (CRITICAL — always include these in every action)
-- The stage is 1920x1080 pixels. x=960 is center, x=300 is far-left, x=1600 is far-right.
-- y represents the character's floor contact point: y=900-1000 for ground level, smaller y = higher on screen.
-- SPREAD characters horizontally — NEVER stack multiple actors at x=960. Assign distinct x positions.
+- The stage is ${stageW}x${stageH} pixels. x=${stageW / 2} is center, x=${Math.round(stageW * 0.16)} is far-left, x=${Math.round(stageW * 0.83)} is far-right.
+- y represents the character's floor contact point: y=${Math.round(stageH * 0.83)}-${Math.round(stageH * 0.93)} for ground level, smaller y = higher on screen.
+- SPREAD characters horizontally — NEVER stack multiple actors at x=${stageW / 2}. Assign distinct x positions.
 - Use scale + y together for depth perspective: far away = lower scale (0.3-0.4), higher y; close = higher scale (0.6-0.8), lower y.
 - z_index: foreground characters 20-30, midground 10-15, background 5-10.
 - ALWAYS include target_spatial_transform for any locomotion action: walk, run, jump, swim, crawl, fly, slither, glide, drive, skate, roll, scoot, dash, march, sprint, hop, chase, drift.
@@ -144,14 +153,11 @@ CRITICAL: Your response MUST contain TWO things:
         config: {
             systemInstruction,
             temperature: 0.7,
-            // @ts-expect-error - The outputOptions schema is supported by the REST API for gemini-3.1-flash-image but missing from the current SDK TS definitions.
-            outputOptions: {
-                aspectRatio: "16:9",
-                mimeType: "image/jpeg",
-                compressionQuality: 60,
-                numberOfImages: 1,
-                width: 768
-            }
+            responseModalities: ["TEXT", "IMAGE"],
+            imageConfig: {
+                imageSize: "512",
+                aspectRatio,
+            },
         }
     });
 
@@ -224,7 +230,8 @@ CRITICAL: Your response MUST contain TWO things:
                 }
             } else if (part.inlineData) {
                 const base64 = part.inlineData.data || "";
-                const imageDataUri = `data:image/png;base64,${base64}`;
+                const mime = part.inlineData.mimeType || "image/jpeg";
+                const imageDataUri = `data:${mime};base64,${base64}`;
 
                 if (!jsonParsed) {
                     // Try to parse JSON now that we hit an image
@@ -257,6 +264,7 @@ CRITICAL: Your response MUST contain TWO things:
             type: 'usage' as const,
             promptTokens: lastUsage.promptTokenCount || 0,
             candidateTokens: lastUsage.candidatesTokenCount || 0,
+            imageCount: imageIndex + bufferedImages.length,
         };
     }
 
@@ -283,11 +291,16 @@ CRITICAL: Your response MUST contain TWO things:
     }
 }
 
-export async function editSceneImage(base64Image: string, editPrompt: string): Promise<string> {
+export async function editSceneImage(base64Image: string, editPrompt: string, orientation: StageOrientation = "landscape"): Promise<string> {
+    const aspectRatio = orientation === "portrait" ? "9:16" : "16:9";
+    const compositionInstruction = orientation === "portrait"
+        ? "The output MUST be a full-bleed portrait illustration that uses the entire 9:16 canvas. Do NOT preserve or create blurred top/bottom filler, duplicated scenery, inset panels, or a landscape strip sitting inside a portrait frame."
+        : "The output MUST be a full-bleed landscape illustration that uses the entire 16:9 canvas. Do NOT preserve or create inset panels, blurred side filler, or letterboxing.";
     const systemInstruction = `You are a professional comic book illustrator.
 You have been provided with an existing comic panel and a localized instruction from the director.
 Your job is to redraw the image to satisfy the director's request.
 Maintain the exact same art style, color palette, and character likenesses as the original image unless explicitly instructed to change them.
+${compositionInstruction}
 DO NOT include any text or speech bubbles.
 Output ONLY the new generated image.`;
 
@@ -299,7 +312,7 @@ Output ONLY the new generated image.`;
             {
                 inlineData: {
                     data: rawBase64,
-                    mimeType: "image/png"
+                    mimeType: "image/jpeg"
                 }
             },
             { text: `Director's Edit Request: ${editPrompt}` }
@@ -307,21 +320,19 @@ Output ONLY the new generated image.`;
         config: {
             systemInstruction,
             temperature: 0.6,
-            // @ts-expect-error
-            outputOptions: {
-                aspectRatio: "16:9",
-                mimeType: "image/jpeg",
-                compressionQuality: 60,
-                numberOfImages: 1,
-                width: 768
-            }
+            responseModalities: ["TEXT", "IMAGE"],
+            imageConfig: {
+                imageSize: "512",
+                aspectRatio,
+            },
         }
     });
 
     if (response.candidates && response.candidates.length > 0 && response.candidates[0].content && response.candidates[0].content.parts && response.candidates[0].content.parts.length > 0) {
         const part = response.candidates[0].content!.parts[0];
         if (part.inlineData && part.inlineData.data) {
-            return `data:image/png;base64,${part.inlineData.data}`;
+            const mime = part.inlineData.mimeType || "image/jpeg";
+            return `data:${mime};base64,${part.inlineData.data}`;
         }
     }
 

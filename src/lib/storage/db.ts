@@ -1,10 +1,11 @@
 import { get, set, del } from 'idb-keyval';
-import { StoryGenerationData } from '../schema/story';
+import { StoryGenerationData, StageOrientation } from '../schema/story';
 
 export interface ProjectMetadata {
     id: string;
     title: string;
     updatedAt: number;
+    orientation?: StageOrientation;
 }
 
 const PROJECTS_LIST_KEY = 'cartoon2d_projects_list';
@@ -63,6 +64,16 @@ export async function touchProject(projectId: string): Promise<void> {
         await set(PROJECTS_LIST_KEY, updated);
     } catch (e) {
         console.error(`Failed to touch project ${projectId}:`, e);
+    }
+}
+
+export async function updateProjectOrientation(projectId: string, orientation: StageOrientation): Promise<void> {
+    try {
+        const projects = await getProjectsList();
+        const updated = projects.map(p => p.id === projectId ? { ...p, orientation, updatedAt: Date.now() } : p);
+        await set(PROJECTS_LIST_KEY, updated);
+    } catch (e) {
+        console.error(`Failed to update orientation for ${projectId}:`, e);
     }
 }
 

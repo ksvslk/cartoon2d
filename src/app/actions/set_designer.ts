@@ -2,18 +2,21 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { DraftsmanData } from "@/lib/schema/rig";
+import { StageOrientation, getStageDims } from "@/lib/schema/story";
 import { JSDOM } from "jsdom";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-const SET_DESIGNER_SYSTEM_PROMPT = `
+function buildSetDesignerSystemPrompt(stageW: number, stageH: number): string {
+  const aspect = stageW > stageH ? "16:9 HD landscape" : "9:16 portrait";
+  return `
 You are the Set Designer, an expert SVG vector artist and environment technical director.
 Your job is to take a raster comic panel image and extract ONLY its background environment, perfectly recreating it as a clean, highly-structured, parallax-ready SVG vector file.
 
 CRITICAL REQUIREMENTS:
-1. **Resolution Independence**: The output SVG MUST use \`<svg viewBox="0 0 1920 1080">\` (16:9 HD landscape).
+1. **Resolution Independence**: The output SVG MUST use \`<svg viewBox="0 0 ${stageW} ${stageH}">\` (${aspect}).
 2. **Scenery Only**: Ignore all active characters/actors in the reference image. Draw ONLY the environment they are standing in.
-3. **EXTREME Minimalism (CRITICAL)**: To optimize for performance and file size, you MUST abstract the environment into the absolute minimum number of shapes possible. Use large, flat, geometric primitives (rectangles, basic polygons, large sweeping paths) instead of complex linework. 
+3. **EXTREME Minimalism (CRITICAL)**: To optimize for performance and file size, you MUST abstract the environment into the absolute minimum number of shapes possible. Use large, flat, geometric primitives (rectangles, basic polygons, large sweeping paths) instead of complex linework.
    - DO NOT draw individual bricks, leaves, tiles, or texture details.
    - Represent a forest with 3-4 abstract geometric tree trunks, not a hundred branches.
    - Represent a city skyline with 3-4 blocky silhouettes, not individual windows.
@@ -25,15 +28,16 @@ CRITICAL REQUIREMENTS:
    *Note: Within these 3 master layers, you may create sub-groups to establish micro-layering (e.g., placing a desk behind a chair inside bg_midground).*
 5. **No Flat JPEGs**: Do not embed raster images using <image>. Pure vector paths only.
 6. **Interaction Nulls (Props)**: If there are crucial semantic objects in the background a character might sit on or touch (e.g., a chair, a steering wheel, a door handle), you must wrap their shape in a uniquely ID'd group (e.g., \`<g id="prop_chair">\`) and log that ID in the \`interactionNulls\` array in the JSON. You MUST also provide the exact (x, y) absolute coordinates of that prop's interactive anchor point in the \`bones\` array.
-7. **Complete Scene**: Ensure the background is fully drawn across the entire 1920x1080 stage. Do not leave blank void where the characters used to stand. Fill in the missing ground/walls behind them.
+7. **Complete Scene**: Ensure the background is fully drawn across the entire ${stageW}x${stageH} stage. Do not leave blank void where the characters used to stand. Fill in the missing ground/walls behind them.
+8. **Preserve Subject Readability**: The environment must not visually swallow the active character silhouettes from the reference panel. Keep the plates directly behind the likely actor lane slightly separated in value and shape complexity so fins, tails, limbs, and facial features remain readable after vector extraction.
 
 CRITICAL SHAPE: You must output ONLY a SINGLE valid JSON object matching this exact structure:
 \`\`\`json
 {
-  "svg_data": "<svg viewBox='0 0 1920 1080'>...</svg>",
+  "svg_data": "<svg viewBox='0 0 ${stageW} ${stageH}'>...</svg>",
   "rig_data": {
     "bones": [
-      { "id": "prop_chair", "pivot": { "x": 960, "y": 950 } }
+      { "id": "prop_chair", "pivot": { "x": ${Math.round(stageW / 2)}, "y": ${Math.round(stageH * 0.88)} } }
     ],
     "interactionNulls": ["prop_chair"]
   }
@@ -41,6 +45,7 @@ CRITICAL SHAPE: You must output ONLY a SINGLE valid JSON object matching this ex
 \`\`\`
 Do not write any text outside this JSON object.
 `;
+}
 
 export interface SetDesignerResponse {
     data: DraftsmanData;
@@ -51,7 +56,9 @@ export interface SetDesignerResponse {
     }
 }
 
-export async function processSetDesignerPrompt(base64Image: string, sceneNarrative: string): Promise<SetDesignerResponse> {
+export async function processSetDesignerPrompt(base64Image: string, sceneNarrative: string, orientation: StageOrientation = "landscape"): Promise<SetDesignerResponse> {
+    const { width: stageW, height: stageH } = getStageDims(orientation);
+    const systemPrompt = buildSetDesignerSystemPrompt(stageW, stageH);
     try {
         const response = await ai.models.generateContent({
             model: "gemini-3.1-pro-preview",
@@ -59,7 +66,7 @@ export async function processSetDesignerPrompt(base64Image: string, sceneNarrati
                 {
                     role: "user",
                     parts: [
-                        { text: SET_DESIGNER_SYSTEM_PROMPT },
+                        { text: systemPrompt },
                         { text: `Redraw the background environment described here as a parallax SVG: ${sceneNarrative}` },
                         {
                             inlineData: {
@@ -71,7 +78,7 @@ export async function processSetDesignerPrompt(base64Image: string, sceneNarrati
                 }
             ],
             config: {
-                systemInstruction: SET_DESIGNER_SYSTEM_PROMPT,
+                systemInstruction: systemPrompt,
                 temperature: 0.5
             }
         });
@@ -94,7 +101,7 @@ export async function processSetDesignerPrompt(base64Image: string, sceneNarrati
 
         // --- Deterministic Filter Pass ---
         try {
-            data.svg_data = postProcessBackgroundSVG(data.svg_data, data.rig_data);
+            data.svg_data = postProcessBackgroundSVG(data.svg_data, data.rig_data, stageW, stageH);
         } catch (postProcessErr) {
             console.error("Warning: Failed to run post-processing on SVG. Proceeding with raw data.", postProcessErr);
         }
@@ -119,7 +126,7 @@ export async function processSetDesignerPrompt(base64Image: string, sceneNarrati
  * rescuing any stray shapes the AI drew outside the layers by moving them
  * into the midground, ensuring z-indexing is flawless.
  */
-function postProcessBackgroundSVG(rawSvgString: string, rigMap: DraftsmanData["rig_data"]): string {
+function postProcessBackgroundSVG(rawSvgString: string, rigMap: DraftsmanData["rig_data"], stageW = 1920, stageH = 1080): string {
     const dom = new JSDOM(rawSvgString, { contentType: "image/svg+xml" });
     const document = dom.window.document;
     const svgElement = document.querySelector("svg");
@@ -128,7 +135,7 @@ function postProcessBackgroundSVG(rawSvgString: string, rigMap: DraftsmanData["r
 
     // 1. Enforce ViewBox
     if (!svgElement.hasAttribute("viewBox")) {
-        svgElement.setAttribute("viewBox", "0 0 1920 1080");
+        svgElement.setAttribute("viewBox", `0 0 ${stageW} ${stageH}`);
     }
 
     // 2. Identify or Create the 3 mandatory layers
