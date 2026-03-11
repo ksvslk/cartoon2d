@@ -1,6 +1,7 @@
 import { ensureRigIK } from "../ik/graph";
 
 type CanonicalRig = ReturnType<typeof ensureRigIK>;
+type CanonicalNode = NonNullable<CanonicalRig["rig_data"]["ik"]>["nodes"][number];
 
 export type MotionTopologyChain = {
   id: string;
@@ -9,6 +10,7 @@ export type MotionTopologyChain = {
   terminalNodeId: string;
   primary: boolean;
   depth: number;
+  span: number;
 };
 
 export type MotionTopology = {
@@ -27,7 +29,14 @@ function sortIds(ids: string[]): string[] {
   return [...ids].sort((left, right) => left.localeCompare(right));
 }
 
-function comparePaths(left: string[], right: string[]): number {
+function comparePaths(
+  left: string[],
+  right: string[],
+  spanByPath: Map<string, number>,
+): number {
+  const leftSpan = spanByPath.get(left.join(">")) || 0;
+  const rightSpan = spanByPath.get(right.join(">")) || 0;
+  if (rightSpan !== leftSpan) return rightSpan - leftSpan;
   if (right.length !== left.length) return right.length - left.length;
   return left.join(">").localeCompare(right.join(">"));
 }
@@ -66,7 +75,28 @@ function sharedPrefixLength(left: string[], right: string[]): number {
   return index;
 }
 
-function buildChain(nodeIds: string[], primary: boolean, nodeDepths: Map<string, number>, index: number): MotionTopologyChain {
+function pathSpan(
+  nodeIds: string[],
+  nodeById: Map<string, CanonicalNode>,
+): number {
+  return nodeIds.reduce((sum, nodeId, index) => {
+    if (index === 0) return sum;
+    const node = nodeById.get(nodeId);
+    if (!node) return sum;
+    if (typeof node.restLength === "number" && Number.isFinite(node.restLength)) {
+      return sum + node.restLength;
+    }
+    return sum;
+  }, 0);
+}
+
+function buildChain(
+  nodeIds: string[],
+  primary: boolean,
+  nodeDepths: Map<string, number>,
+  index: number,
+  span: number,
+): MotionTopologyChain {
   return {
     id: primary ? "primary" : `branch_${index}`,
     nodeIds,
@@ -74,6 +104,7 @@ function buildChain(nodeIds: string[], primary: boolean, nodeDepths: Map<string,
     terminalNodeId: nodeIds[nodeIds.length - 1],
     primary,
     depth: nodeDepths.get(nodeIds[nodeIds.length - 1]) || 0,
+    span,
   };
 }
 
@@ -92,6 +123,7 @@ export function buildMotionTopology(
   const nodes = rig.rig_data.ik?.nodes || [];
 
   const parentByNode = new Map(nodes.map((node) => [node.id, node.parent]));
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const childIdsByNode = new Map<string, string[]>();
   nodes.forEach((node) => childIdsByNode.set(node.id, []));
   nodes.forEach((node) => {
@@ -109,8 +141,9 @@ export function buildMotionTopology(
   const nodeDepths = computeNodeDepths(rootNodeIds, childIdsByNode);
   const rootToLeafPaths = rootNodeIds
     .flatMap((rootId) => collectRootToLeafPaths(rootId, childIdsByNode))
-    .filter((path) => path.length >= 2)
-    .sort(comparePaths);
+    .filter((path) => path.length >= 2);
+  const spanByPath = new Map(rootToLeafPaths.map((path) => [path.join(">"), pathSpan(path, nodeById)]));
+  rootToLeafPaths.sort((left, right) => comparePaths(left, right, spanByPath));
 
   const primaryPath = rootToLeafPaths[0];
   const chains: MotionTopologyChain[] = [];
@@ -119,7 +152,7 @@ export function buildMotionTopology(
   if (primaryPath) {
     const key = primaryPath.join(">");
     seen.add(key);
-    chains.push(buildChain(primaryPath, true, nodeDepths, 0));
+    chains.push(buildChain(primaryPath, true, nodeDepths, 0, spanByPath.get(key) || 0));
   }
 
   rootToLeafPaths.slice(primaryPath ? 1 : 0).forEach((path, index) => {
@@ -131,7 +164,7 @@ export function buildMotionTopology(
     const key = candidate.join(">");
     if (seen.has(key)) return;
     seen.add(key);
-    chains.push(buildChain(candidate, false, nodeDepths, index));
+    chains.push(buildChain(candidate, false, nodeDepths, index, pathSpan(candidate, nodeById)));
   });
 
   const branchChains = chains.filter((chain) => !chain.primary);

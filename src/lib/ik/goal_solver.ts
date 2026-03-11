@@ -46,6 +46,13 @@ export function solvePoseFromGoals(
         .filter((entry): entry is readonly [string, { x: number; y: number }] => Boolean(entry)),
     ],
   );
+  const preserveNodeIds = Array.from(new Set([
+    ...Object.keys(goals.axialRotations || {}),
+    ...goals.effectorTargets.map((goal) => goal.nodeId),
+    ...goals.activePins.map((pin) => pin.nodeId),
+    ...goals.activeContacts.map((contact) => contact.nodeId),
+    ...(graph.roots[0] && goals.rootOffset ? [graph.roots[0]] : []),
+  ]));
   return relaxPoseGraph(graph, pose, {
     goalTargets: goals.effectorTargets.map((goal) => ({
       nodeId: goal.nodeId,
@@ -53,6 +60,7 @@ export function solvePoseFromGoals(
       weight: goal.weight,
     })),
     dynamicPins,
+    preserveNodeIds,
     iterations: goals.effectorTargets.length > 0 ? 8 : 6,
   });
 }

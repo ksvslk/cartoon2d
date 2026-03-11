@@ -187,10 +187,12 @@ function defaultWavesForTopology(
   const intensity = motionSpec.intensity || 0.5;
   const frequency = waveFrequencyForFamily(motionSpec.motionFamily, motionSpec.tempo || 1);
   const baseAmplitude = baseWaveAmplitudeForFamily(motionSpec.motionFamily) * amplitude * (0.55 + (intensity * 0.8));
+  const primarySpan = Math.max(1, topology.primaryChain?.span || 1);
 
   return topology.chains.flatMap((chain, index) => {
     if (chain.nodeIds.length < 2) return [];
-    const chainAmplitude = chain.primary ? baseAmplitude : baseAmplitude * 0.38;
+    const spanRatio = Math.max(0.18, Math.min(1, chain.span / primarySpan));
+    const chainAmplitude = chain.primary ? baseAmplitude : baseAmplitude * 0.38 * spanRatio;
     if (motionSpec.motionFamily === "idle" && !chain.primary) return [];
     return [{
       chainId: chain.id,
