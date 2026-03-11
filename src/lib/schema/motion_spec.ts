@@ -1,22 +1,6 @@
 import { z } from "zod";
 
-export const MotionFamilySchema = z.enum([
-    "idle",
-    "walk",
-    "run",
-    "jump",
-    "swim",
-    "glide",
-    "halt",
-    "crash",
-    "wave",
-    "turn",
-    "hover",
-    "drift",
-    "drive",
-    "retreat",
-    "custom",
-]);
+export const MotionFamilySchema = z.string().trim().min(1).max(64).default("custom");
 
 export const MotionLocomotionModeSchema = z.enum([
     "none",

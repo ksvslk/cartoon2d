@@ -11,9 +11,11 @@ import {
     RigRepairReport
 } from "@/lib/schema/rig";
 import { MotionSpec, MotionSpecSchema } from "@/lib/schema/motion_spec";
+import { constrainMotionSpecToRig, inferRigMotionAffordance, RigMotionAffordance } from "@/lib/motion/affordance";
 import { inferMotionSpecForRig } from "@/lib/motion/spec";
 import { buildMotionIntentFromSpec } from "@/lib/motion/intent";
-import { validateRigForMotion } from "@/lib/motion/validation";
+import { MotionValidationDebug, validateRigForMotion } from "@/lib/motion/validation";
+import { resolvePlayableMotionClip } from "@/lib/motion/compiled_ik";
 import { ensureRigIK } from "@/lib/ik/graph";
 
 // Initialize the Gemini client
@@ -32,8 +34,9 @@ export interface DraftsmanResponse {
 }
 
 export interface MotionClipResponse {
-    clip: NonNullable<DraftsmanData["rig_data"]["motion_clips"]>[string];
+    clip?: NonNullable<DraftsmanData["rig_data"]["motion_clips"]>[string];
     stabilization?: MotionCompilationReport;
+    blocked?: MotionCompilationBlocked;
     usage: {
         promptTokenCount: number;
         candidatesTokenCount: number;
@@ -47,6 +50,12 @@ export interface MotionCompilationReport {
     chainIds: string[];
     suppressedKeyframes: number;
     validationWarnings: string[];
+    debugReport?: MotionDebugReport;
+}
+
+export interface MotionCompilationBlocked {
+    message: string;
+    debugReport: MotionDebugReport;
 }
 
 export interface MotionSpecResponse {
@@ -58,13 +67,155 @@ export interface MotionSpecResponse {
     }
 }
 
+export interface MotionDebugReport {
+    motion: string;
+    style?: string;
+    durationSeconds: number;
+    affordance: RigMotionAffordance;
+    inferredSpec: MotionSpecDebugSummary;
+    modelSpec: MotionSpecDebugSummary;
+    finalSpec: MotionSpecDebugSummary;
+    preflight: {
+        ok: boolean;
+        errors: string[];
+        warnings: string[];
+        debug: MotionValidationDebug;
+    };
+    attempts: MotionDebugAttempt[];
+    finalStatus: "compiled" | "blocked";
+    finalMessage: string;
+}
+
+export interface MotionSpecDebugSummary {
+    motionFamily: string;
+    tempo: number;
+    amplitude: number;
+    intensity: number;
+    preferredView?: string;
+    locomotionMode: MotionSpec["locomotion"]["mode"];
+    preferredDirection?: MotionSpec["locomotion"]["preferredDirection"];
+    leadBones: string[];
+    contacts: Array<{
+        boneId: string;
+        target: string;
+        phaseStart: number;
+        phaseEnd: number;
+    }>;
+    blockedReasons: string[];
+    notes?: string;
+}
+
+export interface MotionDebugAttempt {
+    pass: number;
+    attenuationFactor: number;
+    spec: MotionSpecDebugSummary;
+    resolvedView?: string;
+    leadNodes: string[];
+    waveChains: Array<{
+        chainId: string;
+        nodeIds: string[];
+        amplitudeDeg: number;
+        frequency: number;
+        falloff?: string;
+    }>;
+    validation: {
+        ok: boolean;
+        errors: string[];
+        warnings: string[];
+        debug: MotionValidationDebug;
+    };
+}
+
+function summarizeMotionSpec(motionSpec: MotionSpec): MotionSpecDebugSummary {
+    return {
+        motionFamily: motionSpec.motionFamily,
+        tempo: round2(motionSpec.tempo || 1),
+        amplitude: round2(motionSpec.amplitude || 1),
+        intensity: round2(motionSpec.intensity || 0.5),
+        preferredView: motionSpec.preferredView,
+        locomotionMode: motionSpec.locomotion.mode,
+        preferredDirection: motionSpec.locomotion.preferredDirection,
+        leadBones: [...(motionSpec.leadBones || [])],
+        contacts: (motionSpec.contacts || []).map((contact) => ({
+            boneId: contact.boneId,
+            target: contact.target,
+            phaseStart: round2(contact.phaseStart),
+            phaseEnd: round2(contact.phaseEnd),
+        })),
+        blockedReasons: [...(motionSpec.blockedReasons || [])],
+        notes: motionSpec.notes,
+    };
+}
+
+function buildMotionDebugAttempt(
+    pass: number,
+    attenuationFactor: number,
+    candidateSpec: MotionSpec,
+    candidateClip: RigMotionClip,
+    validation: ReturnType<typeof validateRigForMotion>,
+): MotionDebugAttempt {
+    return {
+        pass,
+        attenuationFactor: round2(attenuationFactor),
+        spec: summarizeMotionSpec(candidateSpec),
+        resolvedView: candidateClip.view,
+        leadNodes: [...(candidateClip.intent.leadNodes || [])],
+        waveChains: (candidateClip.intent.axialWaves || []).map((wave) => ({
+            chainId: wave.chainId || "unnamed",
+            nodeIds: [...wave.nodeIds],
+            amplitudeDeg: round2(wave.amplitudeDeg),
+            frequency: round2(wave.frequency),
+            falloff: wave.falloff,
+        })),
+        validation: {
+            ok: validation.ok,
+            errors: [...validation.errors],
+            warnings: [...validation.warnings],
+            debug: validation.debug,
+        },
+    };
+}
+
+function buildMotionDebugReport(params: {
+    motion: string;
+    style?: string;
+    durationSeconds: number;
+    affordance: RigMotionAffordance;
+    inferredSpec: MotionSpec;
+    modelSpec: MotionSpec;
+    finalSpec: MotionSpec;
+    preflight: ReturnType<typeof validateRigForMotion>;
+    attempts: MotionDebugAttempt[];
+    finalStatus: "compiled" | "blocked";
+    finalMessage: string;
+}): MotionDebugReport {
+    return {
+        motion: params.motion,
+        style: params.style,
+        durationSeconds: round2(params.durationSeconds),
+        affordance: params.affordance,
+        inferredSpec: summarizeMotionSpec(params.inferredSpec),
+        modelSpec: summarizeMotionSpec(params.modelSpec),
+        finalSpec: summarizeMotionSpec(params.finalSpec),
+        preflight: {
+            ok: params.preflight.ok,
+            errors: [...params.preflight.errors],
+            warnings: [...params.preflight.warnings],
+            debug: params.preflight.debug,
+        },
+        attempts: params.attempts,
+        finalStatus: params.finalStatus,
+        finalMessage: params.finalMessage,
+    };
+}
+
 function buildCanonicalMotionClipFromSpec(params: {
     rig: DraftsmanData;
     motion: string;
     durationSeconds: number;
     motionSpec: MotionSpec;
 }): RigMotionClip {
-    return {
+    const rawClip: RigMotionClip = {
         view: params.motionSpec.preferredView || params.rig.rig_data.ik?.defaultView || Object.keys(params.rig.rig_data.ik?.views || {}).sort()[0],
         intent: buildMotionIntentFromSpec({
             rig: params.rig,
@@ -73,6 +224,34 @@ function buildCanonicalMotionClipFromSpec(params: {
             motionSpec: params.motionSpec,
         }),
         displayKeyframes: [],
+    };
+
+    return resolvePlayableMotionClip({
+        rig: params.rig,
+        clipId: params.motion,
+        motionClip: rawClip,
+        durationSeconds: params.durationSeconds,
+    }) || rawClip;
+}
+
+function isRetriableMotionValidationError(error: string): boolean {
+    return (
+        error.includes("hit hard angle limits") ||
+        error.includes("stretched segment lengths") ||
+        error.includes("animated pins drift")
+    );
+}
+
+function attenuateMotionSpec(motionSpec: MotionSpec, factor: number): MotionSpec {
+    const safeFactor = Math.max(0.18, Math.min(1, factor));
+    return {
+        ...motionSpec,
+        amplitude: round2(Math.max(0.02, (motionSpec.amplitude || 1) * safeFactor)),
+        intensity: round2(Math.max(0, Math.min(1, (motionSpec.intensity || 0.5) * (0.45 + (safeFactor * 0.55))))),
+        notes: [
+            motionSpec.notes,
+            `Validation attenuation applied at ${round2(safeFactor)}x.`,
+        ].filter(Boolean).join(" "),
     };
 }
 
@@ -457,6 +636,8 @@ export async function generateMotionClipForRig(params: {
     sceneNarrative?: string;
 }): Promise<MotionClipResponse> {
     const { normalizedRig } = buildIKPromptContext(params.rig);
+    const durationSeconds = params.durationSeconds || 2;
+    const motionAffordance = inferRigMotionAffordance(normalizedRig);
     const structuredSpecResult = await generateMotionSpecForRig({
         rig: normalizedRig,
         motion: params.motion,
@@ -472,40 +653,137 @@ export async function generateMotionClipForRig(params: {
         durationSeconds: params.durationSeconds,
         rig: normalizedRig,
     });
-    const motionSpec = MotionSpecSchema.parse({
+    const motionSpec = constrainMotionSpecToRig(normalizedRig, MotionSpecSchema.parse({
         ...inferredSpec,
         ...structuredSpecResult.spec,
-    });
-    if (motionSpec.blockedReasons?.length) {
-        throw new Error(motionSpec.blockedReasons.join(" "));
-    }
-
+    }));
     const preflight = validateRigForMotion({
         rig: normalizedRig,
         motion: params.motion,
         style: params.style,
         durationSeconds: params.durationSeconds,
     });
-    if (!preflight.ok) {
-        throw new Error(preflight.errors.join(" "));
-    }
 
-    const motionClip = buildCanonicalMotionClipFromSpec({
-        rig: normalizedRig,
-        motion: params.motion,
-        durationSeconds: params.durationSeconds || 2,
-        motionSpec,
-    });
-
-    const postflight = validateRigForMotion({
+    const attenuationPasses = [1, 0.82, 0.68, 0.56, 0.46, 0.38, 0.3, 0.24];
+    let motionClip: RigMotionClip | undefined;
+    let postflight = validateRigForMotion({
         rig: normalizedRig,
         motion: params.motion,
         style: params.style,
         durationSeconds: params.durationSeconds,
-        motionClip,
     });
-    if (!postflight.ok) {
-        throw new Error(postflight.errors.join(" "));
+    let resolvedMotionSpec = motionSpec;
+    let appliedAttenuationFactor = 1;
+    const attempts: MotionDebugAttempt[] = [];
+
+    if (motionSpec.blockedReasons?.length) {
+        const message = motionSpec.blockedReasons.join(" ");
+        return {
+            blocked: {
+                message,
+                debugReport: buildMotionDebugReport({
+                    motion: params.motion,
+                    style: params.style,
+                    durationSeconds,
+                    affordance: motionAffordance,
+                    inferredSpec,
+                    modelSpec: structuredSpecResult.spec,
+                    finalSpec: motionSpec,
+                    preflight,
+                    attempts,
+                    finalStatus: "blocked",
+                    finalMessage: message,
+                }),
+            },
+            usage: structuredSpecResult.usage,
+        };
+    }
+
+    if (!preflight.ok) {
+        const message = preflight.errors.join(" ");
+        return {
+            blocked: {
+                message,
+                debugReport: buildMotionDebugReport({
+                    motion: params.motion,
+                    style: params.style,
+                    durationSeconds,
+                    affordance: motionAffordance,
+                    inferredSpec,
+                    modelSpec: structuredSpecResult.spec,
+                    finalSpec: motionSpec,
+                    preflight,
+                    attempts,
+                    finalStatus: "blocked",
+                    finalMessage: message,
+                }),
+            },
+            usage: structuredSpecResult.usage,
+        };
+    }
+
+    for (const [passIndex, factor] of attenuationPasses.entries()) {
+        const candidateSpec = factor === 1 ? motionSpec : attenuateMotionSpec(motionSpec, factor);
+        const candidateClip = buildCanonicalMotionClipFromSpec({
+            rig: normalizedRig,
+            motion: params.motion,
+            durationSeconds,
+            motionSpec: candidateSpec,
+        });
+        const candidatePostflight = validateRigForMotion({
+            rig: normalizedRig,
+            motion: params.motion,
+            style: params.style,
+            durationSeconds: params.durationSeconds,
+            motionClip: candidateClip,
+        });
+        attempts.push(buildMotionDebugAttempt(
+            passIndex + 1,
+            factor,
+            candidateSpec,
+            candidateClip,
+            candidatePostflight,
+        ));
+
+        if (candidatePostflight.ok) {
+            motionClip = candidateClip;
+            postflight = candidatePostflight;
+            resolvedMotionSpec = candidateSpec;
+            appliedAttenuationFactor = factor;
+            break;
+        }
+
+        motionClip = candidateClip;
+        postflight = candidatePostflight;
+        resolvedMotionSpec = candidateSpec;
+        appliedAttenuationFactor = factor;
+
+        if (!candidatePostflight.errors.every(isRetriableMotionValidationError)) {
+            break;
+        }
+    }
+
+    if (!motionClip || !postflight.ok) {
+        const message = postflight.errors.join(" ");
+        return {
+            blocked: {
+                message,
+                debugReport: buildMotionDebugReport({
+                    motion: params.motion,
+                    style: params.style,
+                    durationSeconds,
+                    affordance: motionAffordance,
+                    inferredSpec,
+                    modelSpec: structuredSpecResult.spec,
+                    finalSpec: resolvedMotionSpec,
+                    preflight,
+                    attempts,
+                    finalStatus: "blocked",
+                    finalMessage: message,
+                }),
+            },
+            usage: structuredSpecResult.usage,
+        };
     }
 
     return {
@@ -513,7 +791,8 @@ export async function generateMotionClipForRig(params: {
         stabilization: {
             validationWarnings: [
                 "Canonical motion clip synthesized directly from structured motion spec.",
-                ...(motionSpec.notes ? [`Motion spec: ${motionSpec.notes}`] : []),
+                ...(resolvedMotionSpec.notes ? [`Motion spec: ${resolvedMotionSpec.notes}`] : []),
+                ...(appliedAttenuationFactor < 1 ? [`Motion amplitude attenuated to ${round2(appliedAttenuationFactor)}x after validation backoff.`] : []),
                 ...preflight.warnings,
                 ...postflight.warnings,
             ].filter((warning, index, all) => all.indexOf(warning) === index),
@@ -521,6 +800,19 @@ export async function generateMotionClipForRig(params: {
             refinedChains: 0,
             chainIds: [],
             suppressedKeyframes: 0,
+            debugReport: buildMotionDebugReport({
+                motion: params.motion,
+                style: params.style,
+                durationSeconds,
+                affordance: motionAffordance,
+                inferredSpec,
+                modelSpec: structuredSpecResult.spec,
+                finalSpec: resolvedMotionSpec,
+                preflight,
+                attempts,
+                finalStatus: "compiled",
+                finalMessage: "Playable motion clip compiled successfully.",
+            }),
         },
         usage: structuredSpecResult.usage,
     };
@@ -538,6 +830,7 @@ export async function generateMotionSpecForRig(params: {
     const { normalizedRig, nodeLookup, ikNodeSummary, ikConstraintSummary } = buildIKPromptContext(params.rig);
     const boneSummary = buildMotionBoneSummary(normalizedRig, nodeLookup);
     const availableViews = Object.keys(normalizedRig.rig_data.ik?.views || {}).sort();
+    const motionAffordance = inferRigMotionAffordance(normalizedRig);
 
     const prompt = `
 You are a semantic motion planner for a deterministic 2D animation engine.
@@ -561,17 +854,22 @@ ${JSON.stringify(ikNodeSummary, null, 2)}
 Active hard constraints:
 ${JSON.stringify(ikConstraintSummary, null, 2)}
 
+Rig motion affordance profile:
+${JSON.stringify(motionAffordance, null, 2)}
+
 Rules:
 1. Output ONLY JSON.
-2. Use motionFamily values that are broad and reusable, not overly specific prose.
+2. motionFamily is only a short reusable label for the requested motion. It is metadata, not a rigid built-in animation category.
 3. leadBones must reference exact bone IDs from the list.
 4. contacts must only reference exact bone IDs from the list.
 5. preferredView must be one of: ${availableViews.join(", ") || "view_default"}.
 6. Choose locomotion.mode based on the requested action.
 7. Keep the spec concise and physically plausible.
 8. Prefer lead bones that sit on the rig's dominant continuous chains, roots, or branch endpoints.
-9. Stay comfortably inside usableRotationLimit where present. Treat rotationLimit as a hard stop, not a target.
-10. If the requested action cannot be satisfied safely, return blockedReasons with concise human-readable reasons instead of forcing the motion.
+9. leadBones and contacts must be drawable in preferredView.
+10. Stay comfortably inside usableRotationLimit where present. Treat rotationLimit as a hard stop, not a target.
+11. Restrict motion to the subject's identity and the rig motion affordance profile. Subjects with limited articulation should prefer whole-object translation, orientation shifts, or minimal internal deformation.
+12. If the requested action cannot be satisfied safely, return blockedReasons with concise human-readable reasons instead of forcing the motion.
 
 JSON shape:
 {
@@ -608,7 +906,7 @@ JSON shape:
     }
 
     text = text.substring(firstBrace, lastBrace + 1);
-    const parsed = MotionSpecSchema.parse(JSON.parse(text));
+    const parsed = constrainMotionSpecToRig(normalizedRig, MotionSpecSchema.parse(JSON.parse(text)));
 
     return {
         spec: parsed,

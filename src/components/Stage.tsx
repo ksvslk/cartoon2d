@@ -85,10 +85,12 @@ export default function Stage({
     const onPlayCompleteRef   = useRef(onPlayComplete);
     const onTimelineReadyRef  = useRef(onTimelineReady);
     const loopOnCompleteRef   = useRef(loopOnComplete);
+    const playheadTimeRef     = useRef(playheadTime);
     useEffect(() => { onPlayheadUpdateRef.current = onPlayheadUpdate; }, [onPlayheadUpdate]);
     useEffect(() => { onPlayCompleteRef.current   = onPlayComplete;   }, [onPlayComplete]);
     useEffect(() => { onTimelineReadyRef.current  = onTimelineReady;  }, [onTimelineReady]);
     useEffect(() => { loopOnCompleteRef.current   = loopOnComplete;   }, [loopOnComplete]);
+    useEffect(() => { playheadTimeRef.current     = playheadTime;     }, [playheadTime]);
 
     // Tracks whether we are currently playing (for seek guard)
     const isPlayingRef = useRef(isPlaying);
@@ -393,6 +395,8 @@ export default function Stage({
             requestAnimationFrame(() => tl.play(0));
             return;
           }
+          tl.pause(tl.duration());
+          syncTimelineIK(tl);
           onPlayCompleteRef.current?.();
         });
         gsapTimelineRef.current = tl;
@@ -430,7 +434,8 @@ export default function Stage({
             // Kill ambient loops — they conflict with timeline bone tweens
             if (ambientCtxRef.current) { ambientCtxRef.current.revert(); ambientCtxRef.current = null; }
             console.log(`[stage] Play — timeline duration: ${tl.duration().toFixed(2)}s`);
-            tl.play();
+            const requestedStart = Math.max(0, Math.min(playheadTimeRef.current, tl.duration()));
+            tl.play(requestedStart);
         } else {
             console.log("[stage] Pause");
             tl.pause();

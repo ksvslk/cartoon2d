@@ -1,42 +1,26 @@
 import { ensureRigIK } from "../ik/graph";
 import { DraftsmanData } from "../schema/rig";
 import { MotionSpec, MotionSpecSchema } from "../schema/motion_spec";
+import { constrainMotionSpecToRig } from "./affordance";
 import { buildMotionTopology } from "./topology";
 
 function resolveMotionFamily(motion: string): MotionSpec["motionFamily"] {
-  const lower = motion.toLowerCase();
-  if (/idle|stand|wait|breathe/.test(lower)) return "idle";
-  if (/walk|crawl|step|march/.test(lower)) return "walk";
-  if (/run|dash|sprint|charge/.test(lower)) return "run";
-  if (/jump|hop|leap/.test(lower)) return "jump";
-  if (/swim|dive|paddle/.test(lower)) return "swim";
-  if (/glide|cruise/.test(lower)) return "glide";
-  if (/drift|float/.test(lower)) return "drift";
-  if (/halt|stop|freeze|brace/.test(lower)) return "halt";
-  if (/crash|slam|impact|hit/.test(lower)) return "crash";
-  if (/wave/.test(lower)) return "wave";
-  if (/turn|pivot/.test(lower)) return "turn";
-  if (/hover|fly|soar/.test(lower)) return "hover";
-  if (/drive|roll/.test(lower)) return "drive";
-  if (/retreat|back away|back/.test(lower)) return "retreat";
-  return "custom";
+  const normalized = motion
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || "custom";
 }
 
-function inferLocomotionMode(motionFamily: MotionSpec["motionFamily"]): MotionSpec["locomotion"]["mode"] {
-  if (
-    motionFamily === "walk" ||
-    motionFamily === "run" ||
-    motionFamily === "drive" ||
-    motionFamily === "retreat" ||
-    motionFamily === "swim" ||
-    motionFamily === "glide" ||
-    motionFamily === "drift" ||
-    motionFamily === "hover"
-  ) {
+function inferLocomotionMode(motion: string): MotionSpec["locomotion"]["mode"] {
+  const lower = motion.toLowerCase();
+  if (/\b(stop|halt|freeze|brace|settle|land)\b/.test(lower)) return "stop_at_contact";
+  if (/\b(crash|slam|impact|hit|bounce|ricochet|collide)\b/.test(lower)) return "bounce_on_contact";
+  if (/\b(turn|pivot|arc|orbit|curve|veer|circle)\b/.test(lower)) return "arc";
+  if (/\b(move|travel|cross|enter|exit|approach|advance|retreat|follow|pursue|flow|drift|glide|slide|roll|scoot|skate|drive|walk|run|jump|swim|fly|crawl|dash|march|hop|leap)\b/.test(lower)) {
     return "translate";
   }
-  if (motionFamily === "halt") return "stop_at_contact";
-  if (motionFamily === "crash") return "bounce_on_contact";
   return "none";
 }
 
@@ -108,7 +92,7 @@ export function inferMotionSpecForRig(params: {
   const topology = buildMotionTopology(normalizedRig);
   const lowerStyle = (params.style || "").toLowerCase();
   const motionFamily = resolveMotionFamily(params.motion);
-  const locomotionMode = inferLocomotionMode(motionFamily);
+  const locomotionMode = inferLocomotionMode(params.motion);
 
   const parentByBone = new Map(normalizedRig.rig_data.bones.map((bone) => [bone.id, bone.parent]));
   const contacts = normalizedRig.rig_data.bones
@@ -135,7 +119,7 @@ export function inferMotionSpecForRig(params: {
     .map((nodeId) => resolveBoneIdForNode(normalizedRig, nodeId))
     .filter((boneId): boneId is string => Boolean(boneId));
 
-  return MotionSpecSchema.parse({
+  return constrainMotionSpecToRig(normalizedRig, MotionSpecSchema.parse({
     motionFamily,
     tempo: tempoForStyle(lowerStyle),
     amplitude: amplitudeForStyle(lowerStyle),
@@ -149,5 +133,5 @@ export function inferMotionSpecForRig(params: {
     leadBones,
     blockedReasons: [],
     notes: `Locally inferred topology-driven motion spec for ${params.motion}.`,
-  });
+  }));
 }

@@ -58,6 +58,112 @@ function resolvePlayableView(params: {
     })[0]?.viewId;
 }
 
+function restrictRigToView(rig: DraftsmanData, viewId?: string): DraftsmanData {
+  const normalized = ensureRigIK(rig);
+  const ik = normalized.rig_data.ik;
+  if (!ik || !viewId || !ik.views[viewId]) return normalized;
+
+  const view = ik.views[viewId];
+  const nodeMap = new Map(ik.nodes.map((node) => [node.id, node]));
+  const keepNodeIds = new Set<string>();
+
+  view.bindings.forEach((binding) => {
+    let cursor: string | undefined = binding.nodeId;
+    const seen = new Set<string>();
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor);
+      keepNodeIds.add(cursor);
+      cursor = nodeMap.get(cursor)?.parent;
+    }
+  });
+
+  const nodes = ik.nodes
+    .filter((node) => keepNodeIds.has(node.id))
+    .map((node) => ({
+      ...node,
+      parent: node.parent && keepNodeIds.has(node.parent) ? node.parent : undefined,
+    }));
+
+  return {
+    ...normalized,
+    rig_data: {
+      ...normalized.rig_data,
+      ik: {
+        ...ik,
+        defaultView: viewId,
+        roots: nodes.filter((node) => !node.parent).map((node) => node.id).sort(),
+        nodes,
+        chains: (ik.chains || [])
+          .map((chain) => ({
+            ...chain,
+            nodeIds: chain.nodeIds.filter((nodeId) => keepNodeIds.has(nodeId)),
+          }))
+          .filter((chain) => chain.nodeIds.length >= 2 && keepNodeIds.has(chain.effectorId)),
+        constraints: (ik.constraints || []).filter((constraint) => keepNodeIds.has(constraint.nodeId)),
+        effectors: (ik.effectors || []).filter((effector) => keepNodeIds.has(effector.nodeId)),
+        views: {
+          [viewId]: {
+            bindings: view.bindings.filter((binding) => keepNodeIds.has(binding.nodeId)),
+          },
+        },
+      },
+    },
+  };
+}
+
+function filterDisplayKeyframesToView(
+  rig: DraftsmanData,
+  viewId: string | undefined,
+  displayKeyframes: RigMotionClip["displayKeyframes"],
+): RigMotionClip["displayKeyframes"] {
+  if (!viewId) return displayKeyframes || [];
+  const view = ensureRigIK(rig).rig_data.ik?.views[viewId];
+  if (!view) return displayKeyframes || [];
+  const boundBoneIds = new Set(view.bindings.map((binding) => binding.boneId));
+  return (displayKeyframes || []).filter((keyframe) => boundBoneIds.has(keyframe.boneId));
+}
+
+function finalizePlayableMotionClip(
+  rig: DraftsmanData,
+  motionClip: RigMotionClip,
+  requestedView?: string,
+): RigMotionClip {
+  let resolvedView = resolvePlayableView({
+    rig,
+    requestedView,
+    motionClip,
+  });
+
+  let restrictedRig = restrictRigToView(rig, resolvedView);
+  let intent = sanitizeMotionIntentForRig(restrictedRig, motionClip.intent) || motionClip.intent;
+  let displayKeyframes = filterDisplayKeyframesToView(rig, resolvedView, motionClip.displayKeyframes);
+
+  const refinedView = resolvePlayableView({
+    rig,
+    requestedView: resolvedView,
+    motionClip: {
+      ...motionClip,
+      view: resolvedView,
+      intent,
+      displayKeyframes,
+    },
+  });
+
+  if (refinedView && refinedView !== resolvedView) {
+    resolvedView = refinedView;
+    restrictedRig = restrictRigToView(rig, resolvedView);
+    intent = sanitizeMotionIntentForRig(restrictedRig, motionClip.intent) || motionClip.intent;
+    displayKeyframes = filterDisplayKeyframesToView(rig, resolvedView, motionClip.displayKeyframes);
+  }
+
+  return {
+    ...motionClip,
+    view: resolvedView,
+    intent,
+    displayKeyframes,
+  };
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
@@ -251,15 +357,11 @@ export function buildRigMotionClipFromGeneratedClip(params: {
       }
     : fallbackIntent;
 
-  return {
-    view: resolvePlayableView({
-      rig: params.rig,
-      requestedView: params.sourceClip.view || motionSpec.preferredView,
-      motionClip: { view: params.sourceClip.view, intent, displayKeyframes },
-    }),
+  return finalizePlayableMotionClip(params.rig, {
+    view: params.sourceClip.view || motionSpec.preferredView,
     intent,
     displayKeyframes,
-  };
+  }, params.sourceClip.view || motionSpec.preferredView);
 }
 
 export function resolvePlayableMotionClip(params: {
@@ -272,19 +374,7 @@ export function resolvePlayableMotionClip(params: {
   const { rig, clipId, motionClip } = params;
   if (!motionClip) return undefined;
   if (motionClip.intent) {
-    const sanitizedIntent = sanitizeMotionIntentForRig(rig, motionClip.intent) || motionClip.intent;
-    return {
-      ...motionClip,
-      view: resolvePlayableView({
-        rig,
-        requestedView: motionClip.view,
-        motionClip: {
-          ...motionClip,
-          intent: sanitizedIntent,
-        },
-      }),
-      intent: sanitizedIntent,
-    };
+    return finalizePlayableMotionClip(rig, motionClip, motionClip.view);
   }
 
   const durationSeconds = params.durationSeconds || 2;
@@ -302,18 +392,12 @@ export function resolvePlayableMotionClip(params: {
       motionSpec,
     });
 
-  return {
-    view: resolvePlayableView({
-      rig,
-      requestedView: motionClip.view,
-      motionClip: {
-        ...motionClip,
-        intent,
-      },
-    }),
+  return finalizePlayableMotionClip(rig, {
+    ...motionClip,
+    view: motionClip.view,
     intent,
     displayKeyframes: motionClip.displayKeyframes || [],
-  };
+  }, motionClip.view);
 }
 
 export function motionClipToIKPlayback(

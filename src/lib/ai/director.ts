@@ -6,6 +6,10 @@ const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY
 });
 
+type PromptContentPart =
+  | { text: string }
+  | { inlineData: { data: string; mimeType: string } };
+
 export async function* streamStorySequence(prompt: string, contextBeats?: StoryGenerationData['beats'], options?: { singleBeat?: boolean; orientation?: StageOrientation }, actorReferences?: Record<string, string>) {
     const orientation = options?.orientation ?? "landscape";
     const { width: stageW, height: stageH } = getStageDims(orientation);
@@ -93,6 +97,9 @@ CRITICAL: Your response MUST contain TWO things:
 - Output each image immediately after the JSON.
 - Keep actions as simple semantic verbs.
 - actors_detected must list ALL characters.
+- Motion choice must respect what each subject is. Infer physical affordances from the actor's name, species, attributes, and visual description before assigning actions.
+- If a subject appears only lightly articulated or structurally simple, prefer transform-dominant actions, orientation changes, or restrained in-place motion instead of rich internal body mechanics.
+- Do not assign gestures, locomotion patterns, or expressive deformations that require anatomy or articulation not supported by the actor description.
 
 ## Spatial Transform Rules (CRITICAL — always include these in every action)
 - The stage is ${stageW}x${stageH} pixels. x=${stageW / 2} is center, x=${Math.round(stageW * 0.16)} is far-left, x=${Math.round(stageW * 0.83)} is far-right.
@@ -112,7 +119,7 @@ CRITICAL: Your response MUST contain TWO things:
 - delay: stagger actors in a scene (e.g., 0.0 for first actor, 0.3 for second, 0.6 for third).
 - ${options?.singleBeat ? "CRITICAL: Generate EXACTLY 1 beat based on the prompt." : "Generate 3-5 beats for a typical prompt."}`;
 
-    const contentsParts: any[] = [];
+    const contentsParts: PromptContentPart[] = [];
 
     // Inject Sliding Window Context (HYBRID APPROACH)
     // 1. Environmental Anchor: We inject ONLY the single most recent panel image to establish background/lighting continuity.
@@ -188,9 +195,10 @@ CRITICAL: Your response MUST contain TWO things:
                 validatedData.beats = [validatedData.beats[0]];
             }
             return { type: 'story' as const, data: validatedData };
-        } catch (e: any) {
+        } catch (e: unknown) {
             if (isFinal) {
-                console.error("[tryParseJson] Failed to parse or validate JSON:", e.message || e);
+                const message = e instanceof Error ? e.message : String(e);
+                console.error("[tryParseJson] Failed to parse or validate JSON:", message);
                 console.error("RAW JSON STRING:\n", jsonStr);
             }
             return null;
@@ -205,7 +213,8 @@ CRITICAL: Your response MUST contain TWO things:
             if (chunk.candidates && chunk.candidates[0]) {
                 const c = chunk.candidates[0];
                 if (c.finishReason) console.warn("[Gemini] Chunk finishReason:", c.finishReason);
-                if ((c as any).safetyRatings) console.warn("[Gemini] Safety ratings:", JSON.stringify((c as any).safetyRatings));
+                const safetyRatings = (c as { safetyRatings?: unknown }).safetyRatings;
+                if (safetyRatings) console.warn("[Gemini] Safety ratings:", JSON.stringify(safetyRatings));
             }
             continue;
         }

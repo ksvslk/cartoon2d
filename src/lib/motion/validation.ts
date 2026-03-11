@@ -9,6 +9,38 @@ export type MotionValidationResult = {
   ok: boolean;
   errors: string[];
   warnings: string[];
+  debug: MotionValidationDebug;
+};
+
+export type MotionValidationDebug = {
+  graph: {
+    hasCanonicalIK: boolean;
+    rootCount: number;
+    playableViewIds: string[];
+  };
+  drivenChains: Array<{
+    chainId: string;
+    nodeIds: string[];
+    continuous: boolean;
+  }>;
+  playableCoverage?: {
+    activeView: string;
+    requiredNodeIds: string[];
+    boundNodeCount: number;
+    missingNodeIds: string[];
+  };
+  samples?: {
+    sampleCount: number;
+    maxSegmentError: number;
+    maxPinError: number;
+    saturatedNodeStats: Array<{
+      nodeId: string;
+      count: number;
+      ratio: number;
+    }>;
+    heavilySaturatedNodeIds: string[];
+    criticalSaturationNodeIds: string[];
+  };
 };
 
 function distance(a: { x: number; y: number }, b: { x: number; y: number }): number {
@@ -28,8 +60,20 @@ function collectDrivenNodeIds(motionClip: RigMotionClip | undefined, rootIds: st
   ]));
 }
 
-function validateRigGraph(rig: ReturnType<typeof ensureRigIK>, errors: string[]): void {
+function validateRigGraph(
+  rig: ReturnType<typeof ensureRigIK>,
+  errors: string[],
+  debug: MotionValidationDebug,
+): void {
   const ik = rig.rig_data.ik;
+  debug.graph = {
+    hasCanonicalIK: Boolean(ik && ik.nodes.length > 0),
+    rootCount: ik?.roots.length || 0,
+    playableViewIds: Object.entries(ik?.views || {})
+      .filter(([, view]) => view.bindings.length > 0)
+      .map(([viewId]) => viewId)
+      .sort(),
+  };
   if (!ik || ik.nodes.length === 0) {
     errors.push("Rig is blocked: canonical IK graph is missing.");
     return;
@@ -49,22 +93,31 @@ function validateDrivenChains(
   rig: ReturnType<typeof ensureRigIK>,
   motionClip: RigMotionClip,
   errors: string[],
+  debug: MotionValidationDebug,
 ): void {
   const nodeMap = new Map((rig.rig_data.ik?.nodes || []).map((node) => [node.id, node]));
 
-  (motionClip.intent.axialWaves || []).forEach((wave) => {
-    if (wave.nodeIds.length < 2) {
-      errors.push(`Clip is blocked: driven chain '${wave.chainId || "unnamed"}' has fewer than two nodes.`);
-      return;
-    }
-
+  debug.drivenChains = [];
+  (motionClip.intent.axialWaves || []).forEach((wave, index) => {
     const disconnectedAt = wave.nodeIds.findIndex((nodeId, index) => {
       if (index === 0) return false;
       return nodeMap.get(nodeId)?.parent !== wave.nodeIds[index - 1];
     });
+    const chainId = wave.chainId || `unnamed_${index}`;
+
+    debug.drivenChains.push({
+      chainId,
+      nodeIds: [...wave.nodeIds],
+      continuous: disconnectedAt === -1,
+    });
+
+    if (wave.nodeIds.length < 2) {
+      errors.push(`Clip is blocked: driven chain '${chainId}' has fewer than two nodes.`);
+      return;
+    }
 
     if (disconnectedAt !== -1) {
-      errors.push(`Clip is blocked: driven chain '${wave.chainId || "unnamed"}' is not a continuous parent-child sequence.`);
+      errors.push(`Clip is blocked: driven chain '${chainId}' is not a continuous parent-child sequence.`);
     }
   });
 }
@@ -83,7 +136,8 @@ function validatePlayableCoverage(
   rig: ReturnType<typeof ensureRigIK>,
   motionClip: RigMotionClip,
   errors: string[],
-): string | undefined {
+  debug: MotionValidationDebug,
+): MotionValidationDebug["playableCoverage"] | undefined {
   const ik = rig.rig_data.ik;
   if (!ik) return undefined;
 
@@ -95,11 +149,18 @@ function validatePlayableCoverage(
 
   const bindingNodeIds = new Set(ik.views[activeView].bindings.map((binding) => binding.nodeId));
   const missingNodeIds = collectDrivenNodeIds(motionClip, ik.roots).filter((nodeId) => !bindingNodeIds.has(nodeId));
+  const coverage = {
+    activeView,
+    requiredNodeIds: collectDrivenNodeIds(motionClip, ik.roots).sort(),
+    boundNodeCount: bindingNodeIds.size,
+    missingNodeIds: [...missingNodeIds].sort(),
+  };
+  debug.playableCoverage = coverage;
   if (missingNodeIds.length > 0) {
     errors.push(`Clip is blocked: view '${activeView}' is missing bindings for ${missingNodeIds.slice(0, 4).join(", ")}.`);
   }
 
-  return activeView;
+  return coverage;
 }
 
 function verifySolvedMotionSamples(params: {
@@ -107,11 +168,12 @@ function verifySolvedMotionSamples(params: {
   motionClip: RigMotionClip;
   errors: string[];
   warnings: string[];
+  debug: MotionValidationDebug;
 }): void {
-  const activeView = validatePlayableCoverage(params.rig, params.motionClip, params.errors);
-  if (!activeView) return;
+  const coverage = validatePlayableCoverage(params.rig, params.motionClip, params.errors, params.debug);
+  if (!coverage?.activeView) return;
 
-  const graph = buildPoseGraph(params.rig, activeView);
+  const graph = buildPoseGraph(params.rig, coverage.activeView);
   if (graph.nodes.length === 0 || graph.roots.length === 0) {
     params.errors.push("Clip is blocked: the canonical pose graph is incomplete.");
     return;
@@ -159,11 +221,30 @@ function verifySolvedMotionSamples(params: {
     .filter(([, count]) => count / sampleCount >= 0.7)
     .map(([nodeId]) => nodeId)
     .sort();
-
-  if (heavilySaturated.length === 0) return;
+  const saturatedNodeStats = Array.from(saturatedCounts.entries())
+    .map(([nodeId, count]) => ({
+      nodeId,
+      count,
+      ratio: Number((count / sampleCount).toFixed(2)),
+    }))
+    .sort((left, right) => {
+      if (right.ratio !== left.ratio) return right.ratio - left.ratio;
+      if (right.count !== left.count) return right.count - left.count;
+      return left.nodeId.localeCompare(right.nodeId);
+    });
 
   const criticalNodeIds = new Set(collectCriticalMotionNodeIds(params.motionClip));
   const criticalSaturation = heavilySaturated.filter((nodeId) => criticalNodeIds.has(nodeId));
+  params.debug.samples = {
+    sampleCount,
+    maxSegmentError: Number(maxSegmentError.toFixed(2)),
+    maxPinError: Number(maxPinError.toFixed(2)),
+    saturatedNodeStats,
+    heavilySaturatedNodeIds: heavilySaturated,
+    criticalSaturationNodeIds: criticalSaturation,
+  };
+
+  if (heavilySaturated.length === 0) return;
 
   if (criticalSaturation.length > 0) {
     params.errors.push(`Clip is blocked: ${criticalSaturation.slice(0, 4).join(", ")} hit hard angle limits for most sampled frames.`);
@@ -183,8 +264,16 @@ export function validateRigForMotion(params: {
   const rig = ensureRigIK(params.rig);
   const errors: string[] = [];
   const warnings: string[] = [];
+  const debug: MotionValidationDebug = {
+    graph: {
+      hasCanonicalIK: false,
+      rootCount: 0,
+      playableViewIds: [],
+    },
+    drivenChains: [],
+  };
 
-  validateRigGraph(rig, errors);
+  validateRigGraph(rig, errors, debug);
 
   if (params.motionClip) {
     const hasPlayableMotion =
@@ -208,12 +297,13 @@ export function validateRigForMotion(params: {
     if (!playableClip) {
       errors.push("Clip could not be resolved into a playable IK motion.");
     } else {
-      validateDrivenChains(rig, playableClip, errors);
+      validateDrivenChains(rig, playableClip, errors, debug);
       verifySolvedMotionSamples({
         rig,
         motionClip: playableClip,
         errors,
         warnings,
+        debug,
       });
     }
   }
@@ -222,5 +312,6 @@ export function validateRigForMotion(params: {
     ok: errors.length === 0,
     errors,
     warnings,
+    debug,
   };
 }

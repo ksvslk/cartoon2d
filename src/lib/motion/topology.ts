@@ -52,6 +52,19 @@ function collectRootToLeafPaths(
   return children.flatMap((childId) => collectRootToLeafPaths(childId, childIdsByNode, nextTrail));
 }
 
+function trimDecorativeTerminalNodes(
+  nodeIds: string[],
+  nodeById: Map<string, CanonicalNode>,
+): string[] {
+  const trimmed = [...nodeIds];
+  while (trimmed.length > 1) {
+    const terminal = nodeById.get(trimmed[trimmed.length - 1]);
+    if (!terminal || terminal.ikRole !== "decorative") break;
+    trimmed.pop();
+  }
+  return trimmed;
+}
+
 function computeNodeDepths(
   rootIds: string[],
   childIdsByNode: Map<string, string[]>,
@@ -141,6 +154,7 @@ export function buildMotionTopology(
   const nodeDepths = computeNodeDepths(rootNodeIds, childIdsByNode);
   const rootToLeafPaths = rootNodeIds
     .flatMap((rootId) => collectRootToLeafPaths(rootId, childIdsByNode))
+    .map((path) => trimDecorativeTerminalNodes(path, nodeById))
     .filter((path) => path.length >= 2);
   const spanByPath = new Map(rootToLeafPaths.map((path) => [path.join(">"), pathSpan(path, nodeById)]));
   rootToLeafPaths.sort((left, right) => comparePaths(left, right, spanByPath));

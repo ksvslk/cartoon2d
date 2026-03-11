@@ -103,37 +103,39 @@ function normalizeWaveNodeIds(
   return fallbackNodeIds.filter((nodeId) => validNodeIds.has(nodeId));
 }
 
-function familySupportsDefaultWaves(family: RigMotionIntent["family"]): boolean {
-  return family !== "custom";
+function locomotionEnergy(mode: MotionSpec["locomotion"]["mode"]): number {
+  if (mode === "translate") return 1;
+  if (mode === "arc") return 0.9;
+  if (mode === "bounce_on_contact") return 1.05;
+  if (mode === "slide_on_contact") return 0.85;
+  if (mode === "stop_at_contact") return 0.7;
+  return 0.55;
 }
 
-function baseWaveAmplitudeForFamily(family: MotionSpec["motionFamily"]): number {
-  if (family === "idle") return 2.4;
-  if (family === "halt") return 3.8;
-  if (family === "turn") return 5.2;
-  if (family === "jump") return 5.8;
-  if (family === "wave") return 6;
-  if (family === "drive" || family === "retreat") return 6.4;
-  if (family === "drift" || family === "hover") return 6.8;
-  if (family === "walk") return 7.8;
-  if (family === "glide") return 8.4;
-  if (family === "run") return 9.2;
-  if (family === "swim") return 10.5;
-  if (family === "crash") return 11;
-  return 6.5;
+function baseWaveAmplitudeForSpec(
+  motionSpec: Pick<MotionSpec, "amplitude" | "intensity" | "locomotion">,
+): number {
+  const amplitude = clamp(motionSpec.amplitude || 1, 0.02, 2);
+  const intensity = clamp(motionSpec.intensity || 0.5, 0, 1);
+  return 0.25 + (amplitude * 3.4) + (intensity * 1.8 * locomotionEnergy(motionSpec.locomotion.mode));
 }
 
-function waveFrequencyForFamily(family: MotionSpec["motionFamily"], tempo: number): number {
-  const safeTempo = Math.max(0.35, tempo);
-  if (family === "idle") return Math.max(0.2, safeTempo * 0.5);
-  if (family === "halt") return Math.max(0.25, safeTempo * 0.65);
-  if (family === "crash") return Math.max(0.45, safeTempo * 1.1);
-  if (family === "turn") return Math.max(0.4, safeTempo * 0.8);
+function waveFrequencyForSpec(
+  motionSpec: Pick<MotionSpec, "tempo" | "locomotion">,
+): number {
+  const safeTempo = Math.max(0.35, motionSpec.tempo || 1);
+  if (motionSpec.locomotion.mode === "none") return Math.max(0.2, safeTempo * 0.55);
+  if (motionSpec.locomotion.mode === "arc") return Math.max(0.28, safeTempo * 0.82);
+  if (motionSpec.locomotion.mode === "stop_at_contact") return Math.max(0.25, safeTempo * 0.68);
+  if (motionSpec.locomotion.mode === "bounce_on_contact") return Math.max(0.45, safeTempo * 1.08);
   return safeTempo;
 }
 
-function waveFalloffForChain(chain: MotionTopologyChain, family: MotionSpec["motionFamily"]): "uniform" | "tip_bias" | "root_bias" {
-  if (family === "idle") return chain.primary ? "root_bias" : "uniform";
+function waveFalloffForChain(
+  chain: MotionTopologyChain,
+  mode: MotionSpec["locomotion"]["mode"],
+): "uniform" | "tip_bias" | "root_bias" {
+  if (mode === "none") return chain.primary ? "root_bias" : "uniform";
   if (chain.primary) return "tip_bias";
   return "uniform";
 }
@@ -171,29 +173,41 @@ function expandWaveAcrossTopology(
   return [];
 }
 
-function defaultWavePhase(chain: MotionTopologyChain, index: number, family: MotionSpec["motionFamily"]): number {
-  if (family === "idle") return index * 0.08;
+function defaultWavePhase(
+  chain: MotionTopologyChain,
+  index: number,
+  mode: MotionSpec["locomotion"]["mode"],
+): number {
   if (chain.primary) return 0;
-  return 0.14 + (index * 0.1);
+  if (mode === "none") return index * 0.08;
+  return 0.12 + (index * 0.08);
+}
+
+function branchWaveMultiplier(mode: MotionSpec["locomotion"]["mode"]): number {
+  if (mode === "none") return 0.18;
+  if (mode === "arc") return 0.24;
+  if (mode === "bounce_on_contact") return 0.26;
+  return 0.22;
 }
 
 function defaultWavesForTopology(
   rig: ReturnType<typeof ensureRigIK>,
   topology: MotionTopology,
-  motionSpec: Pick<MotionSpec, "motionFamily" | "tempo" | "amplitude" | "intensity">,
+  motionSpec: Pick<MotionSpec, "motionFamily" | "tempo" | "amplitude" | "intensity" | "locomotion">,
 ): RigMotionIntent["axialWaves"] {
-  if (!familySupportsDefaultWaves(motionSpec.motionFamily)) return [];
-  const amplitude = motionSpec.amplitude || 1;
-  const intensity = motionSpec.intensity || 0.5;
-  const frequency = waveFrequencyForFamily(motionSpec.motionFamily, motionSpec.tempo || 1);
-  const baseAmplitude = baseWaveAmplitudeForFamily(motionSpec.motionFamily) * amplitude * (0.55 + (intensity * 0.8));
+  const nodeMap = new Map((rig.rig_data.ik?.nodes || []).map((node) => [node.id, node]));
+  const frequency = waveFrequencyForSpec(motionSpec);
+  const baseAmplitude = baseWaveAmplitudeForSpec(motionSpec);
   const primarySpan = Math.max(1, topology.primaryChain?.span || 1);
+  const secondaryMultiplier = branchWaveMultiplier(motionSpec.locomotion.mode);
 
   return topology.chains.flatMap((chain, index) => {
     if (chain.nodeIds.length < 2) return [];
+    const terminalNode = nodeMap.get(chain.terminalNodeId);
     const spanRatio = Math.max(0.18, Math.min(1, chain.span / primarySpan));
-    const chainAmplitude = chain.primary ? baseAmplitude : baseAmplitude * 0.38 * spanRatio;
-    if (motionSpec.motionFamily === "idle" && !chain.primary) return [];
+    if (!chain.primary && terminalNode?.ikRole === "decorative") return [];
+    if (!chain.primary && spanRatio < 0.24) return [];
+    const chainAmplitude = chain.primary ? baseAmplitude : baseAmplitude * secondaryMultiplier * spanRatio;
     return [{
       chainId: chain.id,
       nodeIds: chain.nodeIds,
@@ -204,8 +218,8 @@ function defaultWavesForTopology(
         chain.primary ? 0.72 : 0.5,
       ),
       frequency,
-      phase: defaultWavePhase(chain, index, motionSpec.motionFamily),
-      falloff: waveFalloffForChain(chain, motionSpec.motionFamily),
+      phase: defaultWavePhase(chain, index, motionSpec.locomotion.mode),
+      falloff: waveFalloffForChain(chain, motionSpec.locomotion.mode),
     }];
   });
 }
@@ -219,7 +233,6 @@ export function sanitizeMotionIntentForRig(
   const nodeMap = new Map((rig.rig_data.ik?.nodes || []).map((node) => [node.id, node]));
   const validNodeIds = new Set((rig.rig_data.ik?.nodes || []).map((node) => node.id));
   const topology = buildMotionTopology(rig);
-  const family = intent.family;
 
   const normalizedIntent: RigMotionIntent = {
     ...intent,
@@ -255,7 +268,7 @@ export function sanitizeMotionIntentForRig(
         wave.amplitudeDeg,
         candidate.sourceChain?.primary ? 0.72 : 0.5,
       ),
-      falloff: candidate.sourceChain ? waveFalloffForChain(candidate.sourceChain, family) : wave.falloff,
+      falloff: candidate.sourceChain ? waveFalloffForChain(candidate.sourceChain, intent.locomotion.mode) : wave.falloff,
     }))),
   };
 
@@ -273,6 +286,10 @@ export function sanitizeMotionIntentForRig(
         tempo: 1,
         amplitude: 1,
         intensity: 0.5,
+        locomotion: {
+          mode: normalizedIntent.locomotion.mode,
+          preferredDirection: normalizedIntent.locomotion.direction,
+        },
       });
 
   return {

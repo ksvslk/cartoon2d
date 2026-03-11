@@ -7,7 +7,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { processScenePromptStream, processSceneImageEdit } from "@/app/actions/scene";
 import { ClipBinding, CompiledSceneData, StoryBeatData, StoryGenerationData, getStageDims, StageOrientation } from "@/lib/schema/story";
 import { loadStoryFromStorage, saveStoryToStorage, clearStoryStorage, getProjectsList, createProject, deleteProject, updateProjectTitle, ProjectMetadata, loadActorIdentities, saveActorIdentity, updateProjectOrientation } from "@/lib/storage/db";
-import { generateMotionClipForRig, processDraftsmanPrompt } from "@/app/actions/draftsman";
+import { generateMotionClipForRig, processDraftsmanPrompt, type MotionDebugReport } from "@/app/actions/draftsman";
 import { processSetDesignerPrompt } from "@/app/actions/set_designer";
 import { DraftsmanData } from "@/lib/schema/rig";
 import { RigViewer } from "@/components/RigViewer";
@@ -150,10 +150,51 @@ function buildClipPreviewScene(actorId: string, clipName: string, rig: Draftsman
   return { beat, compiledScene };
 }
 
-function classifyCompileLogLine(line: string): "paid" | "reused" | "error" | "neutral" {
+function formatMotionDebugLines(report: MotionDebugReport): string[] {
+  const lines = [
+    `[DEBUG] Motion debug: duration=${report.durationSeconds.toFixed(2)}s, affordance=${report.affordance.articulationScore}, deformationBudget=${report.affordance.deformationBudget}.`,
+    `[DEBUG] Spec summary: model amp=${report.modelSpec.amplitude}, final amp=${report.finalSpec.amplitude}, intensity=${report.finalSpec.intensity}, view=${report.finalSpec.preferredView || "auto"}, leads=${report.finalSpec.leadBones.join(", ") || "none"}.`,
+  ];
+
+  if (!report.preflight.ok) {
+    lines.push(`[DEBUG] Preflight blocked: ${report.preflight.errors.join(" | ")}.`);
+  }
+
+  report.attempts.slice(0, 4).forEach((attempt) => {
+    const waveSummary = attempt.waveChains
+      .slice(0, 3)
+      .map((wave) => `${wave.chainId}[${wave.nodeIds.length}n@${wave.amplitudeDeg}deg]`)
+      .join(", ") || "none";
+    lines.push(
+      `[DEBUG] Attempt ${attempt.pass} @${attempt.attenuationFactor}x: view=${attempt.validation.debug.playableCoverage?.activeView || attempt.resolvedView || "none"}, leadNodes=${attempt.leadNodes.join(", ") || "none"}, waves=${waveSummary}.`,
+    );
+
+    const missingBindings = attempt.validation.debug.playableCoverage?.missingNodeIds || [];
+    if (missingBindings.length > 0) {
+      lines.push(`[DEBUG] Attempt ${attempt.pass} missing bindings: ${missingBindings.slice(0, 6).join(", ")}.`);
+    }
+
+    const saturatedNodes = (attempt.validation.debug.samples?.saturatedNodeStats || [])
+      .filter((node) => node.ratio >= 0.5)
+      .slice(0, 4)
+      .map((node) => `${node.nodeId} ${node.count}/${attempt.validation.debug.samples?.sampleCount || 0}`);
+    if (saturatedNodes.length > 0) {
+      lines.push(`[DEBUG] Attempt ${attempt.pass} saturation: ${saturatedNodes.join(", ")}.`);
+    }
+
+    if (attempt.validation.errors.length > 0) {
+      lines.push(`[DEBUG] Attempt ${attempt.pass} errors: ${attempt.validation.errors.join(" | ")}.`);
+    }
+  });
+
+  return lines;
+}
+
+function classifyCompileLogLine(line: string): "paid" | "reused" | "error" | "debug" | "neutral" {
   if (line.includes("[PAID]")) return "paid";
   if (line.includes("[REUSED]")) return "reused";
   if (line.includes("[BLOCKED]")) return "error";
+  if (line.includes("[DEBUG]")) return "debug";
   if (line.includes("❌")) return "error";
   return "neutral";
 }
@@ -167,6 +208,8 @@ function renderCompileLogLine(line: string, key: string | number) {
         ? "border-cyan-400/40 bg-cyan-500/10 text-cyan-300"
         : kind === "error"
           ? "border-red-400/40 bg-red-500/10 text-red-300"
+          : kind === "debug"
+            ? "border-sky-400/30 bg-sky-500/10 text-sky-200"
           : "border-neutral-700 bg-neutral-900 text-neutral-400";
 
   const lineClass =
@@ -176,6 +219,8 @@ function renderCompileLogLine(line: string, key: string | number) {
         ? "text-cyan-300"
         : kind === "error"
           ? "text-red-300"
+          : kind === "debug"
+            ? "text-sky-200"
           : "text-emerald-400";
 
   return (
@@ -1289,6 +1334,19 @@ export default function Home() {
                 continue;
               }
 
+              if (clipResult.blocked) {
+                addLog(`[BLOCKED] Motion '${motionKey}' blocked for '${actor.name}': ${clipResult.blocked.message}`);
+                formatMotionDebugLines(clipResult.blocked.debugReport).forEach((line) => addLog(line));
+                logUsage(clipResult.usage, `Motion (${actor.name}:${motionKey})`);
+                continue;
+              }
+
+              if (!clipResult.clip) {
+                addLog(`[BLOCKED] Motion '${motionKey}' blocked for '${actor.name}': clip generation returned no playable clip.`);
+                logUsage(clipResult.usage, `Motion (${actor.name}:${motionKey})`);
+                continue;
+              }
+
               nextRig = {
                 ...nextRig,
                 rig_data: {
@@ -1308,6 +1366,9 @@ export default function Home() {
                 clipResult.stabilization.validationWarnings.slice(0, 2).forEach((warning: string) => {
                   addLog(`[REVIEW] Motion validation: ${warning}.`);
                 });
+              }
+              if (clipResult.stabilization?.debugReport) {
+                formatMotionDebugLines(clipResult.stabilization.debugReport).slice(0, 4).forEach((line) => addLog(line));
               }
               logUsage(clipResult.usage, `Motion (${actor.name}:${motionKey})`);
             }
