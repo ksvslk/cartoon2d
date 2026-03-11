@@ -159,6 +159,9 @@ function formatMotionDebugLines(report: MotionDebugReport): string[] {
   if (!report.preflight.ok) {
     lines.push(`[DEBUG] Preflight blocked: ${report.preflight.errors.join(" | ")}.`);
   }
+  if (report.preflight.warnings.length > 0) {
+    lines.push(`[DEBUG] Preflight warnings: ${report.preflight.warnings.slice(0, 3).join(" | ")}.`);
+  }
 
   report.attempts.slice(0, 4).forEach((attempt) => {
     const waveSummary = attempt.waveChains

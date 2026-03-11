@@ -190,124 +190,6 @@ function findBindingPivot(binding?: RigIKViewBinding): Point | undefined {
   return { x: binding.pivot.x, y: binding.pivot.y };
 }
 
-function viewPreferenceOrder(views: Record<string, RigIKView>, activeView?: string): string[] {
-  const ordered = Object.keys(views).sort();
-  if (!activeView || !views[activeView]) return ordered;
-  return [activeView, ...ordered.filter((viewId) => viewId !== activeView)];
-}
-
-function pivotForNodeAcrossViews(
-  nodeId: string,
-  views: Record<string, RigIKView>,
-  preferredViews: string[],
-): Point | undefined {
-  for (const viewId of preferredViews) {
-    const binding = views[viewId]?.bindings.find((candidate) => candidate.nodeId === nodeId);
-    const pivot = findBindingPivot(binding);
-    if (pivot) return pivot;
-  }
-
-  for (const view of Object.values(views)) {
-    const binding = view.bindings.find((candidate) => candidate.nodeId === nodeId);
-    const pivot = findBindingPivot(binding);
-    if (pivot) return pivot;
-  }
-
-  return undefined;
-}
-
-function choosePrimaryRootId(nodes: RigIKNode[], rootIds: string[]): string | undefined {
-  const candidates = rootIds
-    .map((rootId) => nodes.find((node) => node.id === rootId))
-    .filter((node): node is RigIKNode => Boolean(node))
-    .sort((left, right) => {
-      const leftPriority = left.kind === "root" ? 4 : left.kind === "torso" ? 3 : left.kind === "body" ? 2 : 1;
-      const rightPriority = right.kind === "root" ? 4 : right.kind === "torso" ? 3 : right.kind === "body" ? 2 : 1;
-      if (rightPriority !== leftPriority) return rightPriority - leftPriority;
-      const leftBindings = left.sourceBoneIds?.length || 0;
-      const rightBindings = right.sourceBoneIds?.length || 0;
-      if (rightBindings !== leftBindings) return rightBindings - leftBindings;
-      return left.id.localeCompare(right.id);
-    });
-  return candidates[0]?.id;
-}
-
-function semanticParentScore(childKind: RigBoneKind | undefined, parentKind: RigBoneKind | undefined): number {
-  if (!parentKind) return 0;
-  if (childKind === "jaw") return parentKind === "head" ? 20 : 0;
-  if (childKind === "head") return parentKind === "neck" ? 20 : parentKind === "torso" || parentKind === "body" || parentKind === "root" ? 12 : 0;
-  if (childKind === "neck") return parentKind === "torso" || parentKind === "body" || parentKind === "root" ? 20 : 0;
-  if (childKind === "hand") return parentKind === "arm_lower" ? 20 : parentKind === "arm_upper" ? 12 : 0;
-  if (childKind === "foot") return parentKind === "leg_lower" ? 20 : parentKind === "leg_upper" ? 12 : 0;
-  if (childKind === "arm_lower") return parentKind === "arm_upper" ? 20 : parentKind === "torso" || parentKind === "body" || parentKind === "root" ? 8 : 0;
-  if (childKind === "leg_lower") return parentKind === "leg_upper" ? 20 : parentKind === "torso" || parentKind === "body" || parentKind === "root" ? 8 : 0;
-  if (childKind === "arm_upper" || childKind === "leg_upper") {
-    return parentKind === "torso" || parentKind === "body" || parentKind === "root" ? 20 : 0;
-  }
-  if (childKind === "tail_tip") return parentKind === "tail_mid" ? 22 : parentKind === "tail_base" ? 18 : parentKind === "torso" || parentKind === "body" || parentKind === "root" ? 10 : 0;
-  if (childKind === "tail_mid") return parentKind === "tail_base" ? 22 : parentKind === "torso" || parentKind === "body" || parentKind === "root" ? 12 : 0;
-  if (childKind === "tail_base") return parentKind === "torso" || parentKind === "body" || parentKind === "root" ? 22 : 0;
-  if (childKind === "fin" || childKind === "wing") return parentKind === "torso" || parentKind === "body" || parentKind === "root" ? 18 : parentKind === "tail_base" ? 8 : 0;
-  return parentKind === "torso" || parentKind === "body" || parentKind === "root" ? 10 : 0;
-}
-
-function repairDisconnectedRuntimeNodes(
-  nodes: RigIKNode[],
-  views: Record<string, RigIKView>,
-  activeView?: string,
-): RigIKNode[] {
-  const preferredViews = viewPreferenceOrder(views, activeView);
-  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-  const rootIds = nodes
-    .filter((node) => !node.parent || !nodeMap.has(node.parent))
-    .map((node) => node.id);
-
-  if (rootIds.length <= 1) return nodes;
-
-  const primaryRootId = choosePrimaryRootId(nodes, rootIds);
-  if (!primaryRootId) return nodes;
-
-  const repaired = nodes.map((node) => ({ ...node }));
-  const repairedMap = new Map(repaired.map((node) => [node.id, node]));
-
-  rootIds.forEach((rootId) => {
-    if (rootId === primaryRootId) return;
-    const node = repairedMap.get(rootId);
-    if (!node) return;
-    const childPivot = pivotForNodeAcrossViews(node.id, views, preferredViews);
-
-    const candidate = repaired
-      .filter((candidateNode) => candidateNode.id !== node.id)
-      .flatMap((candidateNode) => {
-        const semanticScore = semanticParentScore(node.kind, candidateNode.kind);
-        if (semanticScore <= 0) return [];
-        const parentPivot = childPivot ? pivotForNodeAcrossViews(candidateNode.id, views, preferredViews) : undefined;
-        const distanceScore = childPivot && parentPivot ? Math.max(0, 1000 - distance(childPivot, parentPivot)) / 100 : 0;
-        const sideScore = !node.side || node.side === "center" || !candidateNode.side || candidateNode.side === "center" || node.side === candidateNode.side
-          ? 1.5
-          : 0;
-        return [{
-          nodeId: candidateNode.id,
-          score: semanticScore + distanceScore + sideScore,
-          parentPivot,
-        }];
-      })
-      .sort((left, right) => {
-        if (right.score !== left.score) return right.score - left.score;
-        return left.nodeId.localeCompare(right.nodeId);
-      })[0];
-
-    if (!candidate) return;
-    node.parent = candidate.nodeId;
-    if (childPivot && candidate.parentPivot) {
-      node.restLength = round2(distance(candidate.parentPivot, childPivot));
-      node.restRotation = round2(angleBetween(candidate.parentPivot, childPivot));
-    }
-  });
-
-  return repaired;
-}
-
 function sortNodeIdsByDepth(nodes: RigIKNode[]): string[] {
   const nodeMap = new Map(nodes.map((node) => [node.id, node]));
   const depthCache = new Map<string, number>();
@@ -586,7 +468,8 @@ export function buildPoseGraph(data: DraftsmanData, requestedView?: string): Pos
     : ik.defaultView && ik.views[ik.defaultView]
       ? ik.defaultView
       : Object.keys(ik.views).sort()[0];
-  const runtimeNodes = repairDisconnectedRuntimeNodes(ik.nodes, ik.views, activeView);
+  // Preserve the authored canonical graph instead of silently welding detached islands.
+  const runtimeNodes = ik.nodes;
 
   const runtimeRootIds = runtimeNodes
     .filter((node) => !node.parent || !runtimeNodes.some((candidate) => candidate.id === node.parent))

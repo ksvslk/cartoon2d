@@ -6,6 +6,7 @@ import {
   RigIKData,
   RigIKNode,
   RigIKView,
+  RigIKViewBinding,
 } from "../schema/rig";
 
 type Point = { x: number; y: number };
@@ -30,8 +31,22 @@ function average(values: number[]): number | undefined {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function distance(a: Point, b: Point): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
 function unique(values: string[]): string[] {
   return Array.from(new Set(values));
+}
+
+function resolveAttachmentPoint(binding?: RigIKViewBinding): Point | undefined {
+  if (binding?.socket) {
+    return { x: binding.socket.x, y: binding.socket.y };
+  }
+  if (binding?.pivot) {
+    return { x: binding.pivot.x, y: binding.pivot.y };
+  }
+  return undefined;
 }
 
 export function inferIKArchetype(nodes: RigIKNode[]): RigIKArchetype {
@@ -250,6 +265,51 @@ function warningForTopology(nodes: RigIKNode[]): string[] {
   return warnings;
 }
 
+function warningForAttachmentIntegrity(ik: RigIKData, nodes: RigIKNode[]): string[] {
+  const warnings: string[] = [];
+  const defaultView = ik.defaultView || Object.keys(ik.views).sort()[0];
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const detachedRoots = nodes
+    .filter((node) => !node.parent || !nodeMap.has(node.parent))
+    .map((node) => node.id)
+    .sort();
+
+  if (detachedRoots.length > 1) {
+    warnings.push(`Rig resolves to ${detachedRoots.length} detached structural islands; connected objects should share a single root.`);
+  }
+
+  if (!defaultView || !ik.views[defaultView]) {
+    return warnings;
+  }
+
+  const bindingByNode = new Map(ik.views[defaultView].bindings.map((binding) => [binding.nodeId, binding]));
+  nodes.forEach((node) => {
+    if (!node.parent || !nodeMap.has(node.parent)) return;
+    if (node.ikRole === "decorative") return;
+
+    const childBinding = bindingByNode.get(node.id);
+    const parentBinding = bindingByNode.get(node.parent);
+    if (!childBinding || !parentBinding) return;
+
+    if (!childBinding.socket && !parentBinding.socket) {
+      warnings.push(`${node.id} has no explicit attachment socket in ${defaultView}; connected parts should declare how they attach.`);
+      return;
+    }
+
+    const childAttachment = resolveAttachmentPoint(childBinding);
+    const parentAttachment = resolveAttachmentPoint(parentBinding);
+    if (!childAttachment || !parentAttachment) return;
+
+    const attachmentGap = distance(parentAttachment, childAttachment);
+    const tolerance = Math.max(14, Math.min(32, (node.restLength || 0) * 0.18 || 18));
+    if (attachmentGap > tolerance) {
+      warnings.push(`${node.id} attachment gap in ${defaultView} is ${attachmentGap.toFixed(1)}px from parent ${node.parent}.`);
+    }
+  });
+
+  return warnings;
+}
+
 export function analyzeDerivedIK(ik: RigIKData): RigIKData {
   const archetype = ik.archetype !== "custom" ? ik.archetype : inferIKArchetype(ik.nodes);
   const nodeMap = new Map(ik.nodes.map((node) => [node.id, node]));
@@ -304,6 +364,7 @@ export function analyzeDerivedIK(ik: RigIKData): RigIKData {
   });
 
   warnings.push(...warningForTopology(enhancedNodes));
+  warnings.push(...warningForAttachmentIntegrity(ik, enhancedNodes));
 
   const nonAngleConstraints = ik.constraints.filter((constraint) => constraint.type !== "angle_limit");
   const angleConstraints: RigIKConstraint[] = enhancedNodes

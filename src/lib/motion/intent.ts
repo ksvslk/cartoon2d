@@ -21,6 +21,84 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+function ensureLoopedRotationSamples(
+  samples: Array<{ t: number; rotation: number }>,
+): Array<{ t: number; rotation: number }> {
+  const ordered = [...samples]
+    .filter((sample) => Number.isFinite(sample.t) && Number.isFinite(sample.rotation))
+    .map((sample) => ({ t: round2(clamp(sample.t, 0, 1)), rotation: round2(sample.rotation) }))
+    .sort((left, right) => left.t - right.t);
+  if (ordered.length === 0) return [];
+
+  const loopStart = ordered[0].t === 0 ? ordered[0] : { ...ordered[0], t: 0 };
+  const result = ordered[0].t === 0 ? [...ordered] : [loopStart, ...ordered];
+  const last = result[result.length - 1];
+  if (last.t < 1 || Math.abs(last.rotation - loopStart.rotation) > 0.1) {
+    result.push({ ...loopStart, t: 1 });
+  } else if (last.t !== 1) {
+    result[result.length - 1] = { ...last, t: 1 };
+  }
+  return result;
+}
+
+function ensureLoopedEffectorSamples(
+  samples: Array<{ t: number; x: number; y: number; weight?: number }>,
+): Array<{ t: number; x: number; y: number; weight?: number }> {
+  const ordered = [...samples]
+    .filter((sample) => Number.isFinite(sample.t) && Number.isFinite(sample.x) && Number.isFinite(sample.y))
+    .map((sample) => ({
+      t: round2(clamp(sample.t, 0, 1)),
+      x: round2(sample.x),
+      y: round2(sample.y),
+      weight: typeof sample.weight === "number" ? round2(sample.weight) : sample.weight,
+    }))
+    .sort((left, right) => left.t - right.t);
+  if (ordered.length === 0) return [];
+
+  const loopStart = ordered[0].t === 0 ? ordered[0] : { ...ordered[0], t: 0 };
+  const result = ordered[0].t === 0 ? [...ordered] : [loopStart, ...ordered];
+  const last = result[result.length - 1];
+  const sameAsStart =
+    Math.abs(last.x - loopStart.x) <= 0.1 &&
+    Math.abs(last.y - loopStart.y) <= 0.1 &&
+    Math.abs((last.weight ?? 1) - (loopStart.weight ?? 1)) <= 0.05;
+  if (last.t < 1 || !sameAsStart) {
+    result.push({ ...loopStart, t: 1 });
+  } else if (last.t !== 1) {
+    result[result.length - 1] = { ...last, t: 1 };
+  }
+  return result;
+}
+
+function ensureLoopedRootSamples(
+  samples: Array<{ t: number; x?: number; y?: number; rotation?: number }>,
+): Array<{ t: number; x?: number; y?: number; rotation?: number }> {
+  const ordered = [...samples]
+    .filter((sample) => Number.isFinite(sample.t))
+    .map((sample) => ({
+      t: round2(clamp(sample.t, 0, 1)),
+      x: typeof sample.x === "number" ? round2(sample.x) : undefined,
+      y: typeof sample.y === "number" ? round2(sample.y) : undefined,
+      rotation: typeof sample.rotation === "number" ? round2(sample.rotation) : undefined,
+    }))
+    .sort((left, right) => left.t - right.t);
+  if (ordered.length === 0) return [];
+
+  const loopStart = ordered[0].t === 0 ? ordered[0] : { ...ordered[0], t: 0 };
+  const result = ordered[0].t === 0 ? [...ordered] : [loopStart, ...ordered];
+  const last = result[result.length - 1];
+  const sameAsStart =
+    Math.abs((last.x ?? 0) - (loopStart.x ?? 0)) <= 0.1 &&
+    Math.abs((last.y ?? 0) - (loopStart.y ?? 0)) <= 0.1 &&
+    Math.abs((last.rotation ?? 0) - (loopStart.rotation ?? 0)) <= 0.1;
+  if (last.t < 1 || !sameAsStart) {
+    result.push({ ...loopStart, t: 1 });
+  } else if (last.t !== 1) {
+    result[result.length - 1] = { ...last, t: 1 };
+  }
+  return result;
+}
+
 function interpolateSamples<T extends { t: number }>(
   samples: T[],
   normalizedTime: number,
@@ -236,12 +314,19 @@ export function sanitizeMotionIntentForRig(
 
   const normalizedIntent: RigMotionIntent = {
     ...intent,
-    effectorGoals: (intent.effectorGoals || []).filter((goal) => validNodeIds.has(goal.nodeId)),
+    rootMotion: ensureLoopedRootSamples(intent.rootMotion || []),
+    effectorGoals: (intent.effectorGoals || [])
+      .filter((goal) => validNodeIds.has(goal.nodeId))
+      .map((goal) => ({
+        ...goal,
+        samples: ensureLoopedEffectorSamples(goal.samples || []),
+      }))
+      .filter((goal) => goal.samples.length > 0),
     rotationTracks: (intent.rotationTracks || [])
       .filter((track) => validNodeIds.has(track.nodeId))
       .map((track) => ({
         ...track,
-        samples: (track.samples || [])
+        samples: ensureLoopedRotationSamples((track.samples || [])
           .filter((sample) => Number.isFinite(sample.t) && Number.isFinite(sample.rotation))
           .map((sample) => {
             const usableLimit = usableRotationLimitForNode(
@@ -252,7 +337,7 @@ export function sanitizeMotionIntentForRig(
               ...sample,
               rotation: usableLimit ? round2(clamp(sample.rotation, usableLimit[0], usableLimit[1])) : sample.rotation,
             };
-          }),
+          })),
       }))
       .filter((track) => track.samples.length > 0),
     contacts: (intent.contacts || []).filter((contact) => validNodeIds.has(contact.nodeId)),

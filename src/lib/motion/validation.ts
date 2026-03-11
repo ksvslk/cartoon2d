@@ -16,8 +16,10 @@ export type MotionValidationDebug = {
   graph: {
     hasCanonicalIK: boolean;
     rootCount: number;
+    detachedRootIds: string[];
     playableViewIds: string[];
   };
+  attachmentWarnings: string[];
   drivenChains: Array<{
     chainId: string;
     nodeIds: string[];
@@ -63,12 +65,19 @@ function collectDrivenNodeIds(motionClip: RigMotionClip | undefined, rootIds: st
 function validateRigGraph(
   rig: ReturnType<typeof ensureRigIK>,
   errors: string[],
+  warnings: string[],
   debug: MotionValidationDebug,
 ): void {
   const ik = rig.rig_data.ik;
+  const nodeMap = new Map((ik?.nodes || []).map((node) => [node.id, node]));
+  const detachedRootIds = (ik?.nodes || [])
+    .filter((node) => !node.parent || !nodeMap.has(node.parent))
+    .map((node) => node.id)
+    .sort();
   debug.graph = {
     hasCanonicalIK: Boolean(ik && ik.nodes.length > 0),
     rootCount: ik?.roots.length || 0,
+    detachedRootIds,
     playableViewIds: Object.entries(ik?.views || {})
       .filter(([, view]) => view.bindings.length > 0)
       .map(([viewId]) => viewId)
@@ -82,11 +91,40 @@ function validateRigGraph(
   if (ik.roots.length === 0) {
     errors.push("Rig is blocked: canonical IK graph has no root node.");
   }
+  if (detachedRootIds.length > 1) {
+    errors.push(`Rig is blocked: canonical IK graph has ${detachedRootIds.length} detached root islands (${detachedRootIds.slice(0, 4).join(", ")}).`);
+  }
 
   const hasPlayableView = Object.values(ik.views || {}).some((view) => view.bindings.length > 0);
   if (!hasPlayableView) {
     errors.push("Rig is blocked: canonical IK graph has no playable view bindings.");
   }
+
+  const defaultView = ik.defaultView || Object.keys(ik.views || {}).sort()[0];
+  debug.attachmentWarnings = [];
+  if (defaultView && ik.views[defaultView]) {
+    const bindingByNode = new Map(ik.views[defaultView].bindings.map((binding) => [binding.nodeId, binding]));
+    (ik.nodes || []).forEach((node) => {
+      if (!node.parent || !nodeMap.has(node.parent)) return;
+      if (node.ikRole === "decorative") return;
+      const childBinding = bindingByNode.get(node.id);
+      const parentBinding = bindingByNode.get(node.parent);
+      if (!childBinding || !parentBinding) return;
+      if (!childBinding.socket && !parentBinding.socket) {
+        debug.attachmentWarnings.push(`${node.id} has no explicit attachment socket in ${defaultView}.`);
+        return;
+      }
+      const childAttachment = childBinding.socket || childBinding.pivot;
+      const parentAttachment = parentBinding.socket || parentBinding.pivot;
+      if (!childAttachment || !parentAttachment) return;
+      const gap = distance(parentAttachment, childAttachment);
+      const tolerance = Math.max(14, Math.min(32, (node.restLength || 0) * 0.18 || 18));
+      if (gap > tolerance) {
+        debug.attachmentWarnings.push(`${node.id} attachment gap in ${defaultView} is ${gap.toFixed(1)}px from parent ${node.parent}.`);
+      }
+    });
+  }
+  warnings.push(...debug.attachmentWarnings.slice(0, 4));
 }
 
 function validateDrivenChains(
@@ -268,12 +306,14 @@ export function validateRigForMotion(params: {
     graph: {
       hasCanonicalIK: false,
       rootCount: 0,
+      detachedRootIds: [],
       playableViewIds: [],
     },
+    attachmentWarnings: [],
     drivenChains: [],
   };
 
-  validateRigGraph(rig, errors, debug);
+  validateRigGraph(rig, errors, warnings, debug);
 
   if (params.motionClip) {
     const hasPlayableMotion =

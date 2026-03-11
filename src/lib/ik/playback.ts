@@ -1,7 +1,7 @@
 import gsap from "gsap";
 import { DraftsmanData, RigMotionIntent } from "../schema/rig";
 import { buildPoseGraph, PoseGraph } from "./graph";
-import { createRestPoseState, PoseState } from "./pose";
+import { clampLocalRotation, computePoseLayout, createRestPoseState, PoseState } from "./pose";
 import { applyPoseToSvg } from "./svgPose";
 import { solvePoseFromGoals } from "./goal_solver";
 import { EvaluatedMotionGoals, evaluateMotionIntentAtTime } from "../motion/intent";
@@ -10,6 +10,8 @@ type PlaybackViewState = {
   graph: PoseGraph;
   nodeIdByBoneId: Map<string, string>;
   restPose: PoseState;
+  currentPose?: PoseState;
+  appliedIntent?: RigMotionIntent;
 };
 
 type ActorPlaybackState = {
@@ -37,6 +39,53 @@ function resolveViewId(actor: IKPlaybackActor, requestedView?: string): string {
     return actor.renderState.currentView;
   }
   return actor.defaultView;
+}
+
+function round2(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+function normalizeDegrees(value: number): number {
+  let next = value;
+  while (next > 180) next -= 360;
+  while (next < -180) next += 360;
+  return round2(next);
+}
+
+function clampStep(value: number, maxStep: number): number {
+  return Math.max(-maxStep, Math.min(maxStep, value));
+}
+
+function stabilizePoseForPlayback(
+  graph: PoseGraph,
+  currentPose: PoseState,
+  targetPose: PoseState,
+): PoseState {
+  const nextPose: PoseState = {
+    rootTranslations: {},
+    localRotations: {},
+  };
+
+  graph.roots.forEach((rootId) => {
+    const current = currentPose.rootTranslations[rootId] || { x: 0, y: 0 };
+    const target = targetPose.rootTranslations[rootId] || current;
+    const dx = clampStep((target.x - current.x) * 0.62, 18);
+    const dy = clampStep((target.y - current.y) * 0.62, 18);
+    nextPose.rootTranslations[rootId] = {
+      x: round2(current.x + dx),
+      y: round2(current.y + dy),
+    };
+  });
+
+  graph.nodes.forEach((node) => {
+    const current = currentPose.localRotations[node.id] ?? 0;
+    const target = targetPose.localRotations[node.id] ?? current;
+    const delta = normalizeDegrees(target - current);
+    const stepped = current + clampStep(delta * 0.62, 8);
+    nextPose.localRotations[node.id] = clampLocalRotation(graph, node.id, stepped);
+  });
+
+  return nextPose;
 }
 
 function buildNodeLookup(graph: PoseGraph): Map<string, string> {
@@ -128,6 +177,10 @@ export function setPlaybackIntent(actor: IKPlaybackActor, intent: RigMotionInten
   actor.playbackState.clipTimeSeconds = 0;
   actor.playbackState.durationSeconds = intent?.duration || 1;
   actor.playbackState.currentGoals = undefined;
+  actor.viewStates.forEach((viewState) => {
+    viewState.currentPose = undefined;
+    viewState.appliedIntent = intent;
+  });
 }
 
 export function syncPlaybackActors(actors: IKPlaybackActor[]): void {
@@ -137,6 +190,8 @@ export function syncPlaybackActors(actors: IKPlaybackActor[]): void {
     const intent = actor.playbackState.currentIntent;
 
     if (!intent) {
+      viewState.currentPose = undefined;
+      viewState.appliedIntent = undefined;
       const restLayout = solvePoseFromGoals(viewState.graph, {
         normalizedTime: 0,
         effectorTargets: [],
@@ -148,13 +203,26 @@ export function syncPlaybackActors(actors: IKPlaybackActor[]): void {
       return;
     }
 
+    if (viewState.appliedIntent !== intent) {
+      viewState.currentPose = undefined;
+      viewState.appliedIntent = intent;
+    }
+
     const goals = evaluateMotionIntentAtTime(
       intent,
       viewState.graph,
       actor.playbackState.clipTimeSeconds,
     );
     actor.playbackState.currentGoals = goals;
-    const solved = solvePoseFromGoals(viewState.graph, goals, viewState.restPose);
-    applyPoseToSvg(actor.actorGroup, viewState.graph, solved.layout, viewId);
+    const basePose = viewState.currentPose || viewState.restPose;
+    const solved = solvePoseFromGoals(viewState.graph, goals, basePose);
+    const nextPose = viewState.currentPose
+      ? stabilizePoseForPlayback(viewState.graph, viewState.currentPose, solved.pose)
+      : solved.pose;
+    viewState.currentPose = nextPose;
+    const layout = nextPose === solved.pose
+      ? solved.layout
+      : computePoseLayout(viewState.graph, nextPose);
+    applyPoseToSvg(actor.actorGroup, viewState.graph, layout, viewId);
   });
 }

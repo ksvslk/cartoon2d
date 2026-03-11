@@ -45,6 +45,31 @@ type TimelineWithIKSync = gsap.core.Timeline & {
     __ikSync?: () => void;
 };
 
+function facingSignForDirection(direction?: string): number | undefined {
+    if (!direction) return undefined;
+    if (direction === "left" || direction === "backward") return -1;
+    if (direction === "right" || direction === "forward") return 1;
+    return undefined;
+}
+
+function initialFacingSignForTrack(track: CompiledSceneData["instance_tracks"][number] | undefined): number {
+    if (!track) return 1;
+    const sortedTransforms = [...track.transform_track].sort((left, right) => left.time - right.time);
+    const firstTransform = sortedTransforms[0];
+    const secondTransform = sortedTransforms[1];
+    if (firstTransform && secondTransform) {
+        const deltaX = secondTransform.x - firstTransform.x;
+        if (deltaX < -10) return -1;
+        if (deltaX > 10) return 1;
+    }
+
+    const preferredDirection = [...track.clip_bindings]
+        .sort((left, right) => left.start_time - right.start_time)[0]
+        ?.ik_playback?.motion_spec?.locomotion?.preferredDirection;
+
+    return facingSignForDirection(preferredDirection) ?? 1;
+}
+
 export default function Stage({
     beat,
     compiledScene = null,
@@ -231,7 +256,7 @@ export default function Stage({
             })
         ).sort((a, b) => a.zIndex - b.zIndex);
 
-        const targetTransforms: Record<string, { x: number; y: number; scale: number }> = {};
+        const targetTransforms: Record<string, { x: number; y: number; scale: number; facingSign: number }> = {};
         let actorIdx = 0;
 
         actorsInScene.forEach(({ actorId }) => {
@@ -252,7 +277,12 @@ export default function Stage({
             const tY     = initialTransform?.y ?? actionData?.spatial_transform?.y     ?? 950;
             const tScale = initialTransform?.scale ?? actionData?.spatial_transform?.scale ?? 0.5;
 
-            targetTransforms[actorId] = { x: tX, y: tY, scale: tScale };
+            targetTransforms[actorId] = {
+                x: tX,
+                y: tY,
+                scale: tScale,
+                facingSign: initialFacingSignForTrack(track),
+            };
 
             while (rigSvg.firstChild) {
                 actorGroup.appendChild(rigSvg.firstChild);
@@ -358,7 +388,7 @@ export default function Stage({
                 gsap.set(group, {
                     x: t.x - naturalCX,
                     y: t.y - naturalBottom,
-                    scaleX: t.scale,
+                    scaleX: t.scale * t.facingSign,
                     scaleY: t.scale,
                     svgOrigin: `${naturalCX} ${naturalBottom}`,
                 });

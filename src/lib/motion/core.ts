@@ -102,16 +102,24 @@ function timelineVarsForTransform(
   };
 }
 
+function facingSignForDirection(direction?: string): number | undefined {
+  if (!direction) return undefined;
+  if (direction === "left" || direction === "backward") return -1;
+  if (direction === "right" || direction === "forward") return 1;
+  return undefined;
+}
+
 function addCompiledTransformTrack(
   tl: gsap.core.Timeline,
   container: HTMLElement,
   actorId: string,
   transformTrack: Array<{ time: number; x: number; y: number; scale: number }>,
+  initialFacingSign?: number,
 ) {
   const sorted = [...transformTrack].sort((a, b) => a.time - b.time);
   if (sorted.length === 0) return;
 
-  let facingSign = 1;
+  let facingSign = initialFacingSign ?? 1;
   for (let i = 0; i < sorted.length; i += 1) {
     const current = sorted[i];
     const next = sorted[i + 1];
@@ -227,33 +235,40 @@ function addCanonicalIKPlayback(params: {
 }): boolean {
   const { timeline, actor, clipView, compiledIK, amp, spd, startDelay, actionDuration } = params;
   if (!actor || !compiledIK?.motion_intent) return false;
+  const stagedIntent = {
+    ...compiledIK.motion_intent,
+    duration: compiledIK.motion_intent.duration,
+    rotationTracks: (compiledIK.motion_intent.rotationTracks || []).map((track) => ({
+      ...track,
+      samples: track.samples.map((sample) => ({
+        ...sample,
+        rotation: scaleProp("rotation", sample.rotation, amp),
+      })),
+    })),
+    axialWaves: compiledIK.motion_intent.axialWaves.map((wave) => ({
+      ...wave,
+      amplitudeDeg: scaleProp("rotation", wave.amplitudeDeg, amp),
+      frequency: wave.frequency,
+    })),
+  };
 
   if (clipView) {
     stagePlaybackView(timeline, actor, clipView, startDelay);
   }
+  if (startDelay <= 0) {
+    if (clipView) {
+      actor.renderState.currentView = clipView;
+    }
+    setPlaybackIntent(actor, stagedIntent);
+  }
 
-  timeline.call(() => {
-    setPlaybackIntent(actor, {
-      ...compiledIK.motion_intent,
-      duration: compiledIK.motion_intent.duration,
-      rotationTracks: (compiledIK.motion_intent.rotationTracks || []).map((track) => ({
-        ...track,
-        samples: track.samples.map((sample) => ({
-          ...sample,
-          rotation: scaleProp("rotation", sample.rotation, amp),
-        })),
-      })),
-      axialWaves: compiledIK.motion_intent.axialWaves.map((wave) => ({
-        ...wave,
-        amplitudeDeg: scaleProp("rotation", wave.amplitudeDeg, amp),
-        frequency: wave.frequency,
-      })),
-    });
-  }, undefined, startDelay);
-
-  timeline.set(actor.playbackState, { clipTimeSeconds: 0 }, startDelay);
+  timeline.set(actor.playbackState, {
+    currentIntent: stagedIntent,
+    clipTimeSeconds: 0,
+    durationSeconds: stagedIntent.duration || 1,
+  }, startDelay);
   timeline.to(actor.playbackState, {
-    clipTimeSeconds: (compiledIK.motion_intent.duration || actionDuration) * spd,
+    clipTimeSeconds: (stagedIntent.duration || actionDuration) * spd,
     duration: actionDuration,
     ease: "none",
     overwrite: "auto",
@@ -413,8 +428,12 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
       const id = track.actor_id;
       const rig = availableRigs[id];
       const ikActor = ensureIKActor(id, rig);
+      const initialDirection = [...track.clip_bindings]
+        .sort((left, right) => left.start_time - right.start_time)[0]
+        ?.ik_playback?.motion_spec?.locomotion?.preferredDirection;
+      const initialFacingSign = facingSignForDirection(initialDirection);
 
-      addCompiledTransformTrack(tl, container, id, track.transform_track);
+      addCompiledTransformTrack(tl, container, id, track.transform_track, initialFacingSign);
 
       track.clip_bindings.forEach(binding => {
         const m = normalizeMotionKey(binding.motion);

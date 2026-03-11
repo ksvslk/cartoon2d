@@ -462,21 +462,22 @@ CRITICAL REQUIREMENTS:
 6. **No Flat JPEGs**: Do not embed raster images using <image>. You must draw the subject purely in vector paths (<path>, <circle>, <rect>, etc).
 7. **Hidden Overlap Geometry (CRITICAL JOINTS)**: Child segments MUST NOT float away from their parents. Extend hidden overlap geometry inside the parent mass so connected parts look physically attached instead of cut off at the silhouette edge.
 8. **Rounded Attachment Ends (CRITICAL)**: Any child shape that joins a parent should end with rounded, tapered, or capsule-like geometry at the attachment. Avoid hard flat cutoffs. Prefer circles, ovals, and curved caps at connection points so deformation stays readable during rotation.
-9. **Preserve Major Silhouette Features**: Never omit any silhouette-defining extension, branch, protrusion, or contour break visible in the reference image. If the source image clearly shows a distinct shape, it must remain readable in the SVG.
-10. **Visemes and Emotions (CRITICAL)**: If the subject has a face-like or front-facing expressive region, place two sub-containers there: \`<g id="mouth_visemes">\` and \`<g id="emotions">\`. If the subject is not expressive, still include minimal placeholder groups in the most relevant front-facing parent group so downstream tools stay consistent.
+9. **Single Connected Object (CRITICAL)**: Treat each requested view as one connected subject, not a pile of detached floating pieces. Non-root bones must attach back into the main mass through a real parent relationship and an explicit socket or overlap connection.
+10. **Preserve Major Silhouette Features**: Never omit any silhouette-defining extension, branch, protrusion, or contour break visible in the reference image. If the source image clearly shows a distinct shape, it must remain readable in the SVG.
+11. **Visemes and Emotions (CRITICAL)**: If the subject has a face-like or front-facing expressive region, place two sub-containers there: \`<g id="mouth_visemes">\` and \`<g id="emotions">\`. If the subject is not expressive, still include minimal placeholder groups in the most relevant front-facing parent group so downstream tools stay consistent.
    - **Visemes:** Include \`#mouth_idle\` (visibility="visible"), \`#mouth_A\` (visibility="hidden"), \`#mouth_E\` (hidden), \`#mouth_I\` (hidden), \`#mouth_O\` (hidden), \`#mouth_U\` (hidden), \`#mouth_M\` (hidden).
    - **Emotions:** Include \`#emotion_neutral\` (visibility="visible"), \`#emotion_happy\` (hidden), \`#emotion_sad\` (hidden), \`#emotion_angry\` (hidden), \`#emotion_surprised\` (hidden).
    - **Styling:** When expressive features exist, style them to match the subject personality. When they do not, keep them minimal and unobtrusive.
-11. **The JSON Rig**: You must define the explicit (x, y) absolute coordinates of the pivot point for *every single animatable bone* you created across ALL views. To avoid naming collisions, ensure bones within views are prefixed uniquely based on the view (e.g., \`front_core_a\`, \`side_branch_left\`).
-12. **Semantic Bone Metadata (CRITICAL)**: For each bone, include semantic metadata so deterministic motion synthesis can reason about the rig without guessing. Add these fields whenever possible:
+12. **The JSON Rig**: You must define the explicit (x, y) absolute coordinates of the pivot point for *every single animatable bone* you created across ALL views. To avoid naming collisions, ensure bones within views are prefixed uniquely based on the view (e.g., \`front_core_a\`, \`side_branch_left\`).
+13. **Semantic Bone Metadata (CRITICAL)**: For each bone, include semantic metadata so deterministic motion synthesis can reason about the rig without guessing. Add these fields whenever possible:
    - \`kind\`: one of \`root\`, \`torso\`, \`body\`, \`neck\`, \`head\`, \`jaw\`, \`arm_upper\`, \`arm_lower\`, \`hand\`, \`leg_upper\`, \`leg_lower\`, \`foot\`, \`tail_base\`, \`tail_mid\`, \`tail_tip\`, \`fin\`, \`wing\`, \`other\`
    - \`side\`: \`left\`, \`right\`, or \`center\`
    - \`length\`: approximate segment length in SVG units
    - \`socket\`: preferred attachment/socket point within the parent
    - \`contactRole\`: \`none\`, \`ground\`, \`wall\`, \`water\`, or \`grip\`
    - \`massClass\`: \`light\`, \`medium\`, or \`heavy\`
-13. **Interaction Nulls**: Include semantic points for interaction, like "#front_grip_point" or "#side_grip_point".
-14. **Animation Clips (LIGHTWEIGHT ONLY)**: Motion clips are compiled later, after the rig is approved. Do NOT spend output budget generating a full motion library here.
+14. **Interaction Nulls**: Include semantic points for interaction, like "#front_grip_point" or "#side_grip_point".
+15. **Animation Clips (LIGHTWEIGHT ONLY)**: Motion clips are compiled later, after the rig is approved. Do NOT spend output budget generating a full motion library here.
     - Include \`rig_data.motion_clips\` as an empty object \`{}\`.
     - Do NOT generate walk/run/jump/wave/etc. in this rigging pass. Those are compiled separately on demand.
     - Prioritize clean SVG structure, correct view drawings, pivots, and bone hierarchy over pre-authored motion data.
@@ -869,7 +870,8 @@ Rules:
 9. leadBones and contacts must be drawable in preferredView.
 10. Stay comfortably inside usableRotationLimit where present. Treat rotationLimit as a hard stop, not a target.
 11. Restrict motion to the subject's identity and the rig motion affordance profile. Subjects with limited articulation should prefer whole-object translation, orientation shifts, or minimal internal deformation.
-12. If the requested action cannot be satisfied safely, return blockedReasons with concise human-readable reasons instead of forcing the motion.
+12. Reusable actor actions are built for looping by default. The motion must close cleanly back onto frame 0 with no visible snap.
+13. If the requested action cannot be satisfied safely, return blockedReasons with concise human-readable reasons instead of forcing the motion.
 
 JSON shape:
 {
