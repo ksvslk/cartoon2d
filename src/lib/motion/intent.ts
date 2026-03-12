@@ -440,9 +440,7 @@ export function buildMotionIntentFromSpec(params: {
     family: params.motionSpec.motionFamily,
     duration: round2(params.durationSeconds),
     locomotion: {
-      mode: params.motionSpec.locomotion.mode === "translate" || params.motionSpec.locomotion.mode === "arc"
-        ? params.motionSpec.locomotion.mode
-        : "none",
+      mode: params.motionSpec.locomotion.mode,
       direction: params.motionSpec.locomotion.preferredDirection,
     },
     rootMotion: [],

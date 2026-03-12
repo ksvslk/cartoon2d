@@ -4,17 +4,31 @@ import { PoseGraph } from "./graph";
 import { PoseLayout } from "./pose";
 import { applyDeterministicRigAssembly } from "../svg/assembly";
 
-const ALL_VIEWS = ["view_front", "view_side_right", "view_3q_right", "view_top", "view_back", "view_default"] as const;
-
 function round2(value: number): number {
   return Number(value.toFixed(2));
 }
 
+function collectRigViewIds(scopeRoot: ParentNode): string[] {
+  return Array.from(new Set(
+    Array.from(scopeRoot.querySelectorAll<SVGGElement>('[id^="view_"]'))
+      .map((node) => node.id)
+      .sort(),
+  ));
+}
+
+function resolveDisplayedViewId(scopeRoot: ParentNode, activeView?: string): string | undefined {
+  const viewIds = collectRigViewIds(scopeRoot);
+  if (viewIds.length === 0) return activeView;
+  if (activeView && viewIds.includes(activeView)) return activeView;
+  return viewIds[0];
+}
+
 export function showRigView(scopeRoot: ParentNode, activeView?: string): void {
-  ALL_VIEWS.forEach((viewId) => {
+  const resolvedViewId = resolveDisplayedViewId(scopeRoot, activeView);
+  collectRigViewIds(scopeRoot).forEach((viewId) => {
     const node = scopeRoot.querySelector(`[id="${viewId}"]`) as SVGGElement | null;
     if (!node) return;
-    node.setAttribute("display", !activeView || viewId === activeView ? "inline" : "none");
+    node.setAttribute("display", !resolvedViewId || viewId === resolvedViewId ? "inline" : "none");
   });
 }
 

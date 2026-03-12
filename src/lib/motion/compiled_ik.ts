@@ -416,7 +416,7 @@ export function motionClipToIKPlayback(
         intensity: 0.5,
         blockedReasons: [],
         locomotion: {
-          mode: motionClip.intent.locomotion.mode === "arc" ? "arc" : motionClip.intent.locomotion.mode === "translate" ? "translate" : "none",
+          mode: motionClip.intent.locomotion.mode,
           preferredDirection: motionClip.intent.locomotion.direction,
         },
       contacts: motionClip.intent.contacts.map((contact) => ({

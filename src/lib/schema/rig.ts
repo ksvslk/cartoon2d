@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MotionDirectionSchema, MotionFamilySchema } from "./motion_spec";
+import { MotionDirectionSchema, MotionFamilySchema, MotionLocomotionModeSchema } from "./motion_spec";
 
 export const PivotPointSchema = z.object({
     x: z.number().describe("The absolute X coordinate of the pivot point within the 1000x1000 viewBox."),
@@ -233,7 +233,7 @@ export const RigMotionIntentSchema = z.object({
     family: MotionFamilySchema.describe("High-level motion family solved through the canonical rig."),
     duration: z.number().positive().describe("Clip duration in seconds."),
     locomotion: z.object({
-        mode: z.enum(["none", "translate", "arc"]).default("none"),
+        mode: MotionLocomotionModeSchema.default("none"),
         direction: MotionDirectionSchema.optional(),
     }).default({ mode: "none" }).describe("Root locomotion intent for the clip."),
     rootMotion: z.array(RigMotionIntentRootSampleSchema).default([]).describe("Optional normalized root-motion samples."),

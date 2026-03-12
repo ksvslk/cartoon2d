@@ -3,6 +3,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { DraftsmanData } from "@/lib/schema/rig";
 import { StageOrientation, getStageDims } from "@/lib/schema/story";
+import { runGeminiRequestWithRetry } from "@/lib/ai/retry";
 import { JSDOM } from "jsdom";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -60,28 +61,31 @@ export async function processSetDesignerPrompt(base64Image: string, sceneNarrati
     const { width: stageW, height: stageH } = getStageDims(orientation);
     const systemPrompt = buildSetDesignerSystemPrompt(stageW, stageH);
     try {
-        const response = await ai.models.generateContent({
-            model: "gemini-3.1-pro-preview",
-            contents: [
-                {
-                    role: "user",
-                    parts: [
-                        { text: systemPrompt },
-                        { text: `Redraw the background environment described here as a parallax SVG: ${sceneNarrative}` },
-                        {
-                            inlineData: {
-                                data: base64Image.replace(/^data:image\/(png|jpeg);base64,/, ""),
-                                mimeType: "image/jpeg"
+        const response = await runGeminiRequestWithRetry(
+            "Set Designer environment request",
+            () => ai.models.generateContent({
+                model: "gemini-3.1-pro-preview",
+                contents: [
+                    {
+                        role: "user",
+                        parts: [
+                            { text: systemPrompt },
+                            { text: `Redraw the background environment described here as a parallax SVG: ${sceneNarrative}` },
+                            {
+                                inlineData: {
+                                    data: base64Image.replace(/^data:image\/(png|jpeg);base64,/, ""),
+                                    mimeType: "image/jpeg"
+                                }
                             }
-                        }
-                    ]
+                        ]
+                    }
+                ],
+                config: {
+                    systemInstruction: systemPrompt,
+                    temperature: 0.5
                 }
-            ],
-            config: {
-                systemInstruction: systemPrompt,
-                temperature: 0.5
-            }
-        });
+            }),
+        );
 
         let text = response.text;
         if (!text) {
@@ -114,9 +118,10 @@ export async function processSetDesignerPrompt(base64Image: string, sceneNarrati
 
         return { data, usage };
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Set Designer Error:", error);
-        throw new Error(error.message || String(error) || "Failed to generate the background SVG. Please try again.");
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(message || "Failed to generate the background SVG. Please try again.");
     }
 }
 

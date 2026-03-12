@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { StoryGenerationSchema, StoryGenerationData, StageOrientation, getStageDims } from "../schema/story";
+import { runGeminiRequestWithRetry } from "./retry";
 
 // Ensure the API key exists in your environment or Next.js config
 const ai = new GoogleGenAI({
@@ -154,19 +155,22 @@ CRITICAL: Your response MUST contain TWO things:
 
     contentsParts.push({ text: `\n\nNow, generate the NEXT sequence of the story based on this new prompt: ${prompt}\nRemember, output JSON first, then generate the images.` });
 
-    const responseStream = await ai.models.generateContentStream({
-        model: "gemini-3.1-flash-image-preview",
-        contents: contentsParts,
-        config: {
-            systemInstruction,
-            temperature: 0.7,
-            responseModalities: ["TEXT", "IMAGE"],
-            imageConfig: {
-                imageSize: "512",
-                aspectRatio,
-            },
-        }
-    });
+    const responseStream = await runGeminiRequestWithRetry(
+        "Storyboard generation request",
+        () => ai.models.generateContentStream({
+            model: "gemini-3.1-flash-image-preview",
+            contents: contentsParts,
+            config: {
+                systemInstruction,
+                temperature: 0.7,
+                responseModalities: ["TEXT", "IMAGE"],
+                imageConfig: {
+                    imageSize: "512",
+                    aspectRatio,
+                },
+            }
+        }),
+    );
 
     let fullText = "";
     let jsonParsed = false;
@@ -315,27 +319,30 @@ Output ONLY the new generated image.`;
 
     const rawBase64 = base64Image.split(',')[1] || base64Image;
 
-    const response = await ai.models.generateContent({
-        model: "gemini-3.1-flash-image-preview",
-        contents: [
-            {
-                inlineData: {
-                    data: rawBase64,
-                    mimeType: "image/jpeg"
-                }
-            },
-            { text: `Director's Edit Request: ${editPrompt}` }
-        ],
-        config: {
-            systemInstruction,
-            temperature: 0.6,
-            responseModalities: ["TEXT", "IMAGE"],
-            imageConfig: {
-                imageSize: "512",
-                aspectRatio,
-            },
-        }
-    });
+    const response = await runGeminiRequestWithRetry(
+        "Scene image edit request",
+        () => ai.models.generateContent({
+            model: "gemini-3.1-flash-image-preview",
+            contents: [
+                {
+                    inlineData: {
+                        data: rawBase64,
+                        mimeType: "image/jpeg"
+                    }
+                },
+                { text: `Director's Edit Request: ${editPrompt}` }
+            ],
+            config: {
+                systemInstruction,
+                temperature: 0.6,
+                responseModalities: ["TEXT", "IMAGE"],
+                imageConfig: {
+                    imageSize: "512",
+                    aspectRatio,
+                },
+            }
+        }),
+    );
 
     if (response.candidates && response.candidates.length > 0 && response.candidates[0].content && response.candidates[0].content.parts && response.candidates[0].content.parts.length > 0) {
         const part = response.candidates[0].content!.parts[0];

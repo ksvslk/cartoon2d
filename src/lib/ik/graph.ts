@@ -18,6 +18,7 @@ import {
   RigIKViewBinding,
 } from "../schema/rig";
 import { analyzeDerivedIK, inferIKArchetype } from "./analyze";
+import { matchLegacyViewPrefix, normalizeViewId } from "./view_ids";
 
 export type Point = { x: number; y: number };
 
@@ -54,14 +55,6 @@ export interface PoseGraph {
   effectors: RigIKEffector[];
   views: Record<string, RigIKView>;
 }
-
-const LEGACY_VIEW_PREFIXES = [
-  { viewId: "view_front", prefix: "front_" },
-  { viewId: "view_side_right", prefix: "side_" },
-  { viewId: "view_3q_right", prefix: "3q_" },
-  { viewId: "view_top", prefix: "top_" },
-  { viewId: "view_back", prefix: "back_" },
-] as const;
 
 type LegacyBoneInfo = {
   bone: RigBone;
@@ -105,14 +98,22 @@ function angleBetween(a: Point, b: Point): number {
 
 function inferViewIdFromBoneId(boneId: string): string {
   const lower = boneId.toLowerCase();
-  const match = LEGACY_VIEW_PREFIXES.find(({ prefix }) => lower.startsWith(prefix));
-  return match?.viewId || "view_default";
+  const genericPrefix = lower.match(/^([a-z0-9_]+)__/);
+  if (genericPrefix) {
+    return normalizeViewId(`view_${genericPrefix[1]}`) || "view_default";
+  }
+  const match = matchLegacyViewPrefix(lower);
+  if (match?.viewId) return match.viewId;
+  return "view_default";
 }
 
 function stripViewPrefix(boneId: string): string {
   const lower = boneId.toLowerCase();
-  const match = LEGACY_VIEW_PREFIXES.find(({ prefix }) => lower.startsWith(prefix));
-  return match ? boneId.slice(match.prefix.length) : boneId;
+  const genericPrefix = lower.match(/^([a-z0-9_]+)__(.+)$/);
+  if (genericPrefix?.[2]) return genericPrefix[2];
+  const match = matchLegacyViewPrefix(lower);
+  if (match) return boneId.slice(match.prefix.length);
+  return genericPrefix?.[2] || boneId;
 }
 
 function normalizeCanonicalStem(value: string): string {
@@ -157,30 +158,28 @@ function pickPreferredContactRole(values: Array<RigBoneContactRole | undefined>)
 }
 
 function pickDefaultView(viewIds: string[]): string | undefined {
-  const preferredOrder = ["view_3q_right", "view_side_right", "view_front", "view_top", "view_back", "view_default"];
+  const preferredOrder = [
+    "view_3q_right",
+    "view_3q_left",
+    "view_side_right",
+    "view_side_left",
+    "view_front",
+    "view_top",
+    "view_back",
+    "view_default",
+  ];
   return preferredOrder.find((viewId) => viewIds.includes(viewId)) || [...viewIds].sort()[0];
-}
-
-function roleForKind(kind?: RigBoneKind): RigIKEffectorRole | null {
-  if (kind === "head") return "head";
-  if (kind === "hand") return "hand";
-  if (kind === "foot") return "foot";
-  if (kind === "tail_tip") return "tail_tip";
-  if (kind === "fin") return "fin_tip";
-  if (kind === "wing") return "wing_tip";
-  return null;
 }
 
 function inferIKRole(params: {
   existing?: RigBoneIKRole;
-  kind?: RigBoneKind;
   parentId?: string;
   childCount: number;
 }): RigBoneIKRole {
   if (params.existing) return params.existing;
   if (!params.parentId) return "root";
   if (params.childCount === 0) {
-    return params.kind === "jaw" ? "decorative" : "effector";
+    return "effector";
   }
   return "joint";
 }
@@ -226,15 +225,11 @@ function buildChains(effectors: RigIKEffector[], nodeMap: Map<string, RigIKNode>
       const nodeIds = path.reverse();
       if (nodeIds.length < 2) return null;
 
-      const priority = effector.role === "foot"
-        ? 100
-        : effector.role === "hand"
-          ? 90
-          : effector.role === "head"
-            ? 70
-            : effector.role === "tail_tip"
-              ? 50
-              : 40;
+      const terminalNode = nodeMap.get(effector.nodeId);
+      const contactBonus = terminalNode?.contactRole && terminalNode.contactRole !== "none" ? 36 : 0;
+      const massBonus = terminalNode?.massClass === "light" ? 12 : terminalNode?.massClass === "medium" ? 6 : 0;
+      const depthBonus = Math.min(32, Math.max(0, nodeIds.length - 1) * 8);
+      const priority = 40 + contactBonus + massBonus + depthBonus;
 
       return {
         id: `chain_${effector.nodeId}`,
@@ -344,7 +339,6 @@ export function deriveIKFromRigData(rigData: RigData): RigIKData {
       restRotation: round2(averageAngle(sharedAngles) ?? node.restRotation ?? 0),
       ikRole: inferIKRole({
         existing: node.ikRole,
-        kind: node.kind,
         parentId: node.parent,
         childCount,
       }),
@@ -358,7 +352,7 @@ export function deriveIKFromRigData(rigData: RigData): RigIKData {
     .filter((node) => node.ikRole === "effector")
     .map((node) => ({
       nodeId: node.id,
-      role: roleForKind(node.kind) || "custom",
+      role: "custom" as RigIKEffectorRole,
       draggable: true,
     }) satisfies RigIKEffector)
     .sort((left, right) => left.nodeId.localeCompare(right.nodeId));

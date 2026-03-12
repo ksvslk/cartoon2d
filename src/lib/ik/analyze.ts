@@ -1,5 +1,4 @@
 import {
-  RigBoneKind,
   RigBoneSide,
   RigIKArchetype,
   RigIKConstraint,
@@ -50,64 +49,7 @@ function resolveAttachmentPoint(binding?: RigIKViewBinding): Point | undefined {
 }
 
 export function inferIKArchetype(nodes: RigIKNode[]): RigIKArchetype {
-  const byKind = new Map<RigBoneKind, number>();
-  nodes.forEach((node) => {
-    if (!node.kind) return;
-    byKind.set(node.kind, (byKind.get(node.kind) || 0) + 1);
-  });
-
-  const legCount = (byKind.get("leg_upper") || 0) + (byKind.get("leg_lower") || 0) + (byKind.get("foot") || 0);
-  const armCount = (byKind.get("arm_upper") || 0) + (byKind.get("arm_lower") || 0) + (byKind.get("hand") || 0);
-  const wingCount = byKind.get("wing") || 0;
-  const finCount = byKind.get("fin") || 0;
-  const tailCount = (byKind.get("tail_base") || 0) + (byKind.get("tail_mid") || 0) + (byKind.get("tail_tip") || 0);
-
-  if (wingCount > 0) return "bird";
-  if (finCount > 0 && tailCount > 0) return "fish";
-  if (tailCount >= 2 && legCount === 0 && armCount === 0) return "serpent";
-  if (legCount >= 4) return "quadruped";
-  if (legCount >= 2 && (armCount >= 2 || (byKind.get("head") || 0) > 0)) return "biped";
-  return "prop";
-}
-
-function structuralChildPriority(parentKind?: RigBoneKind, childKind?: RigBoneKind): number {
-  if (!parentKind || !childKind) return 0;
-
-  if (parentKind === "arm_upper") {
-    if (childKind === "arm_lower") return 10;
-    if (childKind === "hand") return 8;
-  }
-
-  if (parentKind === "arm_lower") {
-    if (childKind === "hand") return 10;
-  }
-
-  if (parentKind === "leg_upper") {
-    if (childKind === "leg_lower") return 10;
-    if (childKind === "foot") return 8;
-  }
-
-  if (parentKind === "leg_lower") {
-    if (childKind === "foot") return 10;
-  }
-
-  if (parentKind === "neck") {
-    if (childKind === "head") return 10;
-    if (childKind === "jaw") return 6;
-  }
-
-  if (parentKind === "head" && childKind === "jaw") return 10;
-  if (parentKind === "tail_base" && childKind === "tail_mid") return 10;
-  if (parentKind === "tail_base" && childKind === "tail_tip") return 8;
-  if (parentKind === "tail_mid" && childKind === "tail_tip") return 10;
-
-  if (parentKind === "torso" || parentKind === "body" || parentKind === "root") {
-    if (childKind === "neck") return 8;
-    if (childKind === "head") return 6;
-    if (childKind === "tail_base") return 6;
-  }
-
-  return 1;
+  return nodes.length > 0 ? "custom" : "prop";
 }
 
 function signedAngle(a: Point, pivot: Point, b: Point): number {
@@ -118,58 +60,77 @@ function signedAngle(a: Point, pivot: Point, b: Point): number {
   return normalizeDegrees((Math.atan2(cross, dot) * 180) / Math.PI);
 }
 
-function sideSign(nodeId: string, side?: RigBoneSide): number {
+function sideSign(side?: RigBoneSide): number {
   if (side === "left") return -1;
   if (side === "right") return 1;
-  return /left/.test(nodeId) ? -1 : /right/.test(nodeId) ? 1 : 1;
-}
-
-function preferOneSidedHinge(kind?: RigBoneKind): boolean {
-  return kind === "arm_lower" || kind === "leg_lower";
-}
-
-function defaultPreferredMagnitude(kind?: RigBoneKind): number {
-  if (kind === "leg_lower") return 58;
-  if (kind === "arm_lower") return 42;
-  if (kind === "tail_base") return 10;
-  if (kind === "tail_mid") return 14;
-  if (kind === "tail_tip") return 18;
   return 0;
 }
 
-function templateRotationLimit(kind: RigBoneKind | undefined, preferredBend: number | undefined): [number, number] | undefined {
-  if (!kind) return undefined;
+function structuralChildPriority(
+  child: RigIKNode,
+  childIdsByNode: Map<string, string[]>,
+): number {
+  const childCount = childIdsByNode.get(child.id)?.length || 0;
+  const contactBonus = child.contactRole && child.contactRole !== "none" ? 20 : 0;
+  const massBonus = child.massClass === "light" ? 8 : child.massClass === "medium" ? 4 : 0;
+  const lengthBonus = child.restLength ? clamp(child.restLength / 20, 0, 12) : 0;
+  return contactBonus + massBonus + lengthBonus + (childCount === 0 ? 6 : 0);
+}
 
-  if (kind === "root" || kind === "torso" || kind === "body") return [-18, 18];
-  if (kind === "neck") return [-25, 25];
-  if (kind === "head") return [-28, 28];
-  if (kind === "jaw") return [0, 30];
-  if (kind === "arm_upper") return [-80, 80];
-  if (kind === "hand") return [-35, 35];
-  if (kind === "leg_upper") return [-70, 70];
-  if (kind === "foot") return [-32, 32];
-  if (kind === "tail_base") return [-40, 40];
-  if (kind === "tail_mid") return [-48, 48];
-  if (kind === "tail_tip") return [-60, 60];
-  if (kind === "fin") return [-60, 60];
-  if (kind === "wing") return [-88, 88];
+function prefersDirectionalClamp(
+  node: RigIKNode,
+  childCount: number,
+  preferredBend: number | undefined,
+): boolean {
+  return Boolean(node.parent)
+    && childCount === 1
+    && (!node.contactRole || node.contactRole === "none")
+    && typeof preferredBend === "number"
+    && Math.abs(preferredBend) >= 18;
+}
 
-  if (preferOneSidedHinge(kind)) {
-    const sign = (preferredBend ?? 0) < 0 ? -1 : 1;
-    return sign < 0 ? [-150, 0] : [0, 150];
+function defaultRotationSpan(node: RigIKNode, childCount: number): number {
+  let span = !node.parent
+    ? 36
+    : childCount === 0
+      ? 88
+      : childCount === 1
+        ? 128
+        : 84;
+
+  if (node.contactRole && node.contactRole !== "none") span *= 0.78;
+  if (node.massClass === "heavy") span *= 0.72;
+  else if (node.massClass === "medium") span *= 0.88;
+  if (typeof node.restLength === "number" && node.restLength > 0) {
+    span *= clamp(0.8 + (node.restLength / 240), 0.85, 1.3);
   }
 
-  return [-45, 45];
+  return round2(clamp(span, 28, 170));
+}
+
+function templateRotationLimit(
+  node: RigIKNode,
+  preferredBend: number | undefined,
+  childIdsByNode: Map<string, string[]>,
+): [number, number] {
+  const childCount = childIdsByNode.get(node.id)?.length || 0;
+  const span = defaultRotationSpan(node, childCount);
+
+  if (prefersDirectionalClamp(node, childCount, preferredBend)) {
+    const slack = round2(Math.max(18, span * 0.22));
+    return (preferredBend || 0) < 0 ? [-span, slack] : [-slack, span];
+  }
+
+  const half = round2(span * 0.5);
+  return [-half, half];
 }
 
 function tightenRotationLimit(
   node: RigIKNode,
   preferredBend: number | undefined,
+  childIdsByNode: Map<string, string[]>,
 ): { rotationLimit?: [number, number]; changed: boolean } {
-  const template = templateRotationLimit(node.kind, preferredBend);
-  if (!template) {
-    return { rotationLimit: node.rotationLimit as [number, number] | undefined, changed: false };
-  }
+  const template = templateRotationLimit(node, preferredBend, childIdsByNode);
 
   if (!node.rotationLimit) {
     return { rotationLimit: template, changed: true };
@@ -177,8 +138,9 @@ function tightenRotationLimit(
 
   const existing = node.rotationLimit as [number, number];
   const span = existing[1] - existing[0];
+  const childCount = childIdsByNode.get(node.id)?.length || 0;
 
-  if (preferOneSidedHinge(node.kind)) {
+  if (prefersDirectionalClamp(node, childCount, preferredBend)) {
     const crossesZero = existing[0] < 0 && existing[1] > 0;
     if (crossesZero || span > 165) {
       return { rotationLimit: template, changed: true };
@@ -212,12 +174,12 @@ function inferPreferredBend(
     .map((childId) => nodeMap.get(childId))
     .filter((candidate): candidate is RigIKNode => Boolean(candidate))
     .sort((left, right) => {
-      const delta = structuralChildPriority(node.kind, right.kind) - structuralChildPriority(node.kind, left.kind);
+      const delta = structuralChildPriority(right, childIdsByNode) - structuralChildPriority(left, childIdsByNode);
       return delta !== 0 ? delta : left.id.localeCompare(right.id);
     })[0];
 
   if (!child) {
-    return node.kind === "tail_tip" ? defaultPreferredMagnitude(node.kind) * sideSign(node.id, node.side) : 0;
+    return 0;
   }
 
   const signedAngles = Object.values(views).flatMap((view) => {
@@ -234,33 +196,46 @@ function inferPreferredBend(
     return round2(average(meaningful) || 0);
   }
 
-  const magnitude = defaultPreferredMagnitude(node.kind);
+  const magnitude = Math.min(24, Math.max(8, (node.restLength || 40) * 0.18));
   if (magnitude === 0) return 0;
-  return round2(sideSign(node.id, node.side) * magnitude);
+  return round2(sideSign(node.side) * magnitude);
 }
 
-function warningForTopology(nodes: RigIKNode[]): string[] {
-  const byKind = new Map<RigBoneKind, number>();
-  nodes.forEach((node) => {
-    if (!node.kind) return;
-    byKind.set(node.kind, (byKind.get(node.kind) || 0) + 1);
-  });
-
+function warningForTopology(
+  nodes: RigIKNode[],
+  childIdsByNode: Map<string, string[]>,
+  effectorCount: number,
+): string[] {
   const warnings: string[] = [];
-  const axialCount = (byKind.get("tail_base") || 0) + (byKind.get("tail_mid") || 0) + (byKind.get("tail_tip") || 0);
-  const wingCount = byKind.get("wing") || 0;
-  const finCount = byKind.get("fin") || 0;
-  const upperLimbCount = (byKind.get("arm_upper") || 0) + (byKind.get("leg_upper") || 0);
-  const endEffectorCount = (byKind.get("hand") || 0) + (byKind.get("foot") || 0);
+  const branchCount = nodes.filter((node) => (childIdsByNode.get(node.id)?.length || 0) > 1).length;
+  const terminalCount = nodes.filter((node) => (childIdsByNode.get(node.id)?.length || 0) === 0).length;
+  const rootIds = nodes.filter((node) => !node.parent).map((node) => node.id);
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
 
-  if (axialCount > 0 && axialCount < 3) {
-    warnings.push("Axial control chain is short; add more joints for smoother motion.");
+  const depthOf = (nodeId: string): number => {
+    let depth = 0;
+    let cursor = nodeMap.get(nodeId);
+    const seen = new Set<string>();
+    while (cursor?.parent && !seen.has(cursor.parent)) {
+      seen.add(cursor.parent);
+      depth += 1;
+      cursor = nodeMap.get(cursor.parent);
+    }
+    return depth;
+  };
+
+  const longestChainLength = nodes.reduce((max, node) => Math.max(max, depthOf(node.id) + 1), 0);
+  if (nodes.length > 3 && longestChainLength < 3) {
+    warnings.push("Dominant continuous chains are short; smoother motion may require longer parent-child sequences.");
   }
-  if (wingCount === 1 || finCount === 1) {
-    warnings.push("One major appendage chain appears unpaired; check symmetry and view coverage.");
+  if (branchCount > 0 && terminalCount <= 1) {
+    warnings.push("Branching structure has few terminal controls; secondary motion coverage may be weak.");
   }
-  if (upperLimbCount >= 2 && endEffectorCount === 0) {
-    warnings.push("Major limb chains are missing end effectors; contact stability will be weak.");
+  if (terminalCount > 0 && effectorCount === 0) {
+    warnings.push("Terminal chains have no explicit effectors; interaction stability will be weak.");
+  }
+  if (rootIds.length > 1) {
+    warnings.push("Multiple structural roots remain after analysis; connected objects should converge to a single root when possible.");
   }
   return warnings;
 }
@@ -311,7 +286,7 @@ function warningForAttachmentIntegrity(ik: RigIKData, nodes: RigIKNode[]): strin
 }
 
 export function analyzeDerivedIK(ik: RigIKData): RigIKData {
-  const archetype = ik.archetype !== "custom" ? ik.archetype : inferIKArchetype(ik.nodes);
+  const archetype = inferIKArchetype(ik.nodes);
   const nodeMap = new Map(ik.nodes.map((node) => [node.id, node]));
   const childIdsByNode = new Map<string, string[]>();
   ik.nodes.forEach((node) => {
@@ -326,10 +301,10 @@ export function analyzeDerivedIK(ik: RigIKData): RigIKData {
 
   const enhancedNodes = ik.nodes.map((node) => {
     const preferredBend = inferPreferredBend(node, childIdsByNode, nodeMap, ik.views);
-    const tightened = tightenRotationLimit(node, preferredBend);
+    const tightened = tightenRotationLimit(node, preferredBend, childIdsByNode);
 
-    if (tightened.changed && preferOneSidedHinge(node.kind)) {
-      suggestedFixes.push(`Review ${node.id}: hinge limits were tightened to keep it bending one way.`);
+    if (tightened.changed) {
+      suggestedFixes.push(`Review ${node.id}: rotation limits were tightened to keep the local range stable.`);
     }
 
     if (!node.sourceBoneIds?.length) {
@@ -350,11 +325,12 @@ export function analyzeDerivedIK(ik: RigIKData): RigIKData {
 
   if (ik.effectors.length === 0) {
     warnings.push("Rig has no draggable effectors.");
-    suggestedFixes.push("Add hand, foot, head, tail, fin, or wing effectors so the lab can solve meaningful chains.");
+    suggestedFixes.push("Add explicit terminal effectors so the lab can solve meaningful chains.");
   }
 
   enhancedNodes.forEach((node) => {
-    if ((node.kind === "arm_lower" || node.kind === "leg_lower") && typeof node.preferredBend !== "number") {
+    const childCount = childIdsByNode.get(node.id)?.length || 0;
+    if (node.parent && childCount === 1 && typeof node.preferredBend !== "number") {
       warnings.push(`${node.id} is missing a preferred bend direction.`);
     }
 
@@ -363,7 +339,7 @@ export function analyzeDerivedIK(ik: RigIKData): RigIKData {
     }
   });
 
-  warnings.push(...warningForTopology(enhancedNodes));
+  warnings.push(...warningForTopology(enhancedNodes, childIdsByNode, ik.effectors.length));
   warnings.push(...warningForAttachmentIntegrity(ik, enhancedNodes));
 
   const nonAngleConstraints = ik.constraints.filter((constraint) => constraint.type !== "angle_limit");

@@ -11,10 +11,14 @@ import {
   StageOrientation,
   getStageDims,
 } from "../schema/story";
+import { ensureRigIK } from "../ik/graph";
+import { inferRigMotionAffordance } from "./affordance";
 import { inferAutoTargetTransform, motionNeedsTarget, normalizeMotionKey, suggestMotionAliases } from "./semantics";
 import { detectAmbientIdsFromSvg } from "./ambient";
 import { clampTargetAgainstObstacles, detectSceneObstacles } from "./collision";
 import { motionClipToIKPlayback, resolvePlayableMotionClip } from "./compiled_ik";
+
+const BASE_OBJECT_CLIP_ID = "base_object";
 
 function resolveClipId(rig: DraftsmanData | undefined, motion: string): string | undefined {
   if (!rig?.rig_data.motion_clips) return undefined;
@@ -27,6 +31,68 @@ function resolveClipView(rig: DraftsmanData | undefined, clipId: string | undefi
   return rig?.rig_data.motion_clips?.[clipId]?.view;
 }
 
+function countAttachmentWarnings(rig: DraftsmanData | undefined): number {
+  if (!rig) return 0;
+  const warnings = ensureRigIK(rig).rig_data.ik?.aiReport?.warnings || [];
+  return warnings.filter((warning) => /attachment gap|no explicit attachment socket/i.test(warning)).length;
+}
+
+export function inferTransformOnlyPlaybackPolicy(
+  rig: DraftsmanData | undefined,
+  motion: string,
+): { prefer: boolean; reason?: string } {
+  if (!rig || !motionNeedsTarget(motion)) {
+    return { prefer: false };
+  }
+
+  const normalizedRig = ensureRigIK(rig);
+  const affordance = inferRigMotionAffordance(normalizedRig);
+  const confidence = normalizedRig.rig_data.ik?.aiReport?.confidence ?? 1;
+  const attachmentWarnings = countAttachmentWarnings(normalizedRig);
+  const minimalTopology = affordance.primaryChainLength <= 2 && affordance.effectors <= 1;
+
+  if (affordance.deformationBudget <= 0.28) {
+    return {
+      prefer: true,
+      reason: `low deformation budget (${affordance.deformationBudget})`,
+    };
+  }
+
+  if (confidence < 0.45 && attachmentWarnings >= 2) {
+    return {
+      prefer: true,
+      reason: `low IK confidence (${confidence.toFixed(2)}) with ${attachmentWarnings} attachment warnings`,
+    };
+  }
+
+  if (minimalTopology) {
+    return {
+      prefer: true,
+      reason: "no long continuous chain or usable end effectors",
+    };
+  }
+
+  return { prefer: false };
+}
+
+function resolveTransformOnlyView(
+  rig: DraftsmanData | undefined,
+  startTransform: SpatialTransform,
+  finalTarget?: SpatialTransform,
+  clipView?: string,
+): string | undefined {
+  if (!rig) return clipView;
+  const normalizedRig = ensureRigIK(rig);
+  const availableViews = Object.keys(normalizedRig.rig_data.ik?.views || {}).sort();
+  if (clipView && availableViews.includes(clipView)) return clipView;
+
+  const deltaX = (finalTarget?.x ?? startTransform.x) - startTransform.x;
+  if (deltaX < -10 && availableViews.includes("view_side_left")) return "view_side_left";
+  if (deltaX > 10 && availableViews.includes("view_side_right")) return "view_side_right";
+
+  return normalizedRig.rig_data.ik?.defaultView || availableViews[0];
+}
+
 function inferCollisionBehavior(action: StoryBeatData["actions"][number], narrative: string): "halt" | "slide" | "bounce" {
   const explicit = action.animation_overrides?.collision_behavior;
   if (explicit) return explicit;
@@ -35,6 +101,11 @@ function inferCollisionBehavior(action: StoryBeatData["actions"][number], narrat
   if (/bounce|rebound|ricochet/.test(haystack)) return "bounce";
   if (/slide|glide|swim|drift|fly|slither|skate|cruise/.test(haystack)) return "slide";
   return "halt";
+}
+
+function shouldClampTargetAgainstObstacles(action: StoryBeatData["actions"][number]): boolean {
+  if (action.animation_overrides?.collision_behavior) return true;
+  return !action.target_spatial_transform;
 }
 
 function distance(a: SpatialTransform, b: SpatialTransform): number {
@@ -284,19 +355,24 @@ export function compileBeatToScene(
     const clampedResolvedTarget = resolvedTarget
       ? clampSpatialTransformToStage(resolvedTarget, stageW, stageH)
       : undefined;
-    const collisionAdjusted = clampTargetAgainstObstacles(
-      motionKey,
-      startTransform,
-      clampedResolvedTarget
-        ? {
-            x: clampedResolvedTarget.x,
-            y: clampedResolvedTarget.y,
-            scale: clampedResolvedTarget.scale,
-            z_index: clampedResolvedTarget.z_index,
-          }
-        : undefined,
-      obstacles,
-    );
+    const collisionAdjusted = shouldClampTargetAgainstObstacles(action)
+      ? clampTargetAgainstObstacles(
+          motionKey,
+          startTransform,
+          clampedResolvedTarget
+            ? {
+                x: clampedResolvedTarget.x,
+                y: clampedResolvedTarget.y,
+                scale: clampedResolvedTarget.scale,
+                z_index: clampedResolvedTarget.z_index,
+              }
+            : undefined,
+          obstacles,
+        )
+      : {
+          target: clampedResolvedTarget,
+          collision: null,
+        };
     const finalTarget = collisionAdjusted.target
       ? clampSpatialTransformToStage({
           x: collisionAdjusted.target.x,
@@ -331,7 +407,39 @@ export function compileBeatToScene(
         })
       : motionClip;
     const ikPlayback = resolvedClipId ? motionClipToIKPlayback(resolvedClipId, playableClip) : undefined;
-    const binding = resolvedClipId
+    const transformOnlyPolicy = inferTransformOnlyPlaybackPolicy(rig, motionKey);
+    const useBaseObjectBinding = Boolean(
+      rig && (
+        transformOnlyPolicy.prefer ||
+        (!resolvedClipId && (motionNeedsTarget(motionKey) || Boolean(finalTarget)))
+      ),
+    );
+    const binding = useBaseObjectBinding
+      ? ({
+          id: `${actorId}:${actionIndex}:${BASE_OBJECT_CLIP_ID}`,
+          actor_id: actorId,
+          source_action_index: actionIndex,
+          motion: action.motion,
+          style: action.style,
+          clip_id: BASE_OBJECT_CLIP_ID,
+          view: resolveTransformOnlyView(rig, startTransform, bakedMotion.endTransform || finalTarget, clipView),
+          start_time: startTime,
+          duration_seconds: duration,
+          amplitude: action.animation_overrides?.amplitude,
+          speed: action.animation_overrides?.speed,
+          collision_behavior: collisionBehavior,
+          start_transform: startTransform,
+          end_transform: bakedMotion.endTransform,
+          collision: collisionAdjusted.collision
+            ? {
+                obstacle_id: collisionAdjusted.collision.id,
+                stop_x: collisionAdjusted.target?.x ?? startTransform.x,
+                stop_y: collisionAdjusted.target?.y,
+                stop_time: bakedMotion.stopTime,
+              }
+            : undefined,
+        } satisfies ClipBinding)
+      : resolvedClipId
       ? ({
           id: `${actorId}:${actionIndex}:${resolvedClipId}`,
           actor_id: actorId,

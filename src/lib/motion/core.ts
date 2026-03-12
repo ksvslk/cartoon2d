@@ -9,10 +9,10 @@ import {
   playAmbientLoopOnElement,
 } from "./ambient";
 import { createIKPlaybackActor, IKPlaybackActor, setPlaybackIntent, stagePlaybackView, syncPlaybackActors } from "../ik/playback";
+import { ensureRigIK } from "../ik/graph";
 import { motionClipToIKPlayback, resolvePlayableMotionClip } from "./compiled_ik";
 import { estimateMotionClipDuration } from "./intent";
 
-const ALL_VIEWS = ["view_front", "view_side_right", "view_3q_right", "view_top", "view_back"] as const;
 const BASE_OBJECT_CLIP_ID = "base_object";
 
 export interface AnimationContext {
@@ -27,6 +27,11 @@ type StoredMotionClip = NonNullable<NonNullable<DraftsmanData["rig_data"]["motio
 type TimelineWithIKSync = gsap.core.Timeline & {
   __ikSync?: () => void;
 };
+
+function availableRigViewIds(rig: DraftsmanData | undefined): string[] {
+  if (!rig) return [];
+  return Object.keys(ensureRigIK(rig).rig_data.ik?.views || {}).sort();
+}
 
 // ── Style Modulation ──────────────────────────────────────────────────────────
 
@@ -468,7 +473,7 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
           if (ikActor) {
             stagePlaybackView(tl, ikActor, clipView, startDelay);
           } else {
-            ALL_VIEWS.forEach(v => {
+            availableRigViewIds(rig).forEach(v => {
               tl.set(`#actor_group_${id} #${v}`, {
                 display: v === clipView ? "inline" : "none",
               }, startDelay);
@@ -608,7 +613,7 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
       if (ikActor) {
         stagePlaybackView(tl, ikActor, clipView, startDelay);
       } else {
-        ALL_VIEWS.forEach(v => {
+        availableRigViewIds(rig).forEach(v => {
           tl.set(`#actor_group_${id} #${v}`, {
             display: v === clipView ? "inline" : "none",
           }, startDelay);

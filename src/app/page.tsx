@@ -5,18 +5,19 @@ import Stage from "@/components/Stage";
 import { Send, Play, Image as ImageIcon, ImageOff, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, ChevronUp, Loader2, Film, Trash2, Pencil, Plus, Copy, Mountain, Bug } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { processScenePromptStream, processSceneImageEdit } from "@/app/actions/scene";
-import { ClipBinding, CompiledSceneData, StoryBeatData, StoryGenerationData, getStageDims, StageOrientation } from "@/lib/schema/story";
+import { ClipBinding, CompiledSceneData, SpatialTransform, StoryBeatData, StoryGenerationData, getStageDims, StageOrientation } from "@/lib/schema/story";
 import { loadStoryFromStorage, saveStoryToStorage, clearStoryStorage, getProjectsList, createProject, deleteProject, updateProjectTitle, ProjectMetadata, loadActorIdentities, saveActorIdentity, updateProjectOrientation } from "@/lib/storage/db";
-import { generateMotionClipForRig, processDraftsmanPrompt, type MotionDebugReport } from "@/app/actions/draftsman";
+import { generateMotionClipForRig, processDraftsmanPrompt, suggestRigViewsFromRaster, type DraftQualityMode, type DraftQualityReview, type MotionDebugReport } from "@/app/actions/draftsman";
 import { processSetDesignerPrompt } from "@/app/actions/set_designer";
 import { DraftsmanData } from "@/lib/schema/rig";
 import { RigViewer } from "@/components/RigViewer";
 import { IKLab } from "@/components/IKLab";
 import { RigClipPreview } from "@/components/RigClipPreview";
 import { inferAutoTargetTransform, motionNeedsTarget, normalizeMotionKey, suggestMotionAliases } from "@/lib/motion/semantics";
-import { compileBeatToScene } from "@/lib/motion/compiler";
+import { compileBeatToScene, inferTransformOnlyPlaybackPolicy } from "@/lib/motion/compiler";
 import { motionClipToIKPlayback, resolvePlayableMotionClip } from "@/lib/motion/compiled_ik";
 import { estimateMotionClipDuration } from "@/lib/motion/intent";
+import { normalizeViewIds } from "@/lib/ik/view_ids";
 
 import { ThemeToggle } from "@/components/ThemeToggle";
 
@@ -193,11 +194,12 @@ function formatMotionDebugLines(report: MotionDebugReport): string[] {
   return lines;
 }
 
-function classifyCompileLogLine(line: string): "paid" | "reused" | "error" | "debug" | "neutral" {
+function classifyCompileLogLine(line: string): "paid" | "reused" | "error" | "debug" | "review" | "neutral" {
   if (line.includes("[PAID]")) return "paid";
   if (line.includes("[REUSED]")) return "reused";
   if (line.includes("[BLOCKED]")) return "error";
   if (line.includes("[DEBUG]")) return "debug";
+  if (line.includes("[REVIEW]")) return "review";
   if (line.includes("❌")) return "error";
   return "neutral";
 }
@@ -213,7 +215,9 @@ function renderCompileLogLine(line: string, key: string | number) {
           ? "border-red-400/40 bg-red-500/10 text-red-300"
           : kind === "debug"
             ? "border-sky-400/30 bg-sky-500/10 text-sky-200"
-          : "border-neutral-700 bg-neutral-900 text-neutral-400";
+            : kind === "review"
+              ? "border-amber-400/40 bg-amber-500/10 text-amber-200"
+            : "border-neutral-700 bg-neutral-900 text-neutral-400";
 
   const lineClass =
     kind === "paid"
@@ -224,6 +228,8 @@ function renderCompileLogLine(line: string, key: string | number) {
           ? "text-red-300"
           : kind === "debug"
             ? "text-sky-200"
+            : kind === "review"
+              ? "text-amber-200"
           : "text-emerald-400";
 
   return (
@@ -262,7 +268,70 @@ function sanitizeDurationSeconds(value: number | null | undefined, fallback: num
 
 function extractRigViews(svgData: string): string[] {
   const matches = Array.from(svgData.matchAll(/id=['"](view_[^'"]+)['"]/g)).map((match) => match[1]);
-  return Array.from(new Set(matches.length > 0 ? matches : ["view_front"]));
+  return normalizeViewIds(matches.length > 0 ? matches : ["view_3q_right"], "view_3q_right");
+}
+
+function mergeRigViews(...viewGroups: Array<Array<string> | undefined>): string[] {
+  return normalizeViewIds(viewGroups.flatMap((views) => views || []), "view_3q_right");
+}
+
+function buildActorRigDescription(actor: StoryGenerationData["actors_detected"][number]): string {
+  return `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(", ")}. ${actor.visual_description}`;
+}
+
+function inferRigRefreshReason(rig: DraftsmanData | undefined): string | null {
+  if (!rig?.rig_data.ik) {
+    return "canonical IK is missing";
+  }
+
+  const confidence = rig.rig_data.ik.aiReport?.confidence ?? 1;
+  if (confidence < 0.45) {
+    return `IK confidence ${confidence.toFixed(2)}`;
+  }
+
+  const warnings = rig.rig_data.ik.aiReport?.warnings || [];
+  const attachmentWarningCount = warnings.filter((warning) => /attachment gap|no explicit attachment socket/i.test(warning)).length;
+  if (attachmentWarningCount >= 2) {
+    return `${attachmentWarningCount} structural attachment warnings`;
+  }
+
+  return null;
+}
+
+function inferFallbackRigViews(
+  beat: StoryBeatData,
+  actorActions: StoryBeatData["actions"],
+): string[] {
+  const sceneText = `${beat.narrative} ${beat.comic_panel_prompt}`.toLowerCase();
+  const viewSet = new Set<string>();
+  const sceneMentionsLeft = /left[- ]facing|faces left|looking left|from the left|left profile|camera left/.test(sceneText);
+  const sceneMentionsRight = /right[- ]facing|faces right|looking right|from the right|right profile|camera right/.test(sceneText);
+
+  for (const action of actorActions) {
+    const motionKey = normalizeMotionKey(action.motion);
+    const startX = action.spatial_transform?.x;
+    const endX = action.target_spatial_transform?.x;
+    const movesLeft = typeof startX === "number" && typeof endX === "number" && endX < startX - 10;
+    const lateralView = movesLeft || sceneMentionsLeft ? "view_side_left" : "view_side_right";
+    const angledView = sceneMentionsLeft ? "view_3q_left" : sceneMentionsRight ? "view_3q_right" : "view_3q_right";
+
+    if (motionNeedsTarget(motionKey)) {
+      viewSet.add(lateralView);
+    } else if (/wave|greet|salute|talk|speak|say|tip_hat|sing|shout|smile|dialogue/.test(motionKey)) {
+      viewSet.add("view_front");
+    } else {
+      viewSet.add(angledView);
+    }
+  }
+
+  if (/top[- ]?down|overhead|bird'?s[- ]eye|from above/.test(sceneText)) {
+    viewSet.add("view_top");
+  }
+  if (/from behind|back view|walk away|turns away|retreats|seen from behind/.test(sceneText)) {
+    viewSet.add("view_back");
+  }
+
+  return mergeRigViews(Array.from(viewSet.size > 0 ? viewSet : new Set(["view_3q_right"])));
 }
 
 function loadClientImage(src: string): Promise<HTMLImageElement> {
@@ -288,6 +357,125 @@ function findActorReferenceTransform(beat: StoryBeatData, actorId: string) {
   }
 
   return null;
+}
+
+function collectActorReferenceSamples(
+  beat: StoryBeatData,
+  actorId: string,
+  actorActions: StoryBeatData["actions"],
+): Array<Pick<SpatialTransform, "x" | "y" | "scale">> {
+  const samples = actorActions.flatMap((action) => {
+    const points: Array<Pick<SpatialTransform, "x" | "y" | "scale">> = [];
+    if (action.spatial_transform) {
+      points.push({
+        x: action.spatial_transform.x,
+        y: action.spatial_transform.y,
+        scale: action.spatial_transform.scale,
+      });
+    }
+    if (action.target_spatial_transform) {
+      points.push({
+        x: action.target_spatial_transform.x,
+        y: action.target_spatial_transform.y,
+        scale: action.target_spatial_transform.scale,
+      });
+    }
+    return points;
+  });
+
+  if (samples.length > 0) {
+    return samples;
+  }
+
+  const fallback = findActorReferenceTransform(beat, actorId);
+  return fallback
+    ? [{ x: fallback.x, y: fallback.y, scale: fallback.scale }]
+    : [];
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function estimateActorReferenceBounds(params: {
+  samples: Array<Pick<SpatialTransform, "x" | "y" | "scale">>;
+  stageW: number;
+  stageH: number;
+}) {
+  const { samples, stageW, stageH } = params;
+  if (samples.length === 0) return null;
+
+  const xs = samples.map((sample) => sample.x);
+  const ys = samples.map((sample) => sample.y);
+  const scales = samples.map((sample) => clampNumber(sample.scale || 0.5, 0.18, 2.5));
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const centerX = (minX + maxX) * 0.5;
+  const maxScale = Math.max(...scales);
+
+  const baseHeight = clampNumber(stageH * (0.22 + (maxScale * 0.68)), stageH * 0.24, stageH * 0.82);
+  const baseWidth = clampNumber(baseHeight * 1.22, stageW * 0.2, stageW * 0.84);
+  const cropWidth = clampNumber(Math.max(baseWidth, (maxX - minX) + (stageW * 0.16)), stageW * 0.2, stageW * 0.88);
+  const cropHeight = clampNumber(Math.max(baseHeight, (maxY - minY) + (stageH * 0.18)), stageH * 0.24, stageH * 0.9);
+  const left = clampNumber(centerX - (cropWidth * 0.5), 0, stageW - cropWidth);
+  const top = clampNumber(maxY - (cropHeight * 0.84), 0, stageH - cropHeight);
+
+  return { x: left, y: top, width: cropWidth, height: cropHeight };
+}
+
+async function extractActorReferenceCrop(params: {
+  imageSrc: string;
+  beat: StoryBeatData;
+  actorId: string;
+  actorActions: StoryBeatData["actions"];
+  orientation: StageOrientation;
+}): Promise<string | null> {
+  const { imageSrc, beat, actorId, actorActions, orientation } = params;
+  if (!imageSrc) return null;
+
+  const { width: stageW, height: stageH } = getStageDims(orientation);
+  const samples = collectActorReferenceSamples(beat, actorId, actorActions);
+  const bounds = estimateActorReferenceBounds({ samples, stageW, stageH });
+  if (!bounds) return null;
+
+  try {
+    const image = await loadClientImage(imageSrc);
+    const scaleX = image.naturalWidth / stageW;
+    const scaleY = image.naturalHeight / stageH;
+    const srcX = Math.max(0, Math.floor(bounds.x * scaleX));
+    const srcY = Math.max(0, Math.floor(bounds.y * scaleY));
+    const srcWidth = Math.max(1, Math.min(image.naturalWidth - srcX, Math.ceil(bounds.width * scaleX)));
+    const srcHeight = Math.max(1, Math.min(image.naturalHeight - srcY, Math.ceil(bounds.height * scaleY)));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    const inset = 36;
+    const fit = Math.min(
+      (canvas.width - (inset * 2)) / srcWidth,
+      (canvas.height - (inset * 2)) / srcHeight,
+    );
+    const drawWidth = srcWidth * fit;
+    const drawHeight = srcHeight * fit;
+    const dx = (canvas.width - drawWidth) * 0.5;
+    const dy = (canvas.height - drawHeight) * 0.5;
+
+    ctx.fillStyle = "#f4f4f5";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(image, srcX, srcY, srcWidth, srcHeight, dx, dy, drawWidth, drawHeight);
+
+    return canvas.toDataURL("image/jpeg", 0.92);
+  } catch (error) {
+    console.warn(`Failed to isolate actor reference for ${actorId}:`, error);
+    return null;
+  }
 }
 
 function buildActorReuseKey(actor: StoryGenerationData["actors_detected"][number]) {
@@ -367,6 +555,7 @@ export default function Home() {
   const [isAiFixingRig, setIsAiFixingRig] = useState(false);
   const [draftedRig, setDraftedRig] = useState<DraftsmanData | null>(null);
   const [originalDraftedRig, setOriginalDraftedRig] = useState<DraftsmanData | null>(null);
+  const [draftReview, setDraftReview] = useState<DraftQualityReview | null>(null);
   const [rigFixPrompt, setRigFixPrompt] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
 
@@ -545,12 +734,16 @@ export default function Home() {
     generationReference,
     description,
     requiredViews,
+    reviewImages,
+    qualityMode,
   }: {
     generationReference: string;
     description: string;
     requiredViews?: string[];
+    reviewImages?: string[];
+    qualityMode?: DraftQualityMode;
   }) => {
-    return processDraftsmanPrompt(generationReference, description, requiredViews);
+    return processDraftsmanPrompt(generationReference, description, requiredViews, reviewImages, qualityMode);
   };
 
   // Playhead callbacks — called by Stage when GSAP timeline ticks or completes
@@ -1220,79 +1413,144 @@ export default function Home() {
       }
 
       // 2. Generate Actors if missing
-      const actorIdsInScene = new Set(workingBeat.actions.map(a => a.actor_id));
-      const sceneRigs: Record<string, DraftsmanData> = {};
-      for (const actorId of Array.from(actorIdsInScene)) {
-        const actor = storyData.actors_detected.find(a => a.id === actorId);
-        if (actor) {
-          let actorRig = actor.drafted_rig;
+	      const actorIdsInScene = new Set(workingBeat.actions.map(a => a.actor_id));
+	      const sceneRigs: Record<string, DraftsmanData> = {};
+	      for (const actorId of Array.from(actorIdsInScene)) {
+	        const actor = storyData.actors_detected.find(a => a.id === actorId);
+	        if (actor) {
+	          const actorActions = workingBeat.actions.filter(a => a.actor_id === actorId);
+	          const actorDescription = buildActorRigDescription(actor);
+	          const sceneReferenceImage = workingBeat.image_data
+	            ? await extractActorReferenceCrop({
+	                imageSrc: workingBeat.image_data,
+	                beat: workingBeat,
+	                actorId,
+	                actorActions,
+	                orientation: stageOrientation,
+	              })
+	            : null;
+	          if (sceneReferenceImage && currentProjectId && actorReferences[actorId] !== sceneReferenceImage) {
+	            void saveActorIdentity(currentProjectId, actorId, sceneReferenceImage);
+	            setActorReferences(prev => prev[actorId] === sceneReferenceImage ? prev : { ...prev, [actorId]: sceneReferenceImage });
+	          }
+	          const referenceImage = sceneReferenceImage || actorReferences[actorId];
+	          let actorRig = actor.drafted_rig;
+	          const existingViews = actorRig ? extractRigViews(actorRig.svg_data) : [];
+	          const rigRefreshReason = inferRigRefreshReason(actorRig);
+	          let plannedViews = inferFallbackRigViews(workingBeat, actorActions);
 
-          if (!actorRig && actorReferences[actorId]) {
-            const sceneText = `${workingBeat.narrative} ${workingBeat.comic_panel_prompt}`.toLowerCase();
-            const actorActions = workingBeat.actions.filter(a => a.actor_id === actorId);
-            const viewSet = new Set<string>();
+	          if (referenceImage) {
+	            addLog(`> Reading raster pose for '${actor.name}'...`);
+	            try {
+	              apiCalls += 1;
+	              const suggestedViews = await suggestRigViewsFromRaster({
+	                base64Image: referenceImage,
+	                actorName: actor.name,
+	                actorDescription,
+	                sceneNarrative: `${workingBeat.narrative} ${workingBeat.comic_panel_prompt}`,
+	                actions: actorActions.map((action) => normalizeMotionKey(action.motion)),
+	                existingViews,
+	              });
+	              plannedViews = suggestedViews.views;
+	              addLog(`[PAID] ✓ Raster view plan for '${actor.name}': ${plannedViews.join(', ')}.`);
+	              logUsage(suggestedViews.usage, `View Planner (${actor.name})`);
+	            } catch (error: unknown) {
+	              const message = error instanceof Error ? error.message : String(error);
+	              addLog(`[REUSED] View planner fallback for '${actor.name}': ${plannedViews.join(', ')} (${message}).`);
+	            }
+	          }
 
-            for (const action of actorActions) {
-              const motionKey = normalizeMotionKey(action.motion);
-              if (motionNeedsTarget(motionKey)) {
-                viewSet.add('view_side_right');
-              } else if (/wave|greet|salute|talk|speak|say|tip_hat|sing|shout|smile|dialogue/.test(motionKey)) {
-                viewSet.add('view_front');
-              } else {
-                viewSet.add('view_3q_right');
-              }
-            }
+	          const missingViews = actorRig
+	            ? plannedViews.filter((viewId) => !existingViews.includes(viewId))
+	            : plannedViews;
+	          const requiredViews = mergeRigViews(plannedViews, existingViews);
 
-            if (/top[- ]?down|overhead|bird'?s[- ]eye|from above/.test(sceneText)) {
-              viewSet.add('view_top');
-            }
-            if (/from behind|back view|walk away|turns away|retreats|seen from behind/.test(sceneText)) {
-              viewSet.add('view_back');
-            }
+	          if (!actorRig && referenceImage) {
+	            addLog(`> Starting Draftsman AI for '${actor.name}'...`);
+	            addLog(`> Rigging A-Pose skeleton & visemes (${requiredViews.join(', ')})...`);
 
-            if (viewSet.size === 0) {
-              viewSet.add('view_3q_right');
-            }
+	            const generatedRig = await generateRigDraft({
+	              generationReference: referenceImage,
+	              description: actorDescription,
+	              requiredViews,
+	              qualityMode: "reviewable",
+	            });
+	            apiCalls += 1;
+	            logUsage(generatedRig.usage, `Draftsman (${actor.name})`);
+	            if (generatedRig.review && !generatedRig.review.acceptable) {
+	              addLog(`[REVIEW] Draft quality for '${actor.name}': ${generatedRig.review.reasons.slice(0, 3).join(" ")}`);
+	            }
 
-            const viewsArray = Array.from(viewSet);
+	            setStoryData(prev => {
+	              if (!prev) return prev;
+	              return {
+	                ...prev,
+	                actors_detected: prev.actors_detected.map(a =>
+	                  a.id === actorId ? { ...a, drafted_rig: generatedRig.data } : a
+	                )
+	              };
+	            });
 
-            addLog(`> Starting Draftsman AI for '${actor.name}'...`);
-            addLog(`> Rigging A-Pose skeleton & visemes (${viewsArray.join(', ')})...`);
+	            actorRig = generatedRig.data;
+	            addLog(`[PAID] ✓ '${actor.name}' SVG rig assembled.`);
+	          } else if (actorRig && referenceImage && (missingViews.length > 0 || Boolean(rigRefreshReason))) {
+	            if (rigRefreshReason) {
+	              addLog(`> Rebuilding rig for '${actor.name}'...`);
+	              addLog(`> Refreshing weak draft (${rigRefreshReason}) with isolated raster reference...`);
+	            } else {
+	              addLog(`> Extending rig views for '${actor.name}'...`);
+	              addLog(`> Capturing additional views (${missingViews.join(', ')})...`);
+	            }
 
-            const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}`;
-            const generatedRig = await generateRigDraft({
-              generationReference: actorReferences[actorId],
-              description,
-              requiredViews: viewsArray,
-            });
-            apiCalls += 1;
-            logUsage(generatedRig.usage, `Draftsman (${actor.name})`);
-            const result = {
-              data: generatedRig.data,
-            };
+	            const regeneratedRig = await generateRigDraft({
+	              generationReference: referenceImage,
+	              description: actorDescription,
+	              requiredViews,
+	              qualityMode: "reviewable",
+	            });
+	            apiCalls += 1;
+	            logUsage(regeneratedRig.usage, `Draftsman (${actor.name}:view update)`);
+	            if (regeneratedRig.review && !regeneratedRig.review.acceptable) {
+	              addLog(`[REVIEW] Draft quality for '${actor.name}': ${regeneratedRig.review.reasons.slice(0, 3).join(" ")}`);
+	            }
 
-            setStoryData(prev => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                actors_detected: prev.actors_detected.map(a =>
-                  a.id === actorId ? { ...a, drafted_rig: result.data } : a
-                )
-              };
-            });
+	            const updatedRig = {
+	              ...regeneratedRig.data,
+	              rig_data: {
+	                ...regeneratedRig.data.rig_data,
+	                motion_clips: {},
+	              },
+	            };
 
-            actorRig = result.data;
-            addLog(`[PAID] ✓ '${actor.name}' SVG rig assembled.`);
-          } else if (actorRig) {
-            addLog(`[REUSED] ✓ '${actor.name}' rig found in cache.`);
-          }
+	            setStoryData(prev => {
+	              if (!prev) return prev;
+	              return {
+	                ...prev,
+	                actors_detected: prev.actors_detected.map(a =>
+	                  a.id === actorId ? { ...a, drafted_rig: updatedRig } : a
+	                )
+	              };
+	            });
 
-          if (actorRig) {
-            const actorActions = workingBeat.actions.filter(a => a.actor_id === actorId);
-            let nextRig = actorRig;
+	            actorRig = updatedRig;
+	            addLog(`[PAID] ✓ '${actor.name}' rig updated with views: ${requiredViews.join(', ')}.`);
+	          } else if (actorRig) {
+	            addLog(`[REUSED] ✓ '${actor.name}' rig found in cache.`);
+	          } else {
+	            addLog(`[BLOCKED] Actor '${actor.name}' has no raster reference image. Rig generation skipped.`);
+	          }
+
+	          if (actorRig) {
+	            let nextRig = actorRig;
 
             for (const actorAction of actorActions) {
               const motionKey = normalizeMotionKey(actorAction.motion);
+              const transformOnlyPolicy = inferTransformOnlyPlaybackPolicy(nextRig, motionKey);
+              if (transformOnlyPolicy.prefer) {
+                addLog(`[REVIEW] Motion '${motionKey}' for '${actor.name}' uses transform-only playback: ${transformOnlyPolicy.reason}.`);
+                continue;
+              }
+
               const existingClipKey = suggestMotionAliases(motionKey).find(
                 (alias) => nextRig.rig_data.motion_clips?.[alias],
               );
@@ -1918,6 +2176,7 @@ export default function Home() {
                               // Load cached rig if it exists, otherwise prepare for new generation
                               setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
                               setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                              setDraftReview(null);
                               setRigFixPrompt("");
                               setDraftError(null);
                             }}
@@ -1949,6 +2208,7 @@ export default function Home() {
                               setDraftingActorId(actor.id);
                               setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
                               setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                              setDraftReview(null);
                               setRigFixPrompt("");
                               setDraftError(null);
                             }}
@@ -3572,6 +3832,7 @@ export default function Home() {
                   setDraftingActorId(null);
                   setDraftedRig(null);
                   setOriginalDraftedRig(null);
+                  setDraftReview(null);
                   setRigFixPrompt("");
                   setDraftError(null);
                 }}
@@ -3599,6 +3860,7 @@ export default function Home() {
                     onClick={async () => {
                       setIsDrafting(true);
                       setDraftError(null);
+                      setDraftReview(null);
                       try {
                         const actor = storyData?.actors_detected.find(a => a.id === draftingActorId);
                         if (!actor || !actorReferences[draftingActorId]) throw new Error("Missing actor data");
@@ -3606,26 +3868,16 @@ export default function Home() {
                         const generatedRig = await generateRigDraft({
                           generationReference: actorReferences[draftingActorId],
                           description,
+                          qualityMode: "reviewable",
                         });
+                        const existingClips = actor.drafted_rig?.rig_data.motion_clips;
+                        const nextDraft = (existingClips && Object.keys(existingClips).length > 0)
+                          ? { ...generatedRig.data, rig_data: { ...generatedRig.data.rig_data, motion_clips: existingClips } }
+                          : generatedRig.data;
 
-                        // Cache the generated rig into the global story data, preserving compiled motion_clips
-                        setStoryData(prev => {
-                          if (!prev) return prev;
-                          return {
-                            ...prev,
-                            actors_detected: prev.actors_detected.map(a => {
-                              if (a.id !== draftingActorId) return a;
-                              const existingClips = a.drafted_rig?.rig_data.motion_clips;
-                              const newRig = (existingClips && Object.keys(existingClips).length > 0)
-                                ? { ...generatedRig.data, rig_data: { ...generatedRig.data.rig_data, motion_clips: existingClips } }
-                                : generatedRig.data;
-                              return { ...a, drafted_rig: newRig };
-                            })
-                          };
-                        });
-
-                        setDraftedRig(generatedRig.data);
-                        setOriginalDraftedRig(JSON.parse(JSON.stringify(generatedRig.data)));
+                        setDraftedRig(nextDraft);
+                        setOriginalDraftedRig(JSON.parse(JSON.stringify(nextDraft)));
+                        setDraftReview(generatedRig.review ?? null);
                       } catch (err: unknown) {
                         setDraftError(err instanceof Error ? err.message : "Failed to generate rig.");
                       } finally {
@@ -3667,6 +3919,18 @@ export default function Home() {
                     Draftsman Success: Found {draftedRig.rig_data.bones.length} bones, {draftedRig.rig_data.visemes?.length || 0} visemes, and {draftedRig.rig_data.emotions?.length || 0} emotions.
                     Use the IK lab to drag effectors, inspect constraints, pin nodes, and stress-test the rig before saving.
                   </div>
+                  {draftReview && !draftReview.acceptable && (
+                    <div className="mb-4 rounded-lg border border-amber-200/80 bg-amber-50/80 px-4 py-3 text-xs text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/20 dark:text-amber-200">
+                      <div className="font-semibold uppercase tracking-wider text-[11px]">
+                        Draft Review Warnings
+                      </div>
+                      <div className="mt-2 space-y-1">
+                        {draftReview.reasons.map((reason) => (
+                          <div key={reason}>- {reason}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <div className="mb-4 rounded-lg border border-cyan-200/70 bg-cyan-50/60 px-4 py-3 dark:border-cyan-800/60 dark:bg-cyan-950/20">
                     <label className="mb-2 block text-[11px] font-semibold uppercase tracking-wider text-cyan-700 dark:text-cyan-300">
                       AI Rig Fix
@@ -3691,6 +3955,7 @@ export default function Home() {
 
                           setIsAiFixingRig(true);
                           setDraftError(null);
+                          setDraftReview(null);
 
                           try {
                             const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}. CRITICAL FIX REQUEST: ${rigFixPrompt}. Preserve the same character identity, proportions, rig structure, and existing good parts. Repair only the missing or malformed parts while keeping the current views usable.`;
@@ -3698,25 +3963,16 @@ export default function Home() {
                               generationReference: actorReference,
                               description,
                               requiredViews: extractRigViews(draftedRig.svg_data),
+                              qualityMode: "reviewable",
                             });
+                            const existingClips = actor.drafted_rig?.rig_data.motion_clips;
+                            const nextDraft = (existingClips && Object.keys(existingClips).length > 0)
+                              ? { ...generatedRig.data, rig_data: { ...generatedRig.data.rig_data, motion_clips: existingClips } }
+                              : generatedRig.data;
 
-                            setStoryData(prev => {
-                              if (!prev) return prev;
-                              return {
-                                ...prev,
-                                actors_detected: prev.actors_detected.map(a => {
-                                  if (a.id !== draftingActorId) return a;
-                                  const existingClips = a.drafted_rig?.rig_data.motion_clips;
-                                  const newRig = (existingClips && Object.keys(existingClips).length > 0)
-                                    ? { ...generatedRig.data, rig_data: { ...generatedRig.data.rig_data, motion_clips: existingClips } }
-                                    : generatedRig.data;
-                                  return { ...a, drafted_rig: newRig };
-                                })
-                              };
-                            });
-
-                            setDraftedRig(generatedRig.data);
-                            setOriginalDraftedRig(JSON.parse(JSON.stringify(generatedRig.data)));
+                            setDraftedRig(nextDraft);
+                            setOriginalDraftedRig(JSON.parse(JSON.stringify(nextDraft)));
+                            setDraftReview(generatedRig.review ?? null);
                           } catch (error: unknown) {
                             setDraftError(error instanceof Error ? error.message : "Failed to apply AI rig fix.");
                           } finally {
