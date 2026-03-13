@@ -611,16 +611,14 @@ ${requestedViewGuide}
 ${requestedViewPrefixGuide}
    Example bone IDs: \`front__core\`, \`side_left__segment_a\`, \`3q_right__branch_outer\`, \`rear_left_low__root\`.
 4. **Target Views (strict)**: The \`requiredViews\` list defines exactly which view containers you should output. Do NOT generate extra view groups.
-5. **Essential Rigging Only (CRITICAL)**: DO NOT over-rig. You must ONLY group and rig the dominant articulating masses and continuous branches of the subject for EACH view. Combine smaller non-moving details deeply inside their primary parent groups.
+5. **Sensible Grouping Minimal Over-rigging**: Group articulating limbs logicially. Details like hair, clothing, or held items can be kept as separate groups if they need to move independently, or merged if not.
 6. **No Flat JPEGs**: Do not embed raster images using <image>. You must draw the subject purely in vector paths (<path>, <circle>, <rect>, etc).
-7. **Hidden Overlap Geometry & Sockets (CRITICAL JOINTS)**: Child segments MUST physically overlap their parents. The visual geometry of a child (like \`arm_lower\`) MUST extend upwards to exactly perfectly cover the {x,y} coordinate of the \`socket\` declared in the parent (\`arm_upper\`). DO NOT leave gaping whitespace between segments.
-8. **Rounded Attachment Ends (CRITICAL)**: Any child shape that joins a parent should end with rounded, tapered, or capsule-like geometry at the attachment. Avoid hard flat cutoffs. Prefer circles, ovals, and curved caps at connection points so deformation stays readable during rotation.
-9. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
+7. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
    - Furthest background limbs (like \`rear_leg\`) MUST appear mathematically first in the \`<g>\` block.
    - Foreground limbs (like \`front_leg\`) MUST appear last.
    - You MUST group related parts together (e.g. \`arm_lower\` visually drawn inside or adjacent to \`arm_upper\`). Treat each requested view as one physically coherent, assembled subject, not a pile of detached floating pieces.
-10. **Preserve Major Silhouette Features**: Never omit any silhouette-defining extension, branch, protrusion, or contour break visible in the reference image. If the source image clearly shows a distinct shape, it must remain readable in the SVG.
-11. **Visemes and Emotions (CRITICAL)**: If the subject has a face-like or front-facing expressive region, place two sub-containers there: \`<g id="mouth_visemes">\` and \`<g id="emotions">\`. If the subject is not expressive, still include minimal placeholder groups in the most relevant front-facing parent group so downstream tools stay consistent.
+8. **Preserve Major Silhouette Features**: Never omit any silhouette-defining extension, branch, protrusion, or contour break visible in the reference image. If the source image clearly shows a distinct shape, it must remain readable in the SVG. Allow shapes to float slightly if it is natural for the design (like stylized anime hair or capes).
+9. **Visemes and Emotions**: If the subject has a face-like or front-facing expressive region, place two sub-containers there: \`<g id="mouth_visemes">\` and \`<g id="emotions">\`. If the subject is not expressive, still include minimal placeholder groups in the most relevant front-facing parent group so downstream tools stay consistent.
    - **Visemes:** Include \`#mouth_idle\` (visibility="visible"), \`#mouth_A\` (visibility="hidden"), \`#mouth_E\` (hidden), \`#mouth_I\` (hidden), \`#mouth_O\` (hidden), \`#mouth_U\` (hidden), \`#mouth_M\` (hidden).
    - **Emotions:** Include \`#emotion_neutral\` (visibility="visible"), \`#emotion_happy\` (hidden), \`#emotion_sad\` (hidden), \`#emotion_angry\` (hidden), \`#emotion_surprised\` (hidden).
    - **Styling:** When expressive features exist, style them to match the subject personality. When they do not, keep them minimal and unobtrusive.
@@ -753,7 +751,6 @@ Do not write any text outside this JSON object. The \`svg_data\` property MUST c
             ...firstReview.reasons.map((reason) => `- ${reason}`),
             "Redraw from scratch. Do not patch the previous drawing.",
             "Keep the subject large and centered in the 1000x1000 frame.",
-            "Eliminate detached floating shards and ensure every articulated branch reconnects cleanly into the main mass.",
             "Preserve the subject identity and silhouette from the raster reference.",
         ].join("\n");
         const secondPass = await runDraftPass(retryDescription);

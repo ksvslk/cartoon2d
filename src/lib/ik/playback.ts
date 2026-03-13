@@ -214,15 +214,9 @@ export function syncPlaybackActors(actors: IKPlaybackActor[]): void {
       actor.playbackState.clipTimeSeconds,
     );
     actor.playbackState.currentGoals = goals;
-    const basePose = viewState.currentPose || viewState.restPose;
-    const solved = solvePoseFromGoals(viewState.graph, goals, basePose);
-    const nextPose = viewState.currentPose
-      ? stabilizePoseForPlayback(viewState.graph, viewState.currentPose, solved.pose)
-      : solved.pose;
-    viewState.currentPose = nextPose;
-    const layout = nextPose === solved.pose
-      ? solved.layout
-      : computePoseLayout(viewState.graph, nextPose);
+    const solved = solvePoseFromGoals(viewState.graph, goals, viewState.restPose);
+    viewState.currentPose = solved.pose;
+    const layout = solved.layout;
     applyPoseToSvg(actor.actorGroup, viewState.graph, layout, viewId);
   });
 }

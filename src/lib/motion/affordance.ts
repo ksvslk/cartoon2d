@@ -52,18 +52,18 @@ export function inferRigMotionAffordance(
   const chainRatio = clamp((primaryChainLength - 1) / 5, 0, 1);
 
   let articulationScore = (movableRatio * 0.34) + (spanRatio * 0.33) + (effectorRatio * 0.17) + (chainRatio * 0.16);
-  articulationScore = clamp(articulationScore, 0.08, 1);
+  articulationScore = clamp(articulationScore, 0.25, 1);
 
   let deformationBudget = articulationScore;
-  if (primaryChainLength <= 2) deformationBudget *= 0.72;
-  if (effectors <= 1) deformationBudget *= 0.85;
-  if ((topology.branchChains || []).length === 0) deformationBudget *= 0.9;
-  deformationBudget = clamp(deformationBudget, 0.12, 1);
+  if (primaryChainLength <= 2) deformationBudget *= 0.85;
+  if (effectors <= 1) deformationBudget *= 0.95;
+  if ((topology.branchChains || []).length === 0) deformationBudget *= 0.95;
+  deformationBudget = clamp(deformationBudget, 0.4, 1.2); // allow slightly exaggerated motion
 
   const notes: string[] = [];
-  if (deformationBudget <= 0.25) {
+  if (deformationBudget <= 0.4) {
     notes.push("Favor root translation or simple orientation changes over distributed internal deformation.");
-  } else if (deformationBudget <= 0.5) {
+  } else if (deformationBudget <= 0.7) {
     notes.push("Keep deformation modest and concentrated on the dominant continuous chain.");
   } else {
     notes.push("The rig can support multi-node procedural deformation while staying bounded.");
@@ -90,10 +90,11 @@ export function constrainMotionSpecToRig(
   motionSpec: MotionSpec,
 ): MotionSpec {
   const affordance = inferRigMotionAffordance(rigInput);
-  const amplitude = round2(clamp((motionSpec.amplitude || 1) * affordance.deformationBudget, 0.02, 2));
-  const intensity = round2(clamp((motionSpec.intensity || 0.5) * (0.5 + (affordance.deformationBudget * 0.5)), 0, 1));
-  const leadBoneLimit = affordance.deformationBudget <= 0.3 ? 2 : affordance.deformationBudget <= 0.55 ? 3 : 5;
-  const contactLimit = affordance.deformationBudget <= 0.3 ? 1 : 3;
+  // Give it a higher baseline multiplier so we aren't constantly squishing it to nothing
+  const amplitude = round2(clamp((motionSpec.amplitude || 1) * Math.max(0.7, affordance.deformationBudget), 0.1, 2.5));
+  const intensity = round2(clamp((motionSpec.intensity || 0.5) * (0.6 + (affordance.deformationBudget * 0.4)), 0.1, 1.2));
+  const leadBoneLimit = affordance.deformationBudget <= 0.4 ? 2 : affordance.deformationBudget <= 0.65 ? 3 : 5;
+  const contactLimit = affordance.deformationBudget <= 0.4 ? 1 : 3;
 
   return {
     ...motionSpec,

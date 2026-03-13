@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Stage from "@/components/Stage";
 import { Send, Play, Image as ImageIcon, ImageOff, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, ChevronUp, Loader2, Film, Trash2, Pencil, Plus, Copy, Mountain, Bug } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -217,7 +217,7 @@ function renderCompileLogLine(line: string, key: string | number) {
             ? "border-sky-400/30 bg-sky-500/10 text-sky-200"
             : kind === "review"
               ? "border-amber-400/40 bg-amber-500/10 text-amber-200"
-            : "border-neutral-700 bg-neutral-900 text-neutral-400";
+              : "border-neutral-700 bg-neutral-900 text-neutral-400";
 
   const lineClass =
     kind === "paid"
@@ -230,7 +230,7 @@ function renderCompileLogLine(line: string, key: string | number) {
             ? "text-sky-200"
             : kind === "review"
               ? "text-amber-200"
-          : "text-emerald-400";
+              : "text-emerald-400";
 
   return (
     <div key={key} className={`leading-relaxed flex items-start gap-2 ${lineClass}`}>
@@ -608,6 +608,17 @@ export default function Home() {
   const [playheadPos, setPlayheadPos] = useState<number>(0);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const [fps, setFps] = useState<12 | 24 | 30 | 60>(60);
+  
+  // Timeline Pill Drag State
+  const dragPillRef = useRef<{
+    idx: number;
+    actorId: string;
+    mode: 'move' | 'resize';
+    startX: number;
+    initialDelay: number;
+    initialDuration: number;
+  } | null>(null);
+  const [isDraggingPill, setIsDraggingPill] = useState(false);
   const [showObstacleDebug, setShowObstacleDebug] = useState(false);
   const [stageOrientation, setStageOrientation] = useState<StageOrientation>("landscape");
   const stageDims = getStageDims(stageOrientation);
@@ -666,9 +677,9 @@ export default function Home() {
     () =>
       storyData
         ? storyData.actors_detected.reduce((acc, actor) => {
-            if (actor.drafted_rig) acc[actor.id] = actor.drafted_rig;
-            return acc;
-          }, {} as Record<string, DraftsmanData>)
+          if (actor.drafted_rig) acc[actor.id] = actor.drafted_rig;
+          return acc;
+        }, {} as Record<string, DraftsmanData>)
         : {},
     [storyData]
   );
@@ -699,9 +710,74 @@ export default function Home() {
     return sanitizeDurationSeconds(fallbackDuration);
   }, [sceneTimelineDurations, selectedSceneIndex, selectedBeat, selectedCompiledScene]);
 
+  // Pill Drag Handlers
+  const handlePillMouseDown = useCallback((e: React.MouseEvent, idx: number, actorId: string, delay: number, duration: number, mode: 'move' | 'resize') => {
+    e.stopPropagation();
+    dragPillRef.current = {
+      idx,
+      actorId,
+      mode,
+      startX: e.clientX,
+      initialDelay: delay,
+      initialDuration: duration,
+    };
+    setIsDraggingPill(true);
+    setSelectedActionIndex(idx);
+    setSelectedActorId(actorId);
+
+    const handleWindowMouseMove = (eMouse: MouseEvent) => {
+      if (!timelineRef.current || !dragPillRef.current) return;
+      const rect = timelineRef.current.getBoundingClientRect();
+      const deltaX = eMouse.clientX - dragPillRef.current.startX;
+      const deltaSeconds = (deltaX / rect.width) * totalDuration;
+
+      setStoryData(prev => {
+        if (!prev || !dragPillRef.current) return prev;
+        const newBeats = [...prev.beats];
+        const newActions = [...newBeats[selectedSceneIndex].actions];
+        const action = { ...newActions[dragPillRef.current.idx] };
+
+        if (dragPillRef.current.mode === 'move') {
+          const newDelay = Math.max(0, dragPillRef.current.initialDelay + deltaSeconds);
+          action.animation_overrides = { ...action.animation_overrides, delay: newDelay };
+        } else if (dragPillRef.current.mode === 'resize') {
+          const newDuration = Math.max(0.1, dragPillRef.current.initialDuration + deltaSeconds);
+          action.duration_seconds = newDuration;
+        }
+
+        newActions[dragPillRef.current.idx] = action;
+        newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions };
+        return { ...prev, beats: newBeats };
+      });
+    };
+
+    const handleWindowMouseUp = () => {
+      dragPillRef.current = null;
+      setIsDraggingPill(false);
+      window.removeEventListener('mousemove', handleWindowMouseMove);
+      window.removeEventListener('mouseup', handleWindowMouseUp);
+
+      // Recompile on drop so changes take effect
+      setStoryData(prev => {
+        if (!prev) return prev;
+        const newBeats = [...prev.beats];
+        const currentBeat = newBeats[selectedSceneIndex];
+        const previousCompiledScene = selectedSceneIndex > 0
+          ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+          : null;
+        const recompiled = compileBeatToScene(currentBeat, availableRigs, previousCompiledScene, stageOrientation);
+        newBeats[selectedSceneIndex] = { ...currentBeat, compiled_scene: recompiled };
+        return { ...prev, beats: newBeats };
+      });
+    };
+
+    window.addEventListener('mousemove', handleWindowMouseMove);
+    window.addEventListener('mouseup', handleWindowMouseUp);
+  }, [totalDuration, selectedSceneIndex, availableRigs, stageOrientation]);
+
   const currentTimeSeconds = (playheadPos / 100) * totalDuration;
   const currentFrame = Math.round(currentTimeSeconds * fps);
-  const totalFrames  = Math.max(1, Math.min(Math.round(totalDuration * fps), 216000));
+  const totalFrames = Math.max(1, Math.min(Math.round(totalDuration * fps), 216000));
   const selectedStageKey = selectedBeat
     ? `scene-${selectedSceneIndex}-${selectedBeat.scene_number}-${selectedCompiledScene?.duration_seconds ?? selectedBeat.actions.length}`
     : "scene-empty";
@@ -1346,9 +1422,9 @@ export default function Home() {
 
         return inferred
           ? (() => {
-              didAugmentTargets = true;
-              return { ...action, target_spatial_transform: inferred };
-            })()
+            didAugmentTargets = true;
+            return { ...action, target_spatial_transform: inferred };
+          })()
           : action;
       }),
     };
@@ -1413,135 +1489,135 @@ export default function Home() {
       }
 
       // 2. Generate Actors if missing
-	      const actorIdsInScene = new Set(workingBeat.actions.map(a => a.actor_id));
-	      const sceneRigs: Record<string, DraftsmanData> = {};
-	      for (const actorId of Array.from(actorIdsInScene)) {
-	        const actor = storyData.actors_detected.find(a => a.id === actorId);
-	        if (actor) {
-	          const actorActions = workingBeat.actions.filter(a => a.actor_id === actorId);
-	          const actorDescription = buildActorRigDescription(actor);
-	          const sceneReferenceImage = workingBeat.image_data
-	            ? await extractActorReferenceCrop({
-	                imageSrc: workingBeat.image_data,
-	                beat: workingBeat,
-	                actorId,
-	                actorActions,
-	                orientation: stageOrientation,
-	              })
-	            : null;
-	          if (sceneReferenceImage && currentProjectId && actorReferences[actorId] !== sceneReferenceImage) {
-	            void saveActorIdentity(currentProjectId, actorId, sceneReferenceImage);
-	            setActorReferences(prev => prev[actorId] === sceneReferenceImage ? prev : { ...prev, [actorId]: sceneReferenceImage });
-	          }
-	          const referenceImage = sceneReferenceImage || actorReferences[actorId];
-	          let actorRig = actor.drafted_rig;
-	          const existingViews = actorRig ? extractRigViews(actorRig.svg_data) : [];
-	          const rigRefreshReason = inferRigRefreshReason(actorRig);
-	          let plannedViews = inferFallbackRigViews(workingBeat, actorActions);
+      const actorIdsInScene = new Set(workingBeat.actions.map(a => a.actor_id));
+      const sceneRigs: Record<string, DraftsmanData> = {};
+      for (const actorId of Array.from(actorIdsInScene)) {
+        const actor = storyData.actors_detected.find(a => a.id === actorId);
+        if (actor) {
+          const actorActions = workingBeat.actions.filter(a => a.actor_id === actorId);
+          const actorDescription = buildActorRigDescription(actor);
+          const sceneReferenceImage = workingBeat.image_data
+            ? await extractActorReferenceCrop({
+              imageSrc: workingBeat.image_data,
+              beat: workingBeat,
+              actorId,
+              actorActions,
+              orientation: stageOrientation,
+            })
+            : null;
+          if (sceneReferenceImage && currentProjectId && actorReferences[actorId] !== sceneReferenceImage) {
+            void saveActorIdentity(currentProjectId, actorId, sceneReferenceImage);
+            setActorReferences(prev => prev[actorId] === sceneReferenceImage ? prev : { ...prev, [actorId]: sceneReferenceImage });
+          }
+          const referenceImage = sceneReferenceImage || actorReferences[actorId];
+          let actorRig = actor.drafted_rig;
+          const existingViews = actorRig ? extractRigViews(actorRig.svg_data) : [];
+          const rigRefreshReason = inferRigRefreshReason(actorRig);
+          let plannedViews = inferFallbackRigViews(workingBeat, actorActions);
 
-	          if (referenceImage) {
-	            addLog(`> Reading raster pose for '${actor.name}'...`);
-	            try {
-	              apiCalls += 1;
-	              const suggestedViews = await suggestRigViewsFromRaster({
-	                base64Image: referenceImage,
-	                actorName: actor.name,
-	                actorDescription,
-	                sceneNarrative: `${workingBeat.narrative} ${workingBeat.comic_panel_prompt}`,
-	                actions: actorActions.map((action) => normalizeMotionKey(action.motion)),
-	                existingViews,
-	              });
-	              plannedViews = suggestedViews.views;
-	              addLog(`[PAID] ✓ Raster view plan for '${actor.name}': ${plannedViews.join(', ')}.`);
-	              logUsage(suggestedViews.usage, `View Planner (${actor.name})`);
-	            } catch (error: unknown) {
-	              const message = error instanceof Error ? error.message : String(error);
-	              addLog(`[REUSED] View planner fallback for '${actor.name}': ${plannedViews.join(', ')} (${message}).`);
-	            }
-	          }
+          if (referenceImage) {
+            addLog(`> Reading raster pose for '${actor.name}'...`);
+            try {
+              apiCalls += 1;
+              const suggestedViews = await suggestRigViewsFromRaster({
+                base64Image: referenceImage,
+                actorName: actor.name,
+                actorDescription,
+                sceneNarrative: `${workingBeat.narrative} ${workingBeat.comic_panel_prompt}`,
+                actions: actorActions.map((action) => normalizeMotionKey(action.motion)),
+                existingViews,
+              });
+              plannedViews = suggestedViews.views;
+              addLog(`[PAID] ✓ Raster view plan for '${actor.name}': ${plannedViews.join(', ')}.`);
+              logUsage(suggestedViews.usage, `View Planner (${actor.name})`);
+            } catch (error: unknown) {
+              const message = error instanceof Error ? error.message : String(error);
+              addLog(`[REUSED] View planner fallback for '${actor.name}': ${plannedViews.join(', ')} (${message}).`);
+            }
+          }
 
-	          const missingViews = actorRig
-	            ? plannedViews.filter((viewId) => !existingViews.includes(viewId))
-	            : plannedViews;
-	          const requiredViews = mergeRigViews(plannedViews, existingViews);
+          const missingViews = actorRig
+            ? plannedViews.filter((viewId) => !existingViews.includes(viewId))
+            : plannedViews;
+          const requiredViews = mergeRigViews(plannedViews, existingViews);
 
-	          if (!actorRig && referenceImage) {
-	            addLog(`> Starting Draftsman AI for '${actor.name}'...`);
-	            addLog(`> Rigging A-Pose skeleton & visemes (${requiredViews.join(', ')})...`);
+          if (!actorRig && referenceImage) {
+            addLog(`> Starting Draftsman AI for '${actor.name}'...`);
+            addLog(`> Rigging A-Pose skeleton & visemes (${requiredViews.join(', ')})...`);
 
-	            const generatedRig = await generateRigDraft({
-	              generationReference: referenceImage,
-	              description: actorDescription,
-	              requiredViews,
-	              qualityMode: "reviewable",
-	            });
-	            apiCalls += 1;
-	            logUsage(generatedRig.usage, `Draftsman (${actor.name})`);
-	            if (generatedRig.review && !generatedRig.review.acceptable) {
-	              addLog(`[REVIEW] Draft quality for '${actor.name}': ${generatedRig.review.reasons.slice(0, 3).join(" ")}`);
-	            }
+            const generatedRig = await generateRigDraft({
+              generationReference: referenceImage,
+              description: actorDescription,
+              requiredViews,
+              qualityMode: "reviewable",
+            });
+            apiCalls += 1;
+            logUsage(generatedRig.usage, `Draftsman (${actor.name})`);
+            if (generatedRig.review && !generatedRig.review.acceptable) {
+              addLog(`[REVIEW] Draft quality for '${actor.name}': ${generatedRig.review.reasons.slice(0, 3).join(" ")}`);
+            }
 
-	            setStoryData(prev => {
-	              if (!prev) return prev;
-	              return {
-	                ...prev,
-	                actors_detected: prev.actors_detected.map(a =>
-	                  a.id === actorId ? { ...a, drafted_rig: generatedRig.data } : a
-	                )
-	              };
-	            });
+            setStoryData(prev => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                actors_detected: prev.actors_detected.map(a =>
+                  a.id === actorId ? { ...a, drafted_rig: generatedRig.data } : a
+                )
+              };
+            });
 
-	            actorRig = generatedRig.data;
-	            addLog(`[PAID] ✓ '${actor.name}' SVG rig assembled.`);
-	          } else if (actorRig && referenceImage && (missingViews.length > 0 || Boolean(rigRefreshReason))) {
-	            if (rigRefreshReason) {
-	              addLog(`> Rebuilding rig for '${actor.name}'...`);
-	              addLog(`> Refreshing weak draft (${rigRefreshReason}) with isolated raster reference...`);
-	            } else {
-	              addLog(`> Extending rig views for '${actor.name}'...`);
-	              addLog(`> Capturing additional views (${missingViews.join(', ')})...`);
-	            }
+            actorRig = generatedRig.data;
+            addLog(`[PAID] ✓ '${actor.name}' SVG rig assembled.`);
+          } else if (actorRig && referenceImage && (missingViews.length > 0 || Boolean(rigRefreshReason))) {
+            if (rigRefreshReason) {
+              addLog(`> Rebuilding rig for '${actor.name}'...`);
+              addLog(`> Refreshing weak draft (${rigRefreshReason}) with isolated raster reference...`);
+            } else {
+              addLog(`> Extending rig views for '${actor.name}'...`);
+              addLog(`> Capturing additional views (${missingViews.join(', ')})...`);
+            }
 
-	            const regeneratedRig = await generateRigDraft({
-	              generationReference: referenceImage,
-	              description: actorDescription,
-	              requiredViews,
-	              qualityMode: "reviewable",
-	            });
-	            apiCalls += 1;
-	            logUsage(regeneratedRig.usage, `Draftsman (${actor.name}:view update)`);
-	            if (regeneratedRig.review && !regeneratedRig.review.acceptable) {
-	              addLog(`[REVIEW] Draft quality for '${actor.name}': ${regeneratedRig.review.reasons.slice(0, 3).join(" ")}`);
-	            }
+            const regeneratedRig = await generateRigDraft({
+              generationReference: referenceImage,
+              description: actorDescription,
+              requiredViews,
+              qualityMode: "reviewable",
+            });
+            apiCalls += 1;
+            logUsage(regeneratedRig.usage, `Draftsman (${actor.name}:view update)`);
+            if (regeneratedRig.review && !regeneratedRig.review.acceptable) {
+              addLog(`[REVIEW] Draft quality for '${actor.name}': ${regeneratedRig.review.reasons.slice(0, 3).join(" ")}`);
+            }
 
-	            const updatedRig = {
-	              ...regeneratedRig.data,
-	              rig_data: {
-	                ...regeneratedRig.data.rig_data,
-	                motion_clips: {},
-	              },
-	            };
+            const updatedRig = {
+              ...regeneratedRig.data,
+              rig_data: {
+                ...regeneratedRig.data.rig_data,
+                motion_clips: {},
+              },
+            };
 
-	            setStoryData(prev => {
-	              if (!prev) return prev;
-	              return {
-	                ...prev,
-	                actors_detected: prev.actors_detected.map(a =>
-	                  a.id === actorId ? { ...a, drafted_rig: updatedRig } : a
-	                )
-	              };
-	            });
+            setStoryData(prev => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                actors_detected: prev.actors_detected.map(a =>
+                  a.id === actorId ? { ...a, drafted_rig: updatedRig } : a
+                )
+              };
+            });
 
-	            actorRig = updatedRig;
-	            addLog(`[PAID] ✓ '${actor.name}' rig updated with views: ${requiredViews.join(', ')}.`);
-	          } else if (actorRig) {
-	            addLog(`[REUSED] ✓ '${actor.name}' rig found in cache.`);
-	          } else {
-	            addLog(`[BLOCKED] Actor '${actor.name}' has no raster reference image. Rig generation skipped.`);
-	          }
+            actorRig = updatedRig;
+            addLog(`[PAID] ✓ '${actor.name}' rig updated with views: ${requiredViews.join(', ')}.`);
+          } else if (actorRig) {
+            addLog(`[REUSED] ✓ '${actor.name}' rig found in cache.`);
+          } else {
+            addLog(`[BLOCKED] Actor '${actor.name}' has no raster reference image. Rig generation skipped.`);
+          }
 
-	          if (actorRig) {
-	            let nextRig = actorRig;
+          if (actorRig) {
+            let nextRig = actorRig;
 
             for (const actorAction of actorActions) {
               const motionKey = normalizeMotionKey(actorAction.motion);
@@ -1762,6 +1838,108 @@ export default function Home() {
     setSelectedActionIndex(idx >= 0 ? idx : null);
   };
 
+  const handleActorScaleChange = (actorId: string, scale: number) => {
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const beat = newBeats[selectedSceneIndex];
+      if (!beat) return prev;
+      const newActions = beat.actions.map(a => {
+        if (a.actor_id !== actorId) return a;
+        return {
+          ...a,
+          spatial_transform: {
+            ...(a.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
+            scale,
+          },
+        };
+      });
+      let nextCompiledScene = beat.compiled_scene;
+      if (nextCompiledScene) {
+        nextCompiledScene = {
+          ...nextCompiledScene,
+          instance_tracks: nextCompiledScene.instance_tracks.map(track => {
+            if (track.actor_id !== actorId) return track;
+            return {
+              ...track,
+              clip_bindings: track.clip_bindings.map(binding => ({
+                ...binding,
+                start_transform: {
+                  ...binding.start_transform,
+                  scale,
+                },
+                end_transform: binding.end_transform
+                  ? { ...binding.end_transform, scale }
+                  : binding.end_transform,
+              })),
+            };
+          }),
+        };
+      }
+      newBeats[selectedSceneIndex] = { ...beat, actions: newActions, compiled_scene: nextCompiledScene };
+      return { ...prev, beats: newBeats };
+    });
+  };
+
+  const handleLayerMove = (actorId: string, direction: -1 | 1) => {
+    // direction: -1 = up the list (higher Z, visually forward), 1 = down the list (lower Z, visually backward)
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const beat = newBeats[selectedSceneIndex];
+      if (!beat) return prev;
+
+      // Extract current z-indices and sort actors
+      const currentZs = Array.from(new Set(beat.actions.map(a => a.actor_id))).map(id => {
+        const actions = beat.actions.filter(a => a.actor_id === id);
+        return { id, z: Math.max(...actions.map(a => a.spatial_transform?.z_index ?? 10)) };
+      }).sort((a, b) => b.z - a.z); // highest Z first
+
+      const index = currentZs.findIndex(o => o.id === actorId);
+      if (index === -1) return prev;
+      if (direction === -1 && index === 0) return prev; // already at top
+      if (direction === 1 && index === currentZs.length - 1) return prev; // already at bottom
+
+      // Swap elements in our ordered list
+      const swapIndex = index + direction;
+      [currentZs[index], currentZs[swapIndex]] = [currentZs[swapIndex], currentZs[index]];
+
+      // Re-assign z-indices from 10...N*10 in reverse order
+      const zMap: Record<string, number> = {};
+      currentZs.forEach((item, i) => {
+        zMap[item.id] = (currentZs.length - i) * 10;
+      });
+
+      const newActions = beat.actions.map(a => ({
+        ...a,
+        spatial_transform: {
+          ...(a.spatial_transform || { x: 960, y: 950, scale: 0.5 }),
+          z_index: zMap[a.actor_id] ?? 10, // write the new Z!
+        },
+      }));
+
+      const currentBeat = { ...beat, actions: newActions };
+      const previousCompiledScene = selectedSceneIndex > 0
+          ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+          : null;
+      const recompiled = compileBeatToScene(currentBeat, availableRigs, previousCompiledScene, stageOrientation);
+      
+      // Also forcefully overwrite the compiled tracks Z-index to match so the UI sorts immediately
+      if (recompiled) {
+         recompiled.instance_tracks = recompiled.instance_tracks.map(track => {
+             const trackZ = zMap[track.actor_id] ?? 10;
+             return {
+                 ...track,
+                 transform_track: track.transform_track.map(t => ({ ...t, z_index: trackZ }))
+             };
+         });
+      }
+
+      newBeats[selectedSceneIndex] = { ...currentBeat, compiled_scene: recompiled };
+      return { ...prev, beats: newBeats };
+    });
+  };
+
   const handleActorPositionChange = (actorId: string, x: number, y: number) => {
     setStoryData(prev => {
       if (!prev) return prev;
@@ -1804,10 +1982,10 @@ export default function Home() {
                 },
                 end_transform: binding.end_transform
                   ? {
-                      ...binding.end_transform,
-                      x: Math.round(binding.end_transform.x + dx),
-                      y: Math.round(binding.end_transform.y + dy),
-                    }
+                    ...binding.end_transform,
+                    x: Math.round(binding.end_transform.x + dx),
+                    y: Math.round(binding.end_transform.y + dy),
+                  }
                   : binding.end_transform,
               })),
             };
@@ -1949,7 +2127,7 @@ export default function Home() {
             <Play size={16} className="text-white fill-white ml-0.5" />
           </div>
           <h1 className="text-xl font-bold tracking-tight bg-gradient-to-br from-neutral-800 dark:from-white via-neutral-600 dark:via-neutral-200 to-neutral-500 dark:to-neutral-400 bg-clip-text text-transparent">
-            Cartoon 2Director
+            Cartoon 2D
           </h1>
         </div>
         <div className="ml-auto flex items-center gap-3">
@@ -2134,108 +2312,108 @@ export default function Home() {
                         ...Object.keys(actor.drafted_rig?.rig_data.animation_clips || {}),
                       ])).sort();
                       return (
-                    <div
-                      key={actor.id}
-                      onClick={() => handleActorSelect(selectedActorId === actor.id ? null : actor.id)}
-                      className={`px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${selectedActorId === actor.id ? 'bg-cyan-100 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : 'hover:bg-neutral-100 dark:hover:bg-neutral-800/50'}`}
-                    >
-                      <div className="flex items-center gap-2">
-                        {/* Actor Thumbnail */}
-                        <div className="w-8 h-8 rounded-md overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
-                          {actorReferences[actor.id] ? (
-                            <img
-                              src={actorReferences[actor.id]}
-                              alt={actor.name}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
-                              <ImageIcon size={12} />
+                        <div
+                          key={actor.id}
+                          onClick={() => handleActorSelect(selectedActorId === actor.id ? null : actor.id)}
+                          className={`px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${selectedActorId === actor.id ? 'bg-cyan-100 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : 'hover:bg-neutral-100 dark:hover:bg-neutral-800/50'}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            {/* Actor Thumbnail */}
+                            <div className="w-8 h-8 rounded-md overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
+                              {actorReferences[actor.id] ? (
+                                <img
+                                  src={actorReferences[actor.id]}
+                                  alt={actor.name}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
+                                  <ImageIcon size={12} />
+                                </div>
+                              )}
+                            </div>
+                            {/* Actor Info & Draft Button */}
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">{actor.name}</div>
+                              <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
+                                {actor.species}
+                                {hasRig && (
+                                  <span className="ml-1 text-cyan-600 dark:text-cyan-400">
+                                    • object{clipNames.length > 0 ? ` + ${clipNames.length} action${clipNames.length === 1 ? "" : "s"}` : ""}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Draft Vector Rig Button */}
+                            {actorReferences[actor.id] && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDraftingActorId(actor.id);
+                                  // Load cached rig if it exists, otherwise prepare for new generation
+                                  setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                                  setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                                  setDraftReview(null);
+                                  setRigFixPrompt("");
+                                  setDraftError(null);
+                                }}
+                                className={`p-1.5 rounded transition-colors group-hover:opacity-100 ${actor.drafted_rig
+                                  ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 opacity-100 border border-emerald-200 dark:border-emerald-700/50"
+                                  : "text-neutral-400 hover:text-cyan-500 opacity-0 bg-transparent"
+                                  }`}
+                                title={actor.drafted_rig ? "View Vector Rig" : "Generate SVG Vector Rig"}
+                              >
+                                {actor.drafted_rig ? (
+                                  <div className="relative">
+                                    <Sparkles size={14} />
+                                    <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border border-white dark:border-neutral-900"></div>
+                                  </div>
+                                ) : (
+                                  <Sparkles size={14} />
+                                )}
+                              </button>
+                            )}
+                          </div>
+
+                          {selectedActorId === actor.id && hasRig && (
+                            <div className="mt-2 flex flex-wrap gap-1 pl-10">
+                              <button
+                                key={`${actor.id}-base-object`}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDraftingActorId(actor.id);
+                                  setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                                  setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                                  setDraftReview(null);
+                                  setRigFixPrompt("");
+                                  setDraftError(null);
+                                }}
+                                className="inline-flex items-center rounded-full border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-0.5 text-[9px] font-mono text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
+                                title={`Open the base SVG rig for ${actor.name}`}
+                              >
+                                object
+                              </button>
+                              {clipNames.map(clipName => (
+                                <button
+                                  key={`${actor.id}-${clipName}`}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setClipPreviewState({ actorId: actor.id, clipName });
+                                    setClipPreviewPlayhead(0);
+                                    setClipPreviewPlaying(true);
+                                  }}
+                                  className="inline-flex items-center rounded-full border border-cyan-200 dark:border-cyan-800/50 bg-cyan-50 dark:bg-cyan-900/20 px-2 py-0.5 text-[9px] font-mono text-cyan-700 dark:text-cyan-300 hover:bg-cyan-100 dark:hover:bg-cyan-900/30 transition-colors"
+                                  title={`Preview reusable motion clip on ${actor.name}`}
+                                >
+                                  {clipName}
+                                </button>
+                              ))}
                             </div>
                           )}
                         </div>
-                        {/* Actor Info & Draft Button */}
-                        <div className="flex-1 min-w-0">
-                          <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">{actor.name}</div>
-                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
-                            {actor.species}
-                            {hasRig && (
-                              <span className="ml-1 text-cyan-600 dark:text-cyan-400">
-                                • object{clipNames.length > 0 ? ` + ${clipNames.length} action${clipNames.length === 1 ? "" : "s"}` : ""}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Draft Vector Rig Button */}
-                        {actorReferences[actor.id] && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDraftingActorId(actor.id);
-                              // Load cached rig if it exists, otherwise prepare for new generation
-                              setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
-                              setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
-                              setDraftReview(null);
-                              setRigFixPrompt("");
-                              setDraftError(null);
-                            }}
-                            className={`p-1.5 rounded transition-colors group-hover:opacity-100 ${actor.drafted_rig
-                              ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 opacity-100 border border-emerald-200 dark:border-emerald-700/50"
-                              : "text-neutral-400 hover:text-cyan-500 opacity-0 bg-transparent"
-                              }`}
-                            title={actor.drafted_rig ? "View Vector Rig" : "Generate SVG Vector Rig"}
-                          >
-                            {actor.drafted_rig ? (
-                              <div className="relative">
-                                <Sparkles size={14} />
-                                <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border border-white dark:border-neutral-900"></div>
-                              </div>
-                            ) : (
-                              <Sparkles size={14} />
-                            )}
-                          </button>
-                        )}
-                      </div>
-
-                      {selectedActorId === actor.id && hasRig && (
-                        <div className="mt-2 flex flex-wrap gap-1 pl-10">
-                          <button
-                            key={`${actor.id}-base-object`}
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDraftingActorId(actor.id);
-                              setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
-                              setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
-                              setDraftReview(null);
-                              setRigFixPrompt("");
-                              setDraftError(null);
-                            }}
-                            className="inline-flex items-center rounded-full border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-0.5 text-[9px] font-mono text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
-                            title={`Open the base SVG rig for ${actor.name}`}
-                          >
-                            object
-                          </button>
-                          {clipNames.map(clipName => (
-                            <button
-                              key={`${actor.id}-${clipName}`}
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setClipPreviewState({ actorId: actor.id, clipName });
-                                setClipPreviewPlayhead(0);
-                                setClipPreviewPlaying(true);
-                              }}
-                              className="inline-flex items-center rounded-full border border-cyan-200 dark:border-cyan-800/50 bg-cyan-50 dark:bg-cyan-900/20 px-2 py-0.5 text-[9px] font-mono text-cyan-700 dark:text-cyan-300 hover:bg-cyan-100 dark:hover:bg-cyan-900/30 transition-colors"
-                              title={`Preview reusable motion clip on ${actor.name}`}
-                            >
-                              {clipName}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
                       );
                     })()
                   ))}
@@ -2247,22 +2425,22 @@ export default function Home() {
               const beatProps = storyData?.beats[selectedSceneIndex]?.drafted_background?.rig_data?.interactionNulls;
               if (!beatProps || beatProps.length === 0) return null;
               return (
-              <div>
-                <div className="px-2 py-1.5 text-[10px] font-bold text-neutral-400 uppercase tracking-wider flex items-center gap-2">
-                  <Mountain size={12} /> Props
+                <div>
+                  <div className="px-2 py-1.5 text-[10px] font-bold text-neutral-400 uppercase tracking-wider flex items-center gap-2">
+                    <Mountain size={12} /> Props
+                  </div>
+                  <div className="mt-0.5 space-y-0.5 pl-2 pr-1">
+                    {beatProps.map(propId => (
+                      <div
+                        key={propId}
+                        className="flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-800/50 transition-colors"
+                      >
+                        <div className="w-2 h-2 rounded-sm bg-neutral-300 dark:bg-neutral-600 shrink-0" />
+                        <span className="text-[10px] text-neutral-600 dark:text-neutral-400 truncate">{propId}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="mt-0.5 space-y-0.5 pl-2 pr-1">
-                  {beatProps.map(propId => (
-                    <div
-                      key={propId}
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-800/50 transition-colors"
-                    >
-                      <div className="w-2 h-2 rounded-sm bg-neutral-300 dark:bg-neutral-600 shrink-0" />
-                      <span className="text-[10px] text-neutral-600 dark:text-neutral-400 truncate">{propId}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
               );
             })()}
             <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
@@ -2370,402 +2548,403 @@ export default function Home() {
                         );
 
                         return (
-                        <div key={index} onClick={() => setSelectedSceneIndex(index)} className="cursor-pointer relative pl-1">
-                          {/* Node Dot */}
-                          <div className={`absolute left-0 top-6 w-3 h-3 rounded-full border-2 z-10 transition-all ${selectedSceneIndex === index ? 'bg-cyan-500 border-white shadow-[0_0_15px_rgba(34,211,238,0.8)] scale-125' : 'bg-white dark:bg-[#111] border-neutral-300 dark:border-neutral-700'}`} />
+                          <div key={index} onClick={() => setSelectedSceneIndex(index)} className="cursor-pointer relative pl-1">
+                            {/* Node Dot */}
+                            <div className={`absolute left-0 top-6 w-3 h-3 rounded-full border-2 z-10 transition-all ${selectedSceneIndex === index ? 'bg-cyan-500 border-white shadow-[0_0_15px_rgba(34,211,238,0.8)] scale-125' : 'bg-white dark:bg-[#111] border-neutral-300 dark:border-neutral-700'}`} />
 
-                          <div className={`ml-6 p-1 rounded-2xl border backdrop-blur-md shadow-lg transition-all duration-300 group/card ${selectedSceneIndex === index ? 'bg-cyan-50/50 dark:bg-cyan-900/20 border-cyan-400 dark:border-cyan-500/50 shadow-[0_8px_30px_rgba(34,211,238,0.15)]' : 'bg-white dark:bg-[#0f0f0f] border-neutral-200 dark:border-neutral-800/60 hover:border-cyan-300 dark:hover:border-neutral-700/80'}`}>
-                            {/* Always-visible header with scene number + controls */}
-                            <div className="flex items-center justify-between px-3 py-1.5 bg-neutral-50 dark:bg-[#0a0a0a] border-b border-neutral-200/80 dark:border-neutral-800/50">
-                              <span className="text-[10px] font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Scene {index + 1}</span>
-                              <div className="flex items-center gap-0.5">
-                                {/* Move Up */}
-                                <button
-                                  className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                                  title="Move Up"
-                                  disabled={index === 0}
-                                  onClick={() => {
-                                    setStoryData(prev => {
-                                      if (!prev) return prev;
-                                      const newBeats = [...prev.beats];
-                                      [newBeats[index - 1], newBeats[index]] = [newBeats[index], newBeats[index - 1]];
-                                      return { ...prev, beats: newBeats };
-                                    });
-                                  }}
-                                >
-                                  <ChevronUp size={12} />
-                                </button>
-                                {/* Move Down */}
-                                <button
-                                  className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                                  title="Move Down"
-                                  disabled={index === storyData.beats.length - 1}
-                                  onClick={() => {
-                                    setStoryData(prev => {
-                                      if (!prev) return prev;
-                                      const newBeats = [...prev.beats];
-                                      [newBeats[index], newBeats[index + 1]] = [newBeats[index + 1], newBeats[index]];
-                                      return { ...prev, beats: newBeats };
-                                    });
-                                  }}
-                                >
-                                  <ChevronDown size={12} />
-                                </button>
-                                {/* Duplicate */}
-                                <button
-                                  className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors"
-                                  title="Duplicate Scene"
-                                  onClick={() => {
-                                    setStoryData(prev => {
-                                      if (!prev) return prev;
-                                      const newBeats = [...prev.beats];
-                                      const clone = JSON.parse(JSON.stringify(prev.beats[index]));
-                                      newBeats.splice(index + 1, 0, clone);
-                                      return { ...prev, beats: newBeats };
-                                    });
-                                  }}
-                                >
-                                  <Copy size={12} />
-                                </button>
-                                {/* Draft Background */}
-                                <button
-                                  className={`p-1 rounded transition-colors ${beat.drafted_background ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700/50" : "text-neutral-400 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-neutral-200 dark:hover:bg-neutral-800"}`}
-                                  title={beat.drafted_background ? "View Vector Background" : "Generate SVG Background"}
-                                  onClick={() => {
-                                    setDraftingBackgroundSceneIndex(index);
-                                    setDraftBackgroundError(null);
-                                  }}
-                                >
-                                  {beat.drafted_background ? (
-                                    <div className="relative">
-                                      <Mountain size={12} />
-                                      <div className="absolute -top-0.5 -right-0.5 w-[5px] h-[5px] bg-emerald-500 rounded-full"></div>
-                                    </div>
-                                  ) : (
-                                    <Mountain size={12} />
-                                  )}
-                                </button>
-                                {/* Edit */}
-                                {editingBeatIndex !== index && (
+                            <div className={`ml-6 p-1 rounded-2xl border backdrop-blur-md shadow-lg transition-all duration-300 group/card ${selectedSceneIndex === index ? 'bg-cyan-50/50 dark:bg-cyan-900/20 border-cyan-400 dark:border-cyan-500/50 shadow-[0_8px_30px_rgba(34,211,238,0.15)]' : 'bg-white dark:bg-[#0f0f0f] border-neutral-200 dark:border-neutral-800/60 hover:border-cyan-300 dark:hover:border-neutral-700/80'}`}>
+                              {/* Always-visible header with scene number + controls */}
+                              <div className="flex items-center justify-between px-3 py-1.5 bg-neutral-50 dark:bg-[#0a0a0a] border-b border-neutral-200/80 dark:border-neutral-800/50">
+                                <span className="text-[10px] font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Scene {index + 1}</span>
+                                <div className="flex items-center gap-0.5">
+                                  {/* Move Up */}
                                   <button
-                                    className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors"
-                                    title="Edit Panel"
+                                    className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="Move Up"
+                                    disabled={index === 0}
                                     onClick={() => {
-                                      setEditingBeatIndex(index);
-                                      setEditPrompt("");
-                                    }}
-                                  >
-                                    <Pencil size={12} />
-                                  </button>
-                                )}
-                                {/* Delete (inline confirm) */}
-                                <button
-                                  className={`p-1 rounded transition-all ${confirmDeleteBeatIndex === index ? 'bg-red-100 dark:bg-red-950/30 text-red-500 animate-pulse' : 'hover:bg-red-100 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500'}`}
-                                  title={confirmDeleteBeatIndex === index ? "Click again to delete" : "Delete Scene"}
-                                  onClick={() => {
-                                    if (confirmDeleteBeatIndex === index) {
                                       setStoryData(prev => {
                                         if (!prev) return prev;
                                         const newBeats = [...prev.beats];
-                                        newBeats.splice(index, 1);
+                                        [newBeats[index - 1], newBeats[index]] = [newBeats[index], newBeats[index - 1]];
                                         return { ...prev, beats: newBeats };
                                       });
-                                      setConfirmDeleteBeatIndex(null);
-                                    } else {
-                                      setConfirmDeleteBeatIndex(index);
-                                      setTimeout(() => setConfirmDeleteBeatIndex(curr => curr === index ? null : curr), 3000);
-                                    }
-                                  }}
-                                >
-                                  <Trash2 size={12} />
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Image area */}
-                            <div className={`${storyboardImageFrameClass} bg-neutral-100 dark:bg-[#1a1a1a] flex items-center justify-center overflow-hidden relative`}>
-                              {beat.image_data ? (
-                                /* eslint-disable-next-line @next/next/no-img-element */
-                                <img src={beat.image_data} alt={`Scene ${beat.scene_number}`} className="w-full h-full object-cover" />
-                              ) : isGenerating ? (
-                                <div className="w-full h-full flex flex-col items-center justify-center animate-pulse bg-neutral-200/50 dark:bg-neutral-900/40">
-                                  <ImageIcon className="text-neutral-400 dark:text-neutral-700 mb-2" size={32} />
-                                  <span className="text-xs text-neutral-500 uppercase font-mono tracking-widest text-center px-1">Drawing Scene {beat.scene_number}...</span>
-                                </div>
-                              ) : (
-                                <div className="w-full h-full flex flex-col items-center justify-center bg-red-50/50 dark:bg-red-950/20 text-red-500 border border-red-100 dark:border-red-900/50">
-                                  <ImageOff className="text-red-400 dark:text-red-600 mb-2" size={32} />
-                                  <span className="text-xs font-semibold text-center px-1">Image Generation Failed</span>
-                                  <span className="text-[10px] text-red-400 mt-1 px-4 text-center">No image was returned. You can try editing the prompt or deleting this scene.</span>
-                                </div>
-                              )}
-
-                              {/* Image Inpainting Edit Overlay */}
-                              {editingBeatIndex === index && (
-                                <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-30 flex flex-col p-3 transition-all">
-                                  <div className="flex-1 flex flex-col">
-                                    <label className="text-[10px] uppercase tracking-wider font-semibold text-white/70 mb-1 flex items-center gap-1.5"><Pencil size={10} /> Redraw Instructions</label>
-                                    <textarea
-                                      autoFocus
-                                      value={editPrompt}
-                                      onChange={(e) => setEditPrompt(e.target.value)}
-                                      placeholder="e.g. Make it raining, give them a blue hat, add a car in the background..."
-                                      className="w-full flex-1 bg-black/40 border border-white/20 rounded p-2 text-xs text-white placeholder-white/40 resize-none focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 transition-all custom-scrollbar"
-                                      disabled={isEditingImage}
-                                    />
-                                  </div>
-                                  <div className="flex items-center justify-end gap-2 mt-2">
+                                    }}
+                                  >
+                                    <ChevronUp size={12} />
+                                  </button>
+                                  {/* Move Down */}
+                                  <button
+                                    className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="Move Down"
+                                    disabled={index === storyData.beats.length - 1}
+                                    onClick={() => {
+                                      setStoryData(prev => {
+                                        if (!prev) return prev;
+                                        const newBeats = [...prev.beats];
+                                        [newBeats[index], newBeats[index + 1]] = [newBeats[index + 1], newBeats[index]];
+                                        return { ...prev, beats: newBeats };
+                                      });
+                                    }}
+                                  >
+                                    <ChevronDown size={12} />
+                                  </button>
+                                  {/* Duplicate */}
+                                  <button
+                                    className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors"
+                                    title="Duplicate Scene"
+                                    onClick={() => {
+                                      setStoryData(prev => {
+                                        if (!prev) return prev;
+                                        const newBeats = [...prev.beats];
+                                        const clone = JSON.parse(JSON.stringify(prev.beats[index]));
+                                        newBeats.splice(index + 1, 0, clone);
+                                        return { ...prev, beats: newBeats };
+                                      });
+                                    }}
+                                  >
+                                    <Copy size={12} />
+                                  </button>
+                                  {/* Draft Background */}
+                                  <button
+                                    className={`p-1 rounded transition-colors ${beat.drafted_background ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700/50" : "text-neutral-400 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-neutral-200 dark:hover:bg-neutral-800"}`}
+                                    title={beat.drafted_background ? "View Vector Background" : "Generate SVG Background"}
+                                    onClick={() => {
+                                      setDraftingBackgroundSceneIndex(index);
+                                      setDraftBackgroundError(null);
+                                    }}
+                                  >
+                                    {beat.drafted_background ? (
+                                      <div className="relative">
+                                        <Mountain size={12} />
+                                        <div className="absolute -top-0.5 -right-0.5 w-[5px] h-[5px] bg-emerald-500 rounded-full"></div>
+                                      </div>
+                                    ) : (
+                                      <Mountain size={12} />
+                                    )}
+                                  </button>
+                                  {/* Edit */}
+                                  {editingBeatIndex !== index && (
                                     <button
-                                      className="px-3 py-1.5 text-[10px] font-semibold text-white/70 hover:text-white hover:bg-white/10 rounded transition-colors"
+                                      className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-400 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors"
+                                      title="Edit Panel"
                                       onClick={() => {
-                                        setEditingBeatIndex(null);
+                                        setEditingBeatIndex(index);
                                         setEditPrompt("");
                                       }}
-                                      disabled={isEditingImage}
                                     >
-                                      Cancel
+                                      <Pencil size={12} />
                                     </button>
-                                    <button
-                                      className="px-3 py-1.5 text-[10px] font-semibold bg-cyan-600 hover:bg-cyan-500 text-white rounded transition-colors flex items-center gap-1.5 disabled:bg-cyan-800 disabled:text-white/50"
-                                      onClick={() => handleEditImageSubmit(index)}
-                                      disabled={isEditingImage || !editPrompt.trim()}
-                                    >
-                                      {isEditingImage ? <><Loader2 size={10} className="animate-spin" /> Rendering...</> : "Apply Edit"}
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Image generation cost badge */}
-                            {imageGenCost && (
-                              <div className="px-3 py-1 bg-neutral-50 dark:bg-[#0a0a0a] border-t border-neutral-100 dark:border-neutral-800/50 flex items-center gap-2 text-[9px] font-mono text-neutral-400 dark:text-neutral-600">
-                                <span className="text-neutral-500 dark:text-neutral-500">Image gen:</span>
-                                <span className="text-amber-600 dark:text-amber-500 font-semibold">~${imageGenCost.cost.toFixed(5)}</span>
-                                <span className="text-neutral-400 dark:text-neutral-600">{imageGenCost.tokens.toLocaleString()} tokens</span>
-                              </div>
-                            )}
-
-                            {/* Narrative + metadata */}
-                            <div className="p-3 pt-2">
-                              <p
-                                className="text-xs text-neutral-700 dark:text-neutral-300 leading-relaxed mb-2 cursor-text hover:bg-neutral-100/50 dark:hover:bg-neutral-800/30 rounded px-1 -mx-1 transition-colors focus:outline-none focus:ring-1 focus:ring-cyan-500/30"
-                                contentEditable
-                                suppressContentEditableWarning
-                                onBlur={(e) => {
-                                  const newText = e.currentTarget.textContent || '';
-                                  if (newText !== beat.narrative) {
-                                    setStoryData(prev => {
-                                      if (!prev) return prev;
-                                      const newBeats = [...prev.beats];
-                                      newBeats[index] = { ...newBeats[index], narrative: newText };
-                                      return { ...prev, beats: newBeats };
-                                    });
-                                  }
-                                }}
-                              >
-                                {beat.narrative}
-                              </p>
-                              <div className="flex flex-wrap gap-1.5">
-                                {beat.audio.map((audio, i) => (
-                                  <span key={`audio-${i}`} className={`group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[9px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
-                                    <Volume2 size={8} /> {audio.type === 'dialogue' ? `"${audio.text}"` : audio.description}
-                                    <button
-                                      className="opacity-0 group-hover/tag:opacity-100 ml-0.5 hover:text-red-500 transition-all"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
+                                  )}
+                                  {/* Delete (inline confirm) */}
+                                  <button
+                                    className={`p-1 rounded transition-all ${confirmDeleteBeatIndex === index ? 'bg-red-100 dark:bg-red-950/30 text-red-500 animate-pulse' : 'hover:bg-red-100 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500'}`}
+                                    title={confirmDeleteBeatIndex === index ? "Click again to delete" : "Delete Scene"}
+                                    onClick={() => {
+                                      if (confirmDeleteBeatIndex === index) {
                                         setStoryData(prev => {
                                           if (!prev) return prev;
                                           const newBeats = [...prev.beats];
-                                          newBeats[index] = { ...newBeats[index], audio: newBeats[index].audio.filter((_, ai) => ai !== i) };
+                                          newBeats.splice(index, 1);
                                           return { ...prev, beats: newBeats };
                                         });
-                                      }}
-                                      title="Remove this audio cue"
-                                    >×</button>
-                                  </span>
-                                ))}
-                                {beat.actions.map((act, i) => (
-                                  <span
-                                    key={`act-${i}`}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setSelectedSceneIndex(index);
-                                      setSelectedActionIndex(i);
-                                      setSelectedActorId(act.actor_id);
+                                        setConfirmDeleteBeatIndex(null);
+                                      } else {
+                                        setConfirmDeleteBeatIndex(index);
+                                        setTimeout(() => setConfirmDeleteBeatIndex(curr => curr === index ? null : curr), 3000);
+                                      }
                                     }}
-                                    className={`group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full border cursor-pointer text-[9px] font-mono transition-colors ${selectedSceneIndex === index && selectedActionIndex === i ? 'bg-cyan-500 text-white border-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)]' : 'bg-neutral-100 dark:bg-neutral-800/80 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:border-cyan-400 dark:hover:border-cyan-500/50'}`}
                                   >
-                                    {act.actor_id}:{act.motion}({act.style})
-                                    <button
-                                      className="opacity-0 group-hover/tag:opacity-100 ml-0.5 hover:text-red-500 transition-all"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setStoryData(prev => {
-                                          if (!prev) return prev;
-                                          const newBeats = [...prev.beats];
-                                          newBeats[index] = { ...newBeats[index], actions: newBeats[index].actions.filter((_, ai) => ai !== i) };
-                                          return { ...prev, beats: newBeats };
-                                        });
-                                        if (selectedSceneIndex === index && selectedActionIndex === i) {
-                                          setSelectedActionIndex(null);
-                                        }
-                                      }}
-                                      title="Remove this action"
-                                    >×</button>
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
-                            
-                            {/* Auto-Animate Macro Button + Persistent Log Console */}
-                            <div className="border-t border-neutral-200/80 dark:border-neutral-800/50 bg-neutral-50/50 dark:bg-[#0a0a0a]/50">
-                              {(() => {
-                                const persistedLogs = dismissedCompileReports[index]
-                                  ? null
-                                  : (completedAnimLogs[index] || beat.compile_report?.logs || null);
-
-                                if (animatingSceneIndex === index) {
-                                  return (
-                                // Live: show spinning log while running
-                                <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
-                                  <div className="absolute top-2 right-2">
-                                    <Loader2 size={12} className="animate-spin text-emerald-500 opacity-50" />
-                                  </div>
-                                  {animatingLogs.map((log, i) => (
-                                    <div key={i} className="animate-in fade-in slide-in-from-bottom-1">
-                                      {renderCompileLogLine(log, i)}
-                                    </div>
-                                  ))}
-                                </div>
-                                  );
-                                }
-
-                                if (persistedLogs) {
-                                  return (
-                                // Completed: persistent log with dismiss + re-run button
-                                <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 max-h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
-                                  <div className="absolute top-2 right-2 flex items-center gap-1">
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleAnimateScene(index);
-                                      }}
-                                      title="Re-run animation pipeline"
-                                      className="text-neutral-500 hover:text-emerald-400 transition-colors"
-                                    >
-                                      <Play size={10} className="fill-current" />
-                                    </button>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setDismissedCompileReports(prev => ({ ...prev, [index]: true }));
-                                        setCompletedAnimLogs(prev => { const n = { ...prev }; delete n[index]; return n; });
-                                      }}
-                                      title="Dismiss log"
-                                      className="text-neutral-500 hover:text-red-400 transition-colors text-[11px] leading-none"
-                                    >
-                                      ✕
-                                    </button>
-                                  </div>
-                                  {persistedLogs.map((log, i) => renderCompileLogLine(log, i))}
-                                </div>
-                                  );
-                                }
-
-                                if (beat.compiled_scene && !dismissedCompileReports[index]) {
-                                  return (
-                                    <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 max-h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
-                                      <div className="absolute top-2 right-2 flex items-center gap-1">
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleAnimateScene(index);
-                                          }}
-                                          title="Re-run animation pipeline"
-                                          className="text-neutral-500 hover:text-emerald-400 transition-colors"
-                                        >
-                                          <Play size={10} className="fill-current" />
-                                        </button>
-                                      </div>
-                                      <div>✓ Compiled scene timeline ({beat.compiled_scene.instance_tracks.length} track{beat.compiled_scene.instance_tracks.length === 1 ? "" : "s"}, {beat.compiled_scene.duration_seconds.toFixed(2)}s).</div>
-                                      <div>✓ Persisted compiled scene found after refresh.</div>
-                                      {beat.compile_report?.compiled_at && (
-                                        <div>Last compile: {new Date(beat.compile_report.compiled_at).toLocaleString()}</div>
-                                      )}
-                                    </div>
-                                  );
-                                }
-
-                                return (
-                                  <div className="p-2 space-y-2">
-                                    {beat.image_data ? (
-                                      <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 max-h-28 overflow-y-auto flex flex-col gap-0.5 rounded-lg shadow-inner relative custom-scrollbar">
-                                        <div>
-                                          {imageGenCost
-                                            ? hasExactImageGenCost
-                                              ? "✓ Storyboard panel generated."
-                                              : "✓ Storyboard panel generated. Showing fallback 0.5K image estimate."
-                                            : "✓ Storyboard panel generated. Waiting for usage metadata..."}
-                                        </div>
-                                        {imageGenCost ? (
-                                          <>
-                                            {renderCompileLogLine(`[PAID] Image gen: ~$${imageGenCost.cost.toFixed(5)} | ${imageGenCost.tokens.toLocaleString()} tokens`, `${index}-image-cost`)}
-                                            <div className="text-cyan-300">Ready for vector drafting and animation compile.</div>
-                                          </>
-                                        ) : null}
-                                      </div>
-                                    ) : null}
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleAnimateScene(index);
-                                      }}
-                                      disabled={isGenerating || !beat.image_data}
-                                      className="w-full py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm flex items-center justify-center gap-2 transition-all group/animate"
-                                    >
-                                      <Play size={14} className="fill-white group-hover/animate:scale-110 transition-transform" /> Animate Scene
-                                    </button>
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                          </div>
-
-                          {/* Insert After Button (between this panel and the next, or at end) */}
-                          <div className="my-1">
-                            {insertAtIndex === index + 1 ? (
-                              <div className="p-3 rounded-xl bg-cyan-50 dark:bg-cyan-950/30 border border-cyan-200 dark:border-cyan-800/60 border-dashed">
-                                <label className="text-[10px] uppercase tracking-wider font-semibold text-cyan-600 dark:text-cyan-400 mb-1.5 flex items-center gap-1.5">
-                                  <Plus size={10} /> {index + 1 < storyData.beats.length ? `Insert Scene Between ${index + 1} & ${index + 2}` : `Add New Scene at End`}
-                                </label>
-                                <textarea
-                                  autoFocus
-                                  value={insertPrompt}
-                                  onChange={(e) => setInsertPrompt(e.target.value)}
-                                  placeholder="Describe what happens in this new scene..."
-                                  className="w-full bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-700 rounded-lg p-2.5 text-xs text-neutral-800 dark:text-neutral-200 placeholder-neutral-400 dark:placeholder-neutral-500 resize-none focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 h-20"
-                                  disabled={isGenerating}
-                                />
-                                <div className="flex items-center justify-end gap-2 mt-2">
-                                  <button className="px-3 py-1.5 text-[10px] font-semibold text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-200 rounded transition-colors" onClick={() => { setInsertAtIndex(null); setInsertPrompt(""); }} disabled={isGenerating}>Cancel</button>
-                                  <button className="px-3 py-1.5 text-[10px] font-semibold bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50" onClick={() => handleInsertScene(index + 1)} disabled={isGenerating || !insertPrompt.trim()}>
-                                    {isGenerating ? <><Loader2 size={10} className="animate-spin" /> Generating...</> : <><Plus size={10} /> Generate Scene</>}
+                                    <Trash2 size={12} />
                                   </button>
                                 </div>
                               </div>
-                            ) : (
-                              <button
-                                onClick={() => { setInsertAtIndex(index + 1); setInsertPrompt(""); }}
-                                className="w-full py-1 border border-dashed border-neutral-300/60 dark:border-neutral-700/40 hover:border-cyan-400 dark:hover:border-cyan-600 rounded-lg text-[10px] font-medium text-neutral-400 dark:text-neutral-600 hover:text-cyan-600 dark:hover:text-cyan-400 transition-all flex items-center justify-center gap-1.5 hover:bg-cyan-50/50 dark:hover:bg-cyan-950/20"
-                                disabled={isGenerating}
-                              >
-                                <Plus size={10} /> Insert Scene
-                              </button>
-                            )}
+
+                              {/* Image area */}
+                              <div className={`${storyboardImageFrameClass} bg-neutral-100 dark:bg-[#1a1a1a] flex items-center justify-center overflow-hidden relative`}>
+                                {beat.image_data ? (
+                                  /* eslint-disable-next-line @next/next/no-img-element */
+                                  <img src={beat.image_data} alt={`Scene ${beat.scene_number}`} className="w-full h-full object-cover" />
+                                ) : isGenerating ? (
+                                  <div className="w-full h-full flex flex-col items-center justify-center animate-pulse bg-neutral-200/50 dark:bg-neutral-900/40">
+                                    <ImageIcon className="text-neutral-400 dark:text-neutral-700 mb-2" size={32} />
+                                    <span className="text-xs text-neutral-500 uppercase font-mono tracking-widest text-center px-1">Drawing Scene {beat.scene_number}...</span>
+                                  </div>
+                                ) : (
+                                  <div className="w-full h-full flex flex-col items-center justify-center bg-red-50/50 dark:bg-red-950/20 text-red-500 border border-red-100 dark:border-red-900/50">
+                                    <ImageOff className="text-red-400 dark:text-red-600 mb-2" size={32} />
+                                    <span className="text-xs font-semibold text-center px-1">Image Generation Failed</span>
+                                    <span className="text-[10px] text-red-400 mt-1 px-4 text-center">No image was returned. You can try editing the prompt or deleting this scene.</span>
+                                  </div>
+                                )}
+
+                                {/* Image Inpainting Edit Overlay */}
+                                {editingBeatIndex === index && (
+                                  <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-30 flex flex-col p-3 transition-all">
+                                    <div className="flex-1 flex flex-col">
+                                      <label className="text-[10px] uppercase tracking-wider font-semibold text-white/70 mb-1 flex items-center gap-1.5"><Pencil size={10} /> Redraw Instructions</label>
+                                      <textarea
+                                        autoFocus
+                                        value={editPrompt}
+                                        onChange={(e) => setEditPrompt(e.target.value)}
+                                        placeholder="e.g. Make it raining, give them a blue hat, add a car in the background..."
+                                        className="w-full flex-1 bg-black/40 border border-white/20 rounded p-2 text-xs text-white placeholder-white/40 resize-none focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 transition-all custom-scrollbar"
+                                        disabled={isEditingImage}
+                                      />
+                                    </div>
+                                    <div className="flex items-center justify-end gap-2 mt-2">
+                                      <button
+                                        className="px-3 py-1.5 text-[10px] font-semibold text-white/70 hover:text-white hover:bg-white/10 rounded transition-colors"
+                                        onClick={() => {
+                                          setEditingBeatIndex(null);
+                                          setEditPrompt("");
+                                        }}
+                                        disabled={isEditingImage}
+                                      >
+                                        Cancel
+                                      </button>
+                                      <button
+                                        className="px-3 py-1.5 text-[10px] font-semibold bg-cyan-600 hover:bg-cyan-500 text-white rounded transition-colors flex items-center gap-1.5 disabled:bg-cyan-800 disabled:text-white/50"
+                                        onClick={() => handleEditImageSubmit(index)}
+                                        disabled={isEditingImage || !editPrompt.trim()}
+                                      >
+                                        {isEditingImage ? <><Loader2 size={10} className="animate-spin" /> Rendering...</> : "Apply Edit"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Image generation cost badge */}
+                              {imageGenCost && (
+                                <div className="px-3 py-1 bg-neutral-50 dark:bg-[#0a0a0a] border-t border-neutral-100 dark:border-neutral-800/50 flex items-center gap-2 text-[9px] font-mono text-neutral-400 dark:text-neutral-600">
+                                  <span className="text-neutral-500 dark:text-neutral-500">Image gen:</span>
+                                  <span className="text-amber-600 dark:text-amber-500 font-semibold">~${imageGenCost.cost.toFixed(5)}</span>
+                                  <span className="text-neutral-400 dark:text-neutral-600">{imageGenCost.tokens.toLocaleString()} tokens</span>
+                                </div>
+                              )}
+
+                              {/* Narrative + metadata */}
+                              <div className="p-3 pt-2">
+                                <p
+                                  className="text-xs text-neutral-700 dark:text-neutral-300 leading-relaxed mb-2 cursor-text hover:bg-neutral-100/50 dark:hover:bg-neutral-800/30 rounded px-1 -mx-1 transition-colors focus:outline-none focus:ring-1 focus:ring-cyan-500/30"
+                                  contentEditable
+                                  suppressContentEditableWarning
+                                  onBlur={(e) => {
+                                    const newText = e.currentTarget.textContent || '';
+                                    if (newText !== beat.narrative) {
+                                      setStoryData(prev => {
+                                        if (!prev) return prev;
+                                        const newBeats = [...prev.beats];
+                                        newBeats[index] = { ...newBeats[index], narrative: newText };
+                                        return { ...prev, beats: newBeats };
+                                      });
+                                    }
+                                  }}
+                                >
+                                  {beat.narrative}
+                                </p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {beat.audio.map((audio, i) => (
+                                    <span key={`audio-${i}`} className={`group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[9px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
+                                      <Volume2 size={8} /> {audio.type === 'dialogue' ? `"${audio.text}"` : audio.description}
+                                      <button
+                                        className="opacity-0 group-hover/tag:opacity-100 ml-0.5 hover:text-red-500 transition-all"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setStoryData(prev => {
+                                            if (!prev) return prev;
+                                            const newBeats = [...prev.beats];
+                                            newBeats[index] = { ...newBeats[index], audio: newBeats[index].audio.filter((_, ai) => ai !== i) };
+                                            return { ...prev, beats: newBeats };
+                                          });
+                                        }}
+                                        title="Remove this audio cue"
+                                      >×</button>
+                                    </span>
+                                  ))}
+                                  {beat.actions.map((act, i) => (
+                                    <span
+                                      key={`act-${i}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedSceneIndex(index);
+                                        setSelectedActionIndex(i);
+                                        setSelectedActorId(act.actor_id);
+                                      }}
+                                      className={`group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full border cursor-pointer text-[9px] font-mono transition-colors ${selectedSceneIndex === index && selectedActionIndex === i ? 'bg-cyan-500 text-white border-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)]' : 'bg-neutral-100 dark:bg-neutral-800/80 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:border-cyan-400 dark:hover:border-cyan-500/50'}`}
+                                    >
+                                      {act.actor_id}:{act.motion}({act.style})
+                                      <button
+                                        className="opacity-0 group-hover/tag:opacity-100 ml-0.5 hover:text-red-500 transition-all"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setStoryData(prev => {
+                                            if (!prev) return prev;
+                                            const newBeats = [...prev.beats];
+                                            newBeats[index] = { ...newBeats[index], actions: newBeats[index].actions.filter((_, ai) => ai !== i) };
+                                            return { ...prev, beats: newBeats };
+                                          });
+                                          if (selectedSceneIndex === index && selectedActionIndex === i) {
+                                            setSelectedActionIndex(null);
+                                          }
+                                        }}
+                                        title="Remove this action"
+                                      >×</button>
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {/* Auto-Animate Macro Button + Persistent Log Console */}
+                              <div className="border-t border-neutral-200/80 dark:border-neutral-800/50 bg-neutral-50/50 dark:bg-[#0a0a0a]/50">
+                                {(() => {
+                                  const persistedLogs = dismissedCompileReports[index]
+                                    ? null
+                                    : (completedAnimLogs[index] || beat.compile_report?.logs || null);
+
+                                  if (animatingSceneIndex === index) {
+                                    return (
+                                      // Live: show spinning log while running
+                                      <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
+                                        <div className="absolute top-2 right-2">
+                                          <Loader2 size={12} className="animate-spin text-emerald-500 opacity-50" />
+                                        </div>
+                                        {animatingLogs.map((log, i) => (
+                                          <div key={i} className="animate-in fade-in slide-in-from-bottom-1">
+                                            {renderCompileLogLine(log, i)}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    );
+                                  }
+
+                                  if (persistedLogs) {
+                                    return (
+                                      // Completed: persistent log with dismiss + re-run button
+                                      <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 max-h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
+                                        <div className="absolute top-2 right-2 flex items-center gap-1">
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleAnimateScene(index);
+                                            }}
+                                            title="Re-run animation pipeline"
+                                            className="text-neutral-500 hover:text-emerald-400 transition-colors"
+                                          >
+                                            <Play size={10} className="fill-current" />
+                                          </button>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setDismissedCompileReports(prev => ({ ...prev, [index]: true }));
+                                              setCompletedAnimLogs(prev => { const n = { ...prev }; delete n[index]; return n; });
+                                            }}
+                                            title="Dismiss log"
+                                            className="text-neutral-500 hover:text-red-400 transition-colors text-[11px] leading-none"
+                                          >
+                                            ✕
+                                          </button>
+                                        </div>
+                                        {persistedLogs.map((log, i) => renderCompileLogLine(log, i))}
+                                      </div>
+                                    );
+                                  }
+
+                                  if (beat.compiled_scene && !dismissedCompileReports[index]) {
+                                    return (
+                                      <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 max-h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
+                                        <div className="absolute top-2 right-2 flex items-center gap-1">
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleAnimateScene(index);
+                                            }}
+                                            title="Re-run animation pipeline"
+                                            className="text-neutral-500 hover:text-emerald-400 transition-colors"
+                                          >
+                                            <Play size={10} className="fill-current" />
+                                          </button>
+                                        </div>
+                                        <div>✓ Compiled scene timeline ({beat.compiled_scene.instance_tracks.length} track{beat.compiled_scene.instance_tracks.length === 1 ? "" : "s"}, {beat.compiled_scene.duration_seconds.toFixed(2)}s).</div>
+                                        <div>✓ Persisted compiled scene found after refresh.</div>
+                                        {beat.compile_report?.compiled_at && (
+                                          <div>Last compile: {new Date(beat.compile_report.compiled_at).toLocaleString()}</div>
+                                        )}
+                                      </div>
+                                    );
+                                  }
+
+                                  return (
+                                    <div className="p-2 space-y-2">
+                                      {beat.image_data ? (
+                                        <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 max-h-28 overflow-y-auto flex flex-col gap-0.5 rounded-lg shadow-inner relative custom-scrollbar">
+                                          <div>
+                                            {imageGenCost
+                                              ? hasExactImageGenCost
+                                                ? "✓ Storyboard panel generated."
+                                                : "✓ Storyboard panel generated. Showing fallback 0.5K image estimate."
+                                              : "✓ Storyboard panel generated. Waiting for usage metadata..."}
+                                          </div>
+                                          {imageGenCost ? (
+                                            <>
+                                              {renderCompileLogLine(`[PAID] Image gen: ~$${imageGenCost.cost.toFixed(5)} | ${imageGenCost.tokens.toLocaleString()} tokens`, `${index}-image-cost`)}
+                                              <div className="text-cyan-300">Ready for vector drafting and animation compile.</div>
+                                            </>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleAnimateScene(index);
+                                        }}
+                                        disabled={isGenerating || !beat.image_data}
+                                        className="w-full py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm flex items-center justify-center gap-2 transition-all group/animate"
+                                      >
+                                        <Play size={14} className="fill-white group-hover/animate:scale-110 transition-transform" /> Animate Scene
+                                      </button>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            </div>
+
+                            {/* Insert After Button (between this panel and the next, or at end) */}
+                            <div className="my-1">
+                              {insertAtIndex === index + 1 ? (
+                                <div className="p-3 rounded-xl bg-cyan-50 dark:bg-cyan-950/30 border border-cyan-200 dark:border-cyan-800/60 border-dashed">
+                                  <label className="text-[10px] uppercase tracking-wider font-semibold text-cyan-600 dark:text-cyan-400 mb-1.5 flex items-center gap-1.5">
+                                    <Plus size={10} /> {index + 1 < storyData.beats.length ? `Insert Scene Between ${index + 1} & ${index + 2}` : `Add New Scene at End`}
+                                  </label>
+                                  <textarea
+                                    autoFocus
+                                    value={insertPrompt}
+                                    onChange={(e) => setInsertPrompt(e.target.value)}
+                                    placeholder="Describe what happens in this new scene..."
+                                    className="w-full bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-700 rounded-lg p-2.5 text-xs text-neutral-800 dark:text-neutral-200 placeholder-neutral-400 dark:placeholder-neutral-500 resize-none focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 h-20"
+                                    disabled={isGenerating}
+                                  />
+                                  <div className="flex items-center justify-end gap-2 mt-2">
+                                    <button className="px-3 py-1.5 text-[10px] font-semibold text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-200 rounded transition-colors" onClick={() => { setInsertAtIndex(null); setInsertPrompt(""); }} disabled={isGenerating}>Cancel</button>
+                                    <button className="px-3 py-1.5 text-[10px] font-semibold bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50" onClick={() => handleInsertScene(index + 1)} disabled={isGenerating || !insertPrompt.trim()}>
+                                      {isGenerating ? <><Loader2 size={10} className="animate-spin" /> Generating...</> : <><Plus size={10} /> Generate Scene</>}
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => { setInsertAtIndex(index + 1); setInsertPrompt(""); }}
+                                  className="w-full py-1 border border-dashed border-neutral-300/60 dark:border-neutral-700/40 hover:border-cyan-400 dark:hover:border-cyan-600 rounded-lg text-[10px] font-medium text-neutral-400 dark:text-neutral-600 hover:text-cyan-600 dark:hover:text-cyan-400 transition-all flex items-center justify-center gap-1.5 hover:bg-cyan-50/50 dark:hover:bg-cyan-950/20"
+                                  disabled={isGenerating}
+                                >
+                                  <Plus size={10} /> Insert Scene
+                                </button>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )})
+                        )
+                      })
                     )}
 
                   </div>
@@ -2876,6 +3055,7 @@ export default function Home() {
                           selectedActorId={selectedActorId}
                           onActorSelect={handleActorSelect}
                           onActorPositionChange={handleActorPositionChange}
+                          onActorScaleChange={handleActorScaleChange}
                           stageOrientation={stageOrientation}
                         />
                       </div>
@@ -2912,11 +3092,10 @@ export default function Home() {
                                   key={`timeline-scene-tab-${beat.scene_number}-${index}`}
                                   type="button"
                                   onClick={() => setSelectedSceneIndex(index)}
-                                  className={`shrink-0 rounded border px-1.5 py-1 text-[9px] font-bold transition-colors ${
-                                    selectedSceneIndex === index
+                                  className={`shrink-0 rounded border px-1.5 py-1 text-[9px] font-bold transition-colors ${selectedSceneIndex === index
                                       ? "border-cyan-400 bg-cyan-500 text-white"
                                       : "border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-                                  }`}
+                                    }`}
                                   title={`Switch to Scene ${beat.scene_number}`}
                                 >
                                   {beat.scene_number}
@@ -2937,11 +3116,10 @@ export default function Home() {
                           <button
                             type="button"
                             onClick={() => setShowObstacleDebug(prev => !prev)}
-                            className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-[9px] font-bold transition-colors ${
-                              showObstacleDebug
+                            className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-[9px] font-bold transition-colors ${showObstacleDebug
                                 ? "border-amber-400 bg-amber-500 text-black"
                                 : "border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-                            }`}
+                              }`}
                             title="Toggle obstacle debug overlay"
                           >
                             <Bug size={10} />
@@ -2967,7 +3145,7 @@ export default function Home() {
                               title={isPlaying ? "Pause" : "Play"}
                               disabled={!selectedBeat}
                             >
-                              {isPlaying ? <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> : <Play size={15} className="fill-current ml-0.5 group-hover:scale-110 transition-transform" />}
+                              {isPlaying ? <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> : <Play size={15} className="fill-current ml-0.5 group-hover:scale-110 transition-transform" />}
                             </button>
                             <button
                               type="button"
@@ -3002,11 +3180,10 @@ export default function Home() {
                           <button
                             type="button"
                             onClick={() => setLoopPlayback(prev => !prev)}
-                            className={`transition-colors p-1.5 rounded ${
-                              loopPlayback
+                            className={`transition-colors p-1.5 rounded ${loopPlayback
                                 ? "text-emerald-500 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20"
                                 : "text-neutral-400 dark:text-neutral-600 hover:text-emerald-500 dark:hover:text-emerald-400 hover:bg-neutral-100 dark:hover:bg-neutral-900"
-                            }`}
+                              }`}
                             title={loopPlayback ? "Loop playback enabled" : "Enable loop playback"}
                           >
                             <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12A9 9 0 0 0 6 5.3L3 8" /><path d="M21 3v5h-5" /><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7" /><path d="M3 21v-5h5" /></svg>
@@ -3075,7 +3252,7 @@ export default function Home() {
                       {/* 3. Timeline Tracks */}
                       <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col">
                         {!storyData || storyData.beats.length === 0 ? (
-                           <div className="h-full flex items-center justify-center text-xs text-neutral-500 font-mono">No scene selected.</div>
+                          <div className="h-full flex items-center justify-center text-xs text-neutral-500 font-mono">No scene selected.</div>
                         ) : (() => {
                           const beat = storyData.beats[selectedSceneIndex];
                           return (
@@ -3122,48 +3299,77 @@ export default function Home() {
                               </div>
 
                               {/* Actor Layers */}
-                              {(beat.compiled_scene?.instance_tracks.length
-                                ? beat.compiled_scene.instance_tracks.map(track => ({
-                                    actorId: track.actor_id,
-                                    bindings: track.clip_bindings,
-                                  }))
-                                : Array.from(new Set(beat.actions.map(a => a.actor_id))).map(actorId => ({
-                                    actorId,
-                                    bindings: beat.actions
-                                      .map((action, idx) => ({ action, idx }))
-                                      .filter(entry => entry.action.actor_id === actorId)
-                                      .map(entry => ({
-                                        id: `${actorId}:${entry.idx}:${entry.action.motion}`,
-                                        actor_id: actorId,
-                                        source_action_index: entry.idx,
-                                        motion: entry.action.motion,
-                                        style: entry.action.style,
-                                        clip_id: entry.action.motion,
-                                        start_time: entry.action.animation_overrides?.delay ?? 0,
-                                        duration_seconds: entry.action.duration_seconds || 2,
-                                        start_transform: {
-                                          x: entry.action.spatial_transform?.x ?? 960,
-                                          y: entry.action.spatial_transform?.y ?? 950,
-                                          scale: entry.action.spatial_transform?.scale ?? 0.5,
-                                          z_index: entry.action.spatial_transform?.z_index ?? 10,
-                                        },
-                                      })),
-                                  }))
-                              ).map(({ actorId, bindings }) => {
+                              {(() => {
+                                const tracks = beat.compiled_scene?.instance_tracks.length
+                                  ? beat.compiled_scene.instance_tracks.map(track => {
+                                      // Fallback to actions array if compiled scene has no z-index
+                                      const fallbackZ = Math.max(
+                                        ...(beat.actions.filter(a => a.actor_id === track.actor_id).map(a => a.spatial_transform?.z_index ?? 10))
+                                      );
+                                      const trackZ = track.transform_track[0]?.z_index;
+                                      return {
+                                        actorId: track.actor_id,
+                                        zIndexLevel: trackZ !== undefined ? trackZ : fallbackZ,
+                                        bindings: track.clip_bindings,
+                                      };
+                                    })
+                                  : Array.from(new Set(beat.actions.map(a => a.actor_id))).map(actorId => {
+                                      const actorActions = beat.actions.filter(a => a.actor_id === actorId);
+                                      return {
+                                        actorId,
+                                        zIndexLevel: Math.max(...actorActions.map(a => a.spatial_transform?.z_index ?? 10)),
+                                        bindings: beat.actions
+                                          .map((action, idx) => ({ action, idx }))
+                                          .filter(entry => entry.action.actor_id === actorId)
+                                          .map(entry => ({
+                                            id: `${actorId}:${entry.idx}:${entry.action.motion}`,
+                                            actor_id: actorId,
+                                            source_action_index: entry.idx,
+                                            motion: entry.action.motion,
+                                            style: entry.action.style,
+                                            clip_id: entry.action.motion,
+                                            start_time: entry.action.animation_overrides?.delay ?? 0,
+                                            duration_seconds: entry.action.duration_seconds || 2,
+                                            start_transform: {
+                                              x: entry.action.spatial_transform?.x ?? 960,
+                                              y: entry.action.spatial_transform?.y ?? 950,
+                                              scale: entry.action.spatial_transform?.scale ?? 0.5,
+                                              z_index: entry.action.spatial_transform?.z_index ?? 10,
+                                            },
+                                          })),
+                                      };
+                                  });
+                                  
+                                return tracks.sort((a, b) => b.zIndexLevel - a.zIndexLevel);
+                              })().map(({ actorId, bindings }) => {
                                 const actorData = storyData.actors_detected.find(a => a.id === actorId);
                                 const hasRig = !!actorData?.drafted_rig;
                                 const hasIdleClip = !!actorData?.drafted_rig?.rig_data.motion_clips?.idle;
 
                                 return (
                                   <div key={`track-${actorId}`} className="h-9 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
-                                    <div className="w-48 h-full flex items-center gap-2 px-3 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors">
+                                    <div className="w-48 h-full flex items-center gap-2 px-3 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors group/trackheader relative">
                                       <div className="w-5 h-5 rounded shrink-0 bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
                                         {actorReferences[actorId]
                                           ? <img src={actorReferences[actorId]} alt="" className="w-full h-full object-cover" />
                                           : <div className="w-full h-full flex items-center justify-center text-[8px] text-neutral-400">?</div>}
                                       </div>
                                       <span className="text-[10px] text-neutral-700 dark:text-neutral-300 font-medium truncate flex-1">{actorData?.name || actorId}</span>
-                                      {hasRig && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" title="Rig ready" />}
+                                      
+                                      <div className="hidden group-hover/trackheader:flex items-center gap-0.5 absolute right-6 bg-white dark:bg-[#0f0f0f] px-1 shadow-sm rounded">
+                                        <button 
+                                          onClick={() => handleLayerMove(actorId, -1)}
+                                          className="text-neutral-400 hover:text-cyan-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded p-0.5 transition-colors" title="Bring Forward">
+                                          <ChevronUp size={12}/>
+                                        </button>
+                                        <button 
+                                          onClick={() => handleLayerMove(actorId, 1)}
+                                          className="text-neutral-400 hover:text-cyan-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded p-0.5 transition-colors" title="Send Backward">
+                                          <ChevronDown size={12}/>
+                                        </button>
+                                      </div>
+
+                                      {hasRig && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 ml-auto" title="Rig ready" />}
                                     </div>
                                     <div className="flex-1 h-full relative overflow-hidden">
                                       {hasIdleClip && (
@@ -3185,25 +3391,65 @@ export default function Home() {
                                         return (
                                           <div
                                             key={binding.id}
-                                            className={`absolute inset-y-1.5 rounded flex items-center px-2 cursor-pointer transition-colors z-10 ${
-                                              isSelected
+                                            className={`absolute inset-y-1.5 rounded flex items-center px-2 cursor-pointer transition-colors z-10 group/pill ${isSelected
                                                 ? 'bg-cyan-500/40 border border-cyan-400 text-cyan-700 dark:text-cyan-300'
                                                 : 'bg-blue-100 dark:bg-blue-600/25 border border-blue-300 dark:border-blue-500/50 hover:bg-blue-200 dark:hover:bg-blue-600/35 text-blue-700 dark:text-blue-300'
-                                            }`}
+                                              }`}
                                             style={{ left: `${clipStartPct}%`, width: `${clipWidthPct}%` }}
+                                            onMouseDown={(e) => {
+                                              if (e.button !== 0) return; // Only left click
+                                              handlePillMouseDown(e, binding.source_action_index, actorId, binding.start_time, binding.duration_seconds, 'move');
+                                            }}
                                             onClick={() => {
                                               setSelectedActionIndex(binding.source_action_index);
                                               setSelectedActorId(actorId);
                                             }}
                                           >
                                             <span className="absolute -left-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
-                                            <span className="text-[9px] font-mono truncate pl-1">{bindingLabel}</span>
-                                            {binding.style && <span className="text-[8px] font-mono text-blue-400 dark:text-blue-500 ml-1 truncate">({binding.style})</span>}
+                                            <span className="text-[9px] font-mono truncate pl-1 user-select-none">{bindingLabel}</span>
+                                            {binding.style && <span className="text-[8px] font-mono text-blue-400 dark:text-blue-500 ml-1 truncate user-select-none">({binding.style})</span>}
                                             <span className="absolute -right-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
+                                            
+                                            {/* Edge Grabber for Resizing Duration */}
+                                            <div 
+                                              className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-cyan-400/30 rounded-r z-20 flex items-center justify-center opacity-0 group-hover/pill:opacity-100 transition-opacity"
+                                              onMouseDown={(e) => {
+                                                if (e.button !== 0) return;
+                                                handlePillMouseDown(e, binding.source_action_index, actorId, binding.start_time, binding.duration_seconds, 'resize');
+                                              }}
+                                            >
+                                              <div className="w-[1px] h-3 bg-cyan-500/50" />
+                                            </div>
                                           </div>
                                         );
                                       })}
                                     </div>
+                                    <button 
+                                      className="w-10 flex flex-col items-center justify-center shrink-0 border-l border-neutral-200 dark:border-neutral-800/40 bg-neutral-50/50 hover:bg-neutral-100 dark:bg-neutral-900/30 dark:hover:bg-neutral-800/50 transition-colors opacity-0 group-hover/track:opacity-100"
+                                      title={`Add action for ${actorData?.name || actorId}`}
+                                      onClick={() => {
+                                        setStoryData(prev => {
+                                          if (!prev) return prev;
+                                          const newBeats = [...prev.beats];
+                                          const currentBeat = newBeats[selectedSceneIndex];
+                                          const newActions = [...currentBeat.actions, {
+                                            actor_id: actorId,
+                                            motion: "idle",
+                                            style: "normal",
+                                            duration_seconds: 2,
+                                          }];
+                                          const nextBeat = { ...currentBeat, actions: newActions };
+                                          const previousCompiledScene = selectedSceneIndex > 0
+                                            ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+                                            : null;
+                                          const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+                                          newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                          return { ...prev, beats: newBeats };
+                                        });
+                                      }}
+                                    >
+                                      <span className="text-neutral-400 dark:text-neutral-500 font-mono text-base leading-none block pb-0.5">+</span>
+                                    </button>
                                   </div>
                                 );
                               })}
@@ -3234,7 +3480,7 @@ export default function Home() {
                   if (!storyData || storyData.beats.length === 0) {
                     return <div className="mt-8 text-center text-[10px] text-neutral-400 dark:text-neutral-600 font-mono transition-colors">Awaiting story data...</div>;
                   }
-                  
+
                   const beat = storyData.beats[selectedSceneIndex];
                   if (!beat) {
                     return <div className="mt-8 text-center text-[10px] text-neutral-400 dark:text-neutral-600 font-mono transition-colors">Awaiting story data...</div>;
@@ -3327,121 +3573,6 @@ export default function Home() {
 
                   const action = beat.actions[selectedActionIndex];
                   const binding = selectedBindingRef?.binding;
-                  const transform = binding?.start_transform || action.spatial_transform || { x: 500, y: 800, scale: 1.0, z_index: 10 };
-
-                  const updateTransform = (key: keyof typeof transform, value: number) => {
-                    setStoryData(prev => {
-                      if (!prev) return prev;
-                      const newBeats = [...prev.beats];
-                      const currentBeat = newBeats[selectedSceneIndex];
-                      const newActions = [...newBeats[selectedSceneIndex].actions];
-                      newActions[selectedActionIndex] = {
-                        ...newActions[selectedActionIndex],
-                        spatial_transform: { ...transform, [key]: value }
-                      };
-                      let nextCompiledScene = currentBeat.compiled_scene;
-                      const nextBindingRef = findCompiledBinding(nextCompiledScene, selectedActionIndex);
-                      if (nextCompiledScene && nextBindingRef) {
-                        nextCompiledScene = {
-                          ...nextCompiledScene,
-                          instance_tracks: nextCompiledScene.instance_tracks.map((track, trackIndex) => {
-                            if (trackIndex !== nextBindingRef.trackIndex) return track;
-                            return {
-                              ...track,
-                              transform_track: track.transform_track.map((keyframe, keyframeIndex) =>
-                                keyframeIndex === 0 ? { ...keyframe, [key]: value } : keyframe
-                              ),
-                              clip_bindings: track.clip_bindings.map((clipBinding, bindingIndex) =>
-                                bindingIndex === nextBindingRef.bindingIndex
-                                  ? { ...clipBinding, start_transform: { ...clipBinding.start_transform, [key]: value } }
-                                  : clipBinding
-                              ),
-                            };
-                          }),
-                        };
-                      }
-                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions, compiled_scene: nextCompiledScene };
-                      return { ...prev, beats: newBeats };
-                    });
-                  };
-
-                  const targetTransform = binding?.end_transform || action.target_spatial_transform || { x: transform.x + 200, y: transform.y, scale: transform.scale, z_index: transform.z_index };
-                  
-                  const updateTargetTransform = (key: keyof typeof targetTransform, value: number) => {
-                    setStoryData(prev => {
-                      if (!prev) return prev;
-                      const newBeats = [...prev.beats];
-                      const currentBeat = newBeats[selectedSceneIndex];
-                      const newActions = [...newBeats[selectedSceneIndex].actions];
-                      newActions[selectedActionIndex] = {
-                        ...newActions[selectedActionIndex],
-                        target_spatial_transform: { ...targetTransform, [key]: value }
-                      };
-                      let nextCompiledScene = currentBeat.compiled_scene;
-                      const nextBindingRef = findCompiledBinding(nextCompiledScene, selectedActionIndex);
-                      if (nextCompiledScene && nextBindingRef) {
-                        nextCompiledScene = {
-                          ...nextCompiledScene,
-                          instance_tracks: nextCompiledScene.instance_tracks.map((track, trackIndex) => {
-                            if (trackIndex !== nextBindingRef.trackIndex) return track;
-                            return {
-                              ...track,
-                              transform_track: track.transform_track.map((keyframe, keyframeIndex) =>
-                                keyframeIndex === track.transform_track.length - 1 ? { ...keyframe, [key]: value } : keyframe
-                              ),
-                              clip_bindings: track.clip_bindings.map((clipBinding, bindingIndex) =>
-                                bindingIndex === nextBindingRef.bindingIndex
-                                  ? {
-                                      ...clipBinding,
-                                      end_transform: { ...(clipBinding.end_transform || clipBinding.start_transform), [key]: value },
-                                    }
-                                  : clipBinding
-                              ),
-                            };
-                          }),
-                        };
-                      }
-                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions, compiled_scene: nextCompiledScene };
-                      return { ...prev, beats: newBeats };
-                    });
-                  };
-
-                  const updateDuration = (value: number) => {
-                     setStoryData(prev => {
-                      if (!prev) return prev;
-                      const newBeats = [...prev.beats];
-                      const currentBeat = newBeats[selectedSceneIndex];
-                      const newActions = [...newBeats[selectedSceneIndex].actions];
-                      newActions[selectedActionIndex] = {
-                        ...newActions[selectedActionIndex],
-                        duration_seconds: value
-                      };
-                      let nextCompiledScene = currentBeat.compiled_scene;
-                      const nextBindingRef = findCompiledBinding(nextCompiledScene, selectedActionIndex);
-                      if (nextCompiledScene && nextBindingRef) {
-                        nextCompiledScene = {
-                          ...nextCompiledScene,
-                          duration_seconds: Math.max(
-                            nextCompiledScene.duration_seconds,
-                            (nextBindingRef.binding.start_time || 0) + value,
-                          ),
-                          instance_tracks: nextCompiledScene.instance_tracks.map((track, trackIndex) => {
-                            if (trackIndex !== nextBindingRef.trackIndex) return track;
-                            return {
-                              ...track,
-                              clip_bindings: track.clip_bindings.map((clipBinding, bindingIndex) =>
-                                bindingIndex === nextBindingRef.bindingIndex
-                                  ? { ...clipBinding, duration_seconds: value }
-                                  : clipBinding
-                              ),
-                            };
-                          }),
-                        };
-                      }
-                      newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions, compiled_scene: nextCompiledScene };
-                      return { ...prev, beats: newBeats };
-                    });
-                  };
 
                   const updateCollisionBehavior = (value: "halt" | "slide" | "bounce") => {
                     setStoryData(prev => {
@@ -3543,11 +3674,10 @@ export default function Home() {
                                 key={mode}
                                 type="button"
                                 onClick={() => updateCollisionBehavior(mode)}
-                                className={`rounded border px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                                  (binding.collision_behavior || "halt") === mode
+                                className={`rounded border px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-colors ${(binding.collision_behavior || "halt") === mode
                                     ? "border-amber-400 bg-amber-500 text-black"
                                     : "border-neutral-200 dark:border-neutral-700/50 bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-                                }`}
+                                  }`}
                               >
                                 {mode}
                               </button>
@@ -3556,139 +3686,31 @@ export default function Home() {
                         </div>
                       )}
 
-                      <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
-                        <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex items-center gap-2">
-                          <Mountain size={12} /> Spatial Transform
-                        </div>
-                        
-                        <div className="space-y-4">
-                          {/* X Position */}
-                          <div>
-                            <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
-                              <span>X Position</span>
-                              <span>{transform.x}px</span>
-                            </div>
-                            <input 
-                              type="range" min="-200" max="1200" step="10" 
-                              value={transform.x} 
-                              onChange={e => updateTransform('x', parseInt(e.target.value))}
-                              className="w-full accent-cyan-500" 
-                            />
-                          </div>
 
-                          {/* Y Position */}
-                          <div>
-                            <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
-                              <span>Y Position (Floor)</span>
-                              <span>{transform.y}px</span>
-                            </div>
-                            <input 
-                              type="range" min="-200" max="1200" step="10" 
-                              value={transform.y} 
-                              onChange={e => updateTransform('y', parseInt(e.target.value))}
-                              className="w-full accent-cyan-500" 
-                            />
-                          </div>
-
-                          {/* Scale */}
-                          <div>
-                            <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
-                              <span>Scale (Depth)</span>
-                              <span>{transform.scale.toFixed(2)}x</span>
-                            </div>
-                            <input 
-                              type="range" min="0.1" max="3" step="0.05" 
-                              value={transform.scale} 
-                              onChange={e => updateTransform('scale', parseFloat(e.target.value))}
-                              className="w-full accent-cyan-500" 
-                            />
-                          </div>
-                          
-                          {/* Z-Index */}
-                          <div>
-                            <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
-                              <span>Z-Index (Layer)</span>
-                              <span>{transform.z_index}</span>
-                            </div>
-                            <input 
-                              type="range" min="0" max="100" step="1" 
-                              value={transform.z_index} 
-                              onChange={e => updateTransform('z_index', parseInt(e.target.value))}
-                              className="w-full accent-cyan-500" 
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Target Transform (For Movement) */}
-                      {motionNeedsTarget(action.motion) && (
-                        <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
-                          <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex items-center gap-2">
-                            <Mountain size={12} className="opacity-50" /> Target Destination
-                          </div>
-                          
-                          <div className="space-y-4">
-                            {/* X Target */}
-                            <div>
-                              <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
-                                <span>End X Position</span>
-                                <span>{targetTransform.x}px</span>
-                              </div>
-                              <input 
-                                type="range" min="-200" max="1200" step="10" 
-                                value={targetTransform.x} 
-                                onChange={e => updateTargetTransform('x', parseInt(e.target.value))}
-                                className="w-full accent-blue-500" 
-                              />
-                            </div>
-
-                            {/* Y Target */}
-                            <div>
-                              <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
-                                <span>End Y Position</span>
-                                <span>{targetTransform.y}px</span>
-                              </div>
-                              <input 
-                                type="range" min="-200" max="1200" step="10" 
-                                value={targetTransform.y} 
-                                onChange={e => updateTargetTransform('y', parseInt(e.target.value))}
-                                className="w-full accent-blue-500" 
-                              />
-                            </div>
-                            
-                            {/* Scale Target */}
-                            <div>
-                              <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
-                                <span>End Scale</span>
-                                <span>{targetTransform.scale.toFixed(2)}x</span>
-                              </div>
-                              <input 
-                                type="range" min="0.1" max="3" step="0.05" 
-                                value={targetTransform.scale} 
-                                onChange={e => updateTargetTransform('scale', parseFloat(e.target.value))}
-                                className="w-full accent-blue-500" 
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
-                        <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex items-center gap-2">
-                          <Play size={12} /> Animation Timing
-                        </div>
-                        <div>
-                            <div className="flex justify-between text-[10px] font-mono text-neutral-500 mb-1">
-                              <span>Duration</span>
-                              <span>{action.duration_seconds}s</span>
-                            </div>
-                            <input 
-                              type="range" min="0.5" max="10" step="0.5" 
-                              value={action.duration_seconds} 
-                              onChange={e => updateDuration(parseFloat(e.target.value))}
-                              className="w-full accent-emerald-500" 
-                            />
-                        </div>
+                      <div className="pt-5 flex justify-end">
+                        <button 
+                          type="button"
+                          className="px-3 py-1.5 rounded bg-red-50 text-red-600 border border-red-200 text-xs font-semibold hover:bg-red-100 dark:bg-red-900/20 dark:border-red-800/50 dark:text-red-400 dark:hover:bg-red-900/40 transition-colors"
+                          onClick={() => {
+                            setStoryData(prev => {
+                              if (!prev) return prev;
+                              const newBeats = [...prev.beats];
+                              const currentBeat = newBeats[selectedSceneIndex];
+                              const newActions = [...currentBeat.actions];
+                              newActions.splice(selectedActionIndex, 1);
+                              const nextBeat = { ...currentBeat, actions: newActions };
+                              const previousCompiledScene = selectedSceneIndex > 0
+                                ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+                                : null;
+                              const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+                              newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                              return { ...prev, beats: newBeats };
+                            });
+                            setSelectedActionIndex(null);
+                          }}
+                        >
+                          Delete Action
+                        </button>
                       </div>
 
                     </div>
@@ -3848,10 +3870,10 @@ export default function Home() {
 
               {!draftedRig && !isDrafting && (
                 <div className="flex flex-col items-center max-w-sm text-center">
-                    <div className="w-24 h-24 mb-6 rounded-xl overflow-hidden shadow-lg border-2 border-cyan-500/30">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={actorReferences[draftingActorId]} alt="Reference" className="w-full h-full object-cover" />
-                    </div>
+                  <div className="w-24 h-24 mb-6 rounded-xl overflow-hidden shadow-lg border-2 border-cyan-500/30">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={actorReferences[draftingActorId]} alt="Reference" className="w-full h-full object-cover" />
+                  </div>
                   <h4 className="text-lg font-bold text-neutral-800 dark:text-neutral-200 mb-2">Generate Animatable Rig</h4>
                   <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-8">
                     The Draftsman AI will analyze this character and redraw them as a structured SVG vector puppet, complete with interaction pivot points.
@@ -4046,15 +4068,14 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setClipPreviewPlaying(prev => !prev)}
-                  className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
-                    clipPreviewPlaying
+                  className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${clipPreviewPlaying
                       ? "bg-amber-500 text-[#0a0a0a] hover:bg-amber-400"
                       : "bg-emerald-500 text-white hover:bg-emerald-400"
-                  }`}
+                    }`}
                   title={clipPreviewPlaying ? "Pause preview" : "Play preview"}
                 >
                   {clipPreviewPlaying ? (
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>
                   ) : (
                     <Play size={16} className="fill-current ml-0.5" />
                   )}

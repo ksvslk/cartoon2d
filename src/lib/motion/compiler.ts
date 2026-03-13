@@ -188,10 +188,6 @@ function buildTransformTrackForBinding(params: {
     };
   }
 
-  const totalDistance = Math.max(1, distance(startTransform, resolvedTarget));
-  const traveledDistance = distance(startTransform, finalTarget);
-  const progress = clamp01(traveledDistance / totalDistance);
-  const stopTime = roundTime(startTime + duration * progress);
   const stopTransform = clampSpatialTransformToStage({
     x: finalTarget.x,
     y: finalTarget.y,
@@ -199,12 +195,7 @@ function buildTransformTrackForBinding(params: {
     z_index: finalTarget.z_index,
   }, stageW, stageH);
 
-  transformTrack.push({
-    ...stopTransform,
-    time: stopTime,
-  });
-
-  if (collisionBehavior === "halt" || stopTime >= endTime) {
+  if (collisionBehavior === "halt") {
     transformTrack.push({
       ...stopTransform,
       time: endTime,
@@ -212,7 +203,7 @@ function buildTransformTrackForBinding(params: {
     return {
       transformTrack,
       endTransform: stopTransform,
-      stopTime,
+      stopTime: endTime,
     };
   }
 
@@ -236,7 +227,7 @@ function buildTransformTrackForBinding(params: {
     return {
       transformTrack,
       endTransform: slideTransform,
-      stopTime,
+      stopTime: endTime,
     };
   }
 
@@ -245,7 +236,7 @@ function buildTransformTrackForBinding(params: {
     Math.max(70, Math.abs(resolvedTarget.x - stopTransform.x) * 0.65),
     180 * startTransform.scale,
   );
-  const bounceTime = roundTime(Math.min(endTime, stopTime + Math.max(0.18, duration * 0.22)));
+  const bounceTime = roundTime(startTime + (duration * 0.78));
   const bounceTransform: SpatialTransform = clampSpatialTransformToStage({
     ...stopTransform,
     x: round2(stopTransform.x - travelDirection * bounceDistance),
@@ -262,7 +253,7 @@ function buildTransformTrackForBinding(params: {
   return {
     transformTrack,
     endTransform: bounceTransform,
-    stopTime,
+    stopTime: endTime,
   };
 }
 
@@ -502,6 +493,8 @@ export function compileBeatToScene(
     return Math.max(max, startTime + (action.duration_seconds || 0));
   }, 0), 3);
 
+  const backgroundAmbient: BackgroundAmbientBinding[] = []; // Disabled by default for now, can be explicitly enabled later for objects
+  /*
   const backgroundAmbient: BackgroundAmbientBinding[] = beat.drafted_background
     ? detectAmbientIdsFromSvg(beat.drafted_background.svg_data).map(({ id, label }, idx) => ({
         id: `background:${idx}:${id}`,
@@ -511,6 +504,7 @@ export function compileBeatToScene(
         duration_seconds: sceneDuration,
       }))
     : [];
+  */
 
   return {
     duration_seconds: Math.max(sceneDuration, 0.5),

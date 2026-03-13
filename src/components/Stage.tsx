@@ -30,15 +30,19 @@ interface StageProps {
     selectedActorId?: string | null;
     onActorSelect?: (actorId: string | null) => void;
     onActorPositionChange?: (actorId: string, x: number, y: number) => void;
+    onActorScaleChange?: (actorId: string, scale: number) => void;
     stageOrientation?: StageOrientation;
 }
 
 interface DragState {
     actorId: string;
+    mode: 'move' | 'scale';
     naturalCX: number;
     naturalBottom: number;
     offsetX: number;
     offsetY: number;
+    initialDist: number;
+    initialScale: number;
 }
 
 type TimelineWithIKSync = gsap.core.Timeline & {
@@ -87,6 +91,7 @@ export default function Stage({
     selectedActorId,
     onActorSelect,
     onActorPositionChange,
+    onActorScaleChange,
     stageOrientation = "landscape",
 }: StageProps) {
     const { width: stageW, height: stageH } = getStageDims(stageOrientation);
@@ -203,8 +208,21 @@ export default function Stage({
             selRect.setAttribute("width", String(maxX - minX + pad * 2));
             selRect.setAttribute("height", String(maxY - minY + pad * 2));
             selRect.setAttribute("display", "");
+
+            const handles = ['tl', 'tr', 'bl', 'br'].map(pos => domSvg?.querySelector(`#__sel_handle_${pos}`));
+            handles[0]?.setAttribute('cx', String(minX - pad));
+            handles[0]?.setAttribute('cy', String(minY - pad));
+            handles[1]?.setAttribute('cx', String(maxX + pad));
+            handles[1]?.setAttribute('cy', String(minY - pad));
+            handles[2]?.setAttribute('cx', String(minX - pad));
+            handles[2]?.setAttribute('cy', String(maxY + pad));
+            handles[3]?.setAttribute('cx', String(maxX + pad));
+            handles[3]?.setAttribute('cy', String(maxY + pad));
+            handles.forEach(h => h?.setAttribute('display', ''));
+
         } catch {
             selRect.setAttribute("display", "none");
+            ['tl', 'tr', 'bl', 'br'].forEach(pos => domSvg?.querySelector(`#__sel_handle_${pos}`)?.setAttribute('display', 'none'));
         }
     }, []);
 
@@ -318,6 +336,20 @@ export default function Stage({
         selRect.setAttribute("display", "none");
         selRect.setAttribute("rx", "4");
         overlayGroup.appendChild(selRect);
+
+        const handles = ['tl', 'tr', 'bl', 'br'];
+        handles.forEach(pos => {
+            const handle = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "circle");
+            handle.setAttribute("id", `__sel_handle_${pos}`);
+            handle.setAttribute("r", "8");
+            handle.setAttribute("fill", "white");
+            handle.setAttribute("stroke", "cyan");
+            handle.setAttribute("stroke-width", "3");
+            handle.setAttribute("cursor", pos === 'tl' || pos === 'br' ? 'nwse-resize' : 'nesw-resize');
+            handle.setAttribute("display", "none");
+            overlayGroup.appendChild(handle);
+        });
+
         masterSvgElement.appendChild(overlayGroup);
 
         if (showObstacleDebug && compiledScene?.obstacles?.length) {
@@ -358,6 +390,7 @@ export default function Stage({
         // getBBox-based positioning: find each actor's natural bounds, then translate
         // so their bottom-center lands exactly at the target (x, y).
         const domSvg = containerRef.current.querySelector("svg");
+        if (!domSvg) return;
 
         actorsInScene.forEach(({ actorId }) => {
             const rig = availableRigs[actorId];
@@ -508,59 +541,110 @@ export default function Stage({
     };
 
     const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-        const actorGroup = findActorGroup(e.target);
-
-        if (!actorGroup) {
-            // Click on empty area — deselect
-            onActorSelect?.(null);
-            return;
+        const target = e.target as Element;
+        
+        let actorIdToDrag = null;
+        let mode: 'move' | 'scale' = 'move';
+        let actorGroup: SVGGElement | null = null;
+        
+        if (target.id && target.id.startsWith("__sel_handle_")) {
+            if (!selectedActorId) return;
+            actorIdToDrag = selectedActorId;
+            mode = 'scale';
+            actorGroup = containerRef.current?.querySelector(`#actor_group_${selectedActorId}`) as SVGGElement;
+        } else {
+            actorGroup = findActorGroup(e.target);
+            if (!actorGroup) {
+                onActorSelect?.(null);
+                return;
+            }
+            actorIdToDrag = actorGroup.id.replace("actor_group_", "");
+            mode = 'move';
+            onActorSelect?.(actorIdToDrag);
         }
 
-        const actorId = actorGroup.id.replace("actor_group_", "");
-        onActorSelect?.(actorId);
+        if (!actorIdToDrag || !actorGroup) return;
 
         // Set up drag
         const naturalCX = parseFloat(actorGroup.dataset.naturalCx || "960");
         const naturalBottom = parseFloat(actorGroup.dataset.naturalBottom || "1050");
-
         const svgCoords = toSvgCoords(e.clientX, e.clientY);
 
-        // Current feet position = naturalCX + gsap x offset, naturalBottom + gsap y offset
         const currentX = gsap.getProperty(actorGroup, "x") as number;
         const currentY = gsap.getProperty(actorGroup, "y") as number;
         const feetX = naturalCX + currentX;
         const feetY = naturalBottom + currentY;
+        const currentScaleY = gsap.getProperty(actorGroup, "scaleY") as number;
 
-        dragRef.current = {
-            actorId,
-            naturalCX,
-            naturalBottom,
-            offsetX: svgCoords.x - feetX,
-            offsetY: svgCoords.y - feetY,
-        };
+        if (mode === 'move') {
+            dragRef.current = {
+                actorId: actorIdToDrag,
+                mode,
+                naturalCX,
+                naturalBottom,
+                offsetX: svgCoords.x - feetX,
+                offsetY: svgCoords.y - feetY,
+                initialDist: 0,
+                initialScale: 0,
+            };
+        } else {
+            const dx = svgCoords.x - feetX;
+            const dy = svgCoords.y - feetY;
+            const initialDist = Math.max(1, Math.sqrt(dx*dx + dy*dy));
+            
+            dragRef.current = {
+                actorId: actorIdToDrag,
+                mode,
+                naturalCX,
+                naturalBottom,
+                offsetX: 0,
+                offsetY: 0,
+                initialDist,
+                initialScale: currentScaleY,
+            };
+        }
+
         isDraggingRef.current = false;
-
         e.preventDefault();
-    }, [onActorSelect, toSvgCoords]);
+    }, [onActorSelect, toSvgCoords, selectedActorId]);
 
     const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
         if (!dragRef.current) return;
 
         isDraggingRef.current = true;
-        const { actorId, naturalCX, naturalBottom, offsetX, offsetY } = dragRef.current;
+        const { actorId, mode, naturalCX, naturalBottom, offsetX, offsetY, initialDist, initialScale } = dragRef.current;
         const svgCoords = toSvgCoords(e.clientX, e.clientY);
-
-        const newFeetX = svgCoords.x - offsetX;
-        const newFeetY = svgCoords.y - offsetY;
 
         const domSvg = containerRef.current?.querySelector("svg");
         const group = domSvg?.querySelector<SVGGElement>(`#actor_group_${actorId}`);
         if (!group) return;
 
-        gsap.set(group, {
-            x: newFeetX - naturalCX,
-            y: newFeetY - naturalBottom,
-        });
+        if (mode === 'move') {
+            const newFeetX = svgCoords.x - offsetX;
+            const newFeetY = svgCoords.y - offsetY;
+            gsap.set(group, {
+                x: newFeetX - naturalCX,
+                y: newFeetY - naturalBottom,
+            });
+        } else {
+            const currentX = gsap.getProperty(group, "x") as number;
+            const currentY = gsap.getProperty(group, "y") as number;
+            const feetX = naturalCX + currentX;
+            const feetY = naturalBottom + currentY;
+            
+            const dx = svgCoords.x - feetX;
+            const dy = svgCoords.y - feetY;
+            const currentDist = Math.sqrt(dx*dx + dy*dy);
+            
+            const scaleFactor = currentDist / initialDist;
+            const newScale = Math.max(0.1, Math.min(3.0, initialScale * scaleFactor));
+            const facingSign = Math.sign(gsap.getProperty(group, "scaleX") as number) || 1;
+            
+            gsap.set(group, {
+                scaleX: newScale * facingSign,
+                scaleY: newScale,
+            });
+        }
 
         // Update selection overlay to follow
         updateSelectionOverlay(actorId);
@@ -570,31 +654,52 @@ export default function Stage({
         if (!dragRef.current) return;
 
         if (isDraggingRef.current) {
-            const { actorId, offsetX, offsetY } = dragRef.current;
+            const { actorId, mode, offsetX, offsetY } = dragRef.current;
             const svgCoords = toSvgCoords(e.clientX, e.clientY);
-            const newFeetX = svgCoords.x - offsetX;
-            const newFeetY = svgCoords.y - offsetY;
-            onActorPositionChange?.(actorId, newFeetX, newFeetY);
+            
+            if (mode === 'move') {
+                const newFeetX = svgCoords.x - offsetX;
+                const newFeetY = svgCoords.y - offsetY;
+                onActorPositionChange?.(actorId, newFeetX, newFeetY);
+            } else {
+                const domSvg = containerRef.current?.querySelector("svg");
+                const group = domSvg?.querySelector<SVGGElement>(`#actor_group_${actorId}`);
+                if (group && onActorScaleChange) {
+                    const finalScale = gsap.getProperty(group, "scaleY") as number;
+                    onActorScaleChange(actorId, finalScale);
+                }
+            }
         }
 
         dragRef.current = null;
         isDraggingRef.current = false;
-    }, [toSvgCoords, onActorPositionChange]);
+    }, [toSvgCoords, onActorPositionChange, onActorScaleChange]);
 
     const handleMouseLeave = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
         if (!dragRef.current || !isDraggingRef.current) {
             dragRef.current = null;
             return;
         }
-        // Commit position on leave too
-        const { actorId, offsetX, offsetY } = dragRef.current;
+        
+        const { actorId, mode, offsetX, offsetY } = dragRef.current;
         const svgCoords = toSvgCoords(e.clientX, e.clientY);
-        const newFeetX = svgCoords.x - offsetX;
-        const newFeetY = svgCoords.y - offsetY;
-        onActorPositionChange?.(actorId, newFeetX, newFeetY);
+        
+        if (mode === 'move') {
+            const newFeetX = svgCoords.x - offsetX;
+            const newFeetY = svgCoords.y - offsetY;
+            onActorPositionChange?.(actorId, newFeetX, newFeetY);
+        } else {
+            const domSvg = containerRef.current?.querySelector("svg");
+            const group = domSvg?.querySelector<SVGGElement>(`#actor_group_${actorId}`);
+            if (group && onActorScaleChange) {
+                const finalScale = gsap.getProperty(group, "scaleY") as number;
+                onActorScaleChange(actorId, finalScale);
+            }
+        }
+        
         dragRef.current = null;
         isDraggingRef.current = false;
-    }, [toSvgCoords, onActorPositionChange]);
+    }, [toSvgCoords, onActorPositionChange, onActorScaleChange]);
 
     if (!beat) {
         return (

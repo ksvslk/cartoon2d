@@ -273,7 +273,7 @@ function addCanonicalIKPlayback(params: {
     durationSeconds: stagedIntent.duration || 1,
   }, startDelay);
   timeline.to(actor.playbackState, {
-    clipTimeSeconds: (stagedIntent.duration || actionDuration) * spd,
+    clipTimeSeconds: actionDuration * spd,
     duration: actionDuration,
     ease: "none",
     overwrite: "auto",
@@ -412,6 +412,11 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
     return created;
   };
 
+  const maxExplicitDuration = Math.max(
+    0,
+    ...compiledBindings.map(b => (b.start_time || 0) + (b.duration_seconds || 1))
+  );
+
   const backgroundBindings = compiledScene?.background_ambient ?? [];
   backgroundBindings.forEach(binding => {
     const target = [
@@ -422,7 +427,10 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
       `#bg_midground [id="${binding.target_id}"]`,
       `#bg_foreground [id="${binding.target_id}"]`,
     ].join(", ");
-    addAmbientBindingToTimeline(tl, target, binding);
+    
+    // Stretch ambient loops to ensure they do not freeze before the longest actor animation
+    const safeDuration = Math.max(binding.duration_seconds, maxExplicitDuration);
+    addAmbientBindingToTimeline(tl, target, binding, safeDuration);
   });
   if (backgroundBindings.length > 0) {
     console.log(`[timeline]   background ambient bindings=${backgroundBindings.length}`);
@@ -510,6 +518,8 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
           startDelay,
           actionDuration,
         });
+
+        tl.set(`#actor_group_${id}`, {}, startDelay + actionDuration);
       });
     });
 
@@ -536,50 +546,6 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
 
     console.log(`[timeline]   actor="${id}" motion="${m}" style="${action.style}" → amp=${amp.toFixed(2)} spd=${spd.toFixed(2)} delay=${startDelay}`);
 
-    // ── 1. Spatial movement ─────────────────────────────────────────────────
-    const startX     = action.spatial_transform?.x     ?? 960;
-    const startY     = action.spatial_transform?.y     ?? 950;
-    const startScale = action.spatial_transform?.scale ?? 0.5;
-    const inferredTarget = !action.target_spatial_transform
-      ? inferAutoTargetTransform(
-          m,
-          { x: startX, y: startY, scale: startScale },
-          actionDuration,
-        )
-      : undefined;
-    const resolvedTarget = action.target_spatial_transform ?? inferredTarget;
-    const endX       = resolvedTarget?.x;
-    const endY       = resolvedTarget?.y;
-    const endScale   = resolvedTarget?.scale;
-
-    const deltaX   = endX !== undefined ? endX - startX : 0;
-    const deltaY   = endY !== undefined ? endY - startY : 0;
-    const isMoving = motionNeedsTarget(m) || Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10;
-
-    // Left-walk: flip scaleX immediately at start
-    if (isMoving && deltaX < -10) {
-      const group = container.querySelector<SVGGElement>(`#actor_group_${id}`);
-      if (group) {
-        const naturalCX     = parseFloat(group.dataset.naturalCx     || "500");
-        const naturalBottom = parseFloat(group.dataset.naturalBottom  || "1000");
-        tl.set(`#actor_group_${id}`, {
-          scaleX: -startScale,
-          svgOrigin: `${naturalCX} ${naturalBottom}`,
-        }, startDelay);
-      }
-    }
-
-    if (isMoving || endScale !== undefined) {
-      const moveVars: gsap.TweenVars = { duration: actionDuration, ease: "power1.inOut" };
-      if (Math.abs(deltaX) > 10) moveVars.x = `+=${deltaX}`;
-      if (Math.abs(deltaY) > 10) moveVars.y = `+=${deltaY}`;
-      if (endScale !== undefined) {
-        const flipped = deltaX < -10;
-        moveVars.scaleX = flipped ? -endScale : endScale;
-        moveVars.scaleY = endScale;
-      }
-      tl.to(`#actor_group_${id}`, moveVars, startDelay);
-    }
 
     // ── 2. Canonical IK animation from rig clip ────────────────────────────
     if (!rig) {
@@ -640,6 +606,8 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
       startDelay,
       actionDuration,
     });
+
+    tl.set(`#actor_group_${id}`, {}, startDelay + actionDuration);
   });
 
   tl.__ikSync = () => {

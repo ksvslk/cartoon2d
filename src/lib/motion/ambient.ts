@@ -32,11 +32,7 @@ export const OBJECT_ANIM_PATTERNS: AmbientPattern[] = [
   { regex: /light|lamp|glow|blink|flash/i, label: "pulse" },
 ];
 
-function calcRepeat(availableTime: number, tweenDuration: number, yoyo: boolean): number {
-  const cycle = yoyo ? tweenDuration * 2 : tweenDuration;
-  if (cycle <= 0) return 0;
-  return Math.max(0, Math.ceil(availableTime / cycle) - 1);
-}
+
 
 function getAmbientTweenSpec(label: AmbientLabel): {
   vars: gsap.TweenVars;
@@ -172,16 +168,30 @@ export function addAmbientBindingToTimeline(
   tl: gsap.core.Timeline,
   target: string,
   binding: BackgroundAmbientBindingData,
+  overrideDurationSeconds?: number
 ) {
   const spec = getAmbientTweenSpec(binding.label);
+
+  // Isolate infinite loop to prevent GSAP from extending the master `.duration()`
+  const proxy = gsap.timeline({ paused: true });
+  proxy.to(target, {
+    ...spec.vars,
+    duration: spec.duration,
+    yoyo: spec.yoyo,
+    repeat: -1,
+    overwrite: "auto",
+  });
+
+  const durationToUse = overrideDurationSeconds ?? binding.duration_seconds;
+
+  // Explicitly box the playback time into the master timeline boundaries
   tl.to(
-    target,
+    proxy,
     {
-      ...spec.vars,
-      duration: spec.duration,
-      yoyo: spec.yoyo,
-      repeat: calcRepeat(binding.duration_seconds, spec.duration, spec.yoyo),
-      overwrite: "auto",
+      time: durationToUse,
+      duration: durationToUse,
+      ease: "none",
+      data: "ambient-loop",
     },
     binding.start_time,
   );
