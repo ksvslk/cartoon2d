@@ -32,6 +32,7 @@ const GEMINI_31_PRO_PREVIEW_STANDARD_TEXT_OUTPUT_TOKEN_USD = 0.000012;
 const GEMINI_31_PRO_PREVIEW_LARGE_INPUT_TOKEN_USD = 0.000004;
 const GEMINI_31_PRO_PREVIEW_LARGE_TEXT_OUTPUT_TOKEN_USD = 0.000018;
 const GEMINI_31_PRO_PREVIEW_PROMPT_THRESHOLD = 200000;
+const PLAYHEAD_UI_SYNC_MS = 50;
 
 function estimateStoryboardGenerationCost(promptTokens: number, candidateTokens: number, imageCount: number) {
   const imageOutputTokens = Math.min(candidateTokens, imageCount * GEMINI_31_FLASH_IMAGE_512_OUTPUT_TOKENS);
@@ -597,17 +598,23 @@ export default function Home() {
   // Stage Selection State
   const [selectedSceneIndex, setSelectedSceneIndex] = useState<number>(0);
   const [selectedActionIndex, setSelectedActionIndex] = useState<number | null>(null);
+  const [selectedKeyframe, setSelectedKeyframe] = useState<'start' | 'end' | null>(null);
   const [selectedActorId, setSelectedActorId] = useState<string | null>(null);
   const [scenePreviewIndex, setScenePreviewIndex] = useState<number | null>(null);
   const [loopPlayback, setLoopPlayback] = useState(false);
   const [clipPreviewState, setClipPreviewState] = useState<{ actorId: string; clipName: string } | null>(null);
   const [clipPreviewPlaying, setClipPreviewPlaying] = useState(true);
   const [clipPreviewPlayhead, setClipPreviewPlayhead] = useState(0);
+  const clipPreviewPlayheadRef = useRef(0);
+  const clipPreviewPlayingRef = useRef(clipPreviewPlaying);
 
   // Timeline Playhead & Frame State
   const [playheadPos, setPlayheadPos] = useState<number>(0);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const [fps, setFps] = useState<12 | 24 | 30 | 60>(60);
+  const isPlayingRef = useRef(isPlaying);
+  const livePlayheadPosRef = useRef(0);
+  const lastPlayheadUiSyncAtRef = useRef(0);
   
   // Timeline Pill Drag State
   const dragPillRef = useRef<{
@@ -618,7 +625,6 @@ export default function Home() {
     initialDelay: number;
     initialDuration: number;
   } | null>(null);
-  const [isDraggingPill, setIsDraggingPill] = useState(false);
   const [showObstacleDebug, setShowObstacleDebug] = useState(false);
   const [stageOrientation, setStageOrientation] = useState<StageOrientation>("landscape");
   const stageDims = getStageDims(stageOrientation);
@@ -640,6 +646,40 @@ export default function Home() {
     ])
   ) as { [K in keyof typeof BASE_EXPORT_RESOLUTIONS]: { label: string; width: number; height: number } };
   const timelineRef = useRef<HTMLDivElement>(null);
+  const tracksRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    clipPreviewPlayingRef.current = clipPreviewPlaying;
+    if (!clipPreviewPlaying) {
+      setClipPreviewPlayhead(prev => {
+        const next = clipPreviewPlayheadRef.current;
+        return Math.abs(prev - next) > 0.0001 ? next : prev;
+      });
+    }
+  }, [clipPreviewPlaying]);
+
+  useEffect(() => {
+    if (!clipPreviewPlaying) {
+      clipPreviewPlayheadRef.current = clipPreviewPlayhead;
+    }
+  }, [clipPreviewPlayhead, clipPreviewPlaying]);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+    if (!isPlaying) {
+      lastPlayheadUiSyncAtRef.current = 0;
+      setPlayheadPos(prev => {
+        const next = livePlayheadPosRef.current;
+        return Math.abs(prev - next) > 0.0001 ? next : prev;
+      });
+    }
+  }, [isPlaying]);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      livePlayheadPosRef.current = playheadPos;
+    }
+  }, [isPlaying, playheadPos]);
 
   const selectedBeat = useMemo(
     () => (storyData && storyData.beats.length > 0 ? storyData.beats[selectedSceneIndex] : null),
@@ -710,9 +750,28 @@ export default function Home() {
     return sanitizeDurationSeconds(fallbackDuration);
   }, [sceneTimelineDurations, selectedSceneIndex, selectedBeat, selectedCompiledScene]);
 
+  // Playhead callbacks — called by Stage when GSAP timeline ticks or completes
+  const handlePlayheadUpdate = useCallback((timeSeconds: number) => {
+    const pct = Math.min(100, totalDuration > 0 ? (timeSeconds / totalDuration) * 100 : 0);
+    livePlayheadPosRef.current = pct;
+    if (!isPlayingRef.current) {
+      setPlayheadPos(pct);
+      return;
+    }
+
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if ((now - lastPlayheadUiSyncAtRef.current) < PLAYHEAD_UI_SYNC_MS && pct < 99.9) {
+      return;
+    }
+
+    lastPlayheadUiSyncAtRef.current = now;
+    setPlayheadPos(pct);
+  }, [totalDuration]);
+
   // Pill Drag Handlers
   const handlePillMouseDown = useCallback((e: React.MouseEvent, idx: number, actorId: string, delay: number, duration: number, mode: 'move' | 'resize') => {
     e.stopPropagation();
+    setIsPlaying(false);
     dragPillRef.current = {
       idx,
       actorId,
@@ -721,15 +780,16 @@ export default function Home() {
       initialDelay: delay,
       initialDuration: duration,
     };
-    setIsDraggingPill(true);
     setSelectedActionIndex(idx);
     setSelectedActorId(actorId);
 
     const handleWindowMouseMove = (eMouse: MouseEvent) => {
       if (!timelineRef.current || !dragPillRef.current) return;
-      const rect = timelineRef.current.getBoundingClientRect();
+      
+      const timelineTrack = timelineRef.current.querySelector('div')?.getBoundingClientRect();
+      const trackWidthPixels = Math.max(1, (timelineTrack?.width || timelineRef.current.clientWidth) - 192);
       const deltaX = eMouse.clientX - dragPillRef.current.startX;
-      const deltaSeconds = (deltaX / rect.width) * totalDuration;
+      const deltaSeconds = (deltaX / trackWidthPixels) * totalDuration;
 
       setStoryData(prev => {
         if (!prev || !dragPillRef.current) return prev;
@@ -740,20 +800,38 @@ export default function Home() {
         if (dragPillRef.current.mode === 'move') {
           const newDelay = Math.max(0, dragPillRef.current.initialDelay + deltaSeconds);
           action.animation_overrides = { ...action.animation_overrides, delay: newDelay };
+          
+          // Live scrub the stage to the start time being dragged
+          const scrubTime = newDelay;
+          setPlayheadPos(totalDuration > 0 ? (scrubTime / totalDuration) * 100 : 0);
+          handlePlayheadUpdate(scrubTime);
         } else if (dragPillRef.current.mode === 'resize') {
           const newDuration = Math.max(0.1, dragPillRef.current.initialDuration + deltaSeconds);
           action.duration_seconds = newDuration;
+          
+          // Live scrub the stage to the end frame we are resizing
+          const scrubTime = dragPillRef.current.initialDelay + newDuration;
+          setPlayheadPos(totalDuration > 0 ? (scrubTime / totalDuration) * 100 : 0);
+          handlePlayheadUpdate(scrubTime);
         }
 
         newActions[dragPillRef.current.idx] = action;
-        newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions };
+        const nextBeat = { ...newBeats[selectedSceneIndex], actions: newActions };
+        
+        // Recompile live so the UI (which depends on compiled_scene) updates immediately
+        const previousCompiledScene = selectedSceneIndex > 0
+          ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+          : null;
+        const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+        nextBeat.compiled_scene = recompiled;
+        
+        newBeats[selectedSceneIndex] = nextBeat;
         return { ...prev, beats: newBeats };
       });
     };
 
     const handleWindowMouseUp = () => {
       dragPillRef.current = null;
-      setIsDraggingPill(false);
       window.removeEventListener('mousemove', handleWindowMouseMove);
       window.removeEventListener('mouseup', handleWindowMouseUp);
 
@@ -773,7 +851,7 @@ export default function Home() {
 
     window.addEventListener('mousemove', handleWindowMouseMove);
     window.addEventListener('mouseup', handleWindowMouseUp);
-  }, [totalDuration, selectedSceneIndex, availableRigs, stageOrientation]);
+  }, [totalDuration, selectedSceneIndex, availableRigs, stageOrientation, handlePlayheadUpdate]);
 
   const currentTimeSeconds = (playheadPos / 100) * totalDuration;
   const currentFrame = Math.round(currentTimeSeconds * fps);
@@ -788,9 +866,14 @@ export default function Home() {
     const handleMouseMove = (e: MouseEvent) => {
       if (!timelineRef.current) return;
       const rect = timelineRef.current.getBoundingClientRect();
-      let newX = e.clientX - rect.left;
-      newX = Math.max(0, Math.min(newX, rect.width));
-      const newPercent = (newX / rect.width) * 100;
+      const scrollLeft = timelineRef.current.scrollLeft;
+      
+      const sidebarWidth = 192; // 'w-48' is 192px
+      const innerWidth = timelineRef.current.scrollWidth - sidebarWidth;
+      
+      let newX = (e.clientX - rect.left + scrollLeft) - sidebarWidth;
+      newX = Math.max(0, Math.min(newX, innerWidth));
+      const newPercent = (newX / innerWidth) * 100;
       setPlayheadPos(newPercent);
     };
 
@@ -822,14 +905,9 @@ export default function Home() {
     return processDraftsmanPrompt(generationReference, description, requiredViews, reviewImages, qualityMode);
   };
 
-  // Playhead callbacks — called by Stage when GSAP timeline ticks or completes
-  const handlePlayheadUpdate = (timeSeconds: number) => {
-    const pct = totalDuration > 0 ? (timeSeconds / totalDuration) * 100 : 0;
-    setPlayheadPos(Math.min(100, pct));
-  };
-
   const handlePlayComplete = () => {
     setIsPlaying(false);
+    livePlayheadPosRef.current = 100;
     setPlayheadPos(100);
   };
 
@@ -845,21 +923,25 @@ export default function Home() {
 
   const handleJumpToStart = () => {
     setIsPlaying(false);
+    livePlayheadPosRef.current = 0;
     setPlayheadPos(0);
   };
 
   const handleJumpToEnd = () => {
     setIsPlaying(false);
+    livePlayheadPosRef.current = 100;
     setPlayheadPos(100);
   };
 
   const handleTogglePlayback = () => {
     if (!selectedBeat) return;
     if (isPlaying) {
+      setPlayheadPos(livePlayheadPosRef.current);
       setIsPlaying(false);
       return;
     }
     if (playheadPos >= 99.9) {
+      livePlayheadPosRef.current = 0;
       setPlayheadPos(0);
     }
     setIsPlaying(true);
@@ -867,10 +949,29 @@ export default function Home() {
 
   useEffect(() => {
     setIsPlaying(false);
+    livePlayheadPosRef.current = 0;
     setPlayheadPos(0);
     setSelectedActionIndex(null);
     setSelectedActorId(null);
   }, [selectedSceneIndex]);
+
+  const handleClipPreviewToggle = useCallback(() => {
+    if (clipPreviewPlayingRef.current) {
+      setClipPreviewPlayhead(clipPreviewPlayheadRef.current);
+      setClipPreviewPlaying(false);
+      return;
+    }
+    setClipPreviewPlaying(true);
+  }, []);
+
+  const handleClipPreviewPlayheadUpdate = useCallback((timeSeconds: number) => {
+    const duration = clipPreviewBundle?.compiledScene.duration_seconds || 1;
+    const next = Math.min(duration, timeSeconds);
+    clipPreviewPlayheadRef.current = next;
+    if (!clipPreviewPlayingRef.current) {
+      setClipPreviewPlayhead(next);
+    }
+  }, [clipPreviewBundle]);
 
   const waitForAnimationFrames = (count: number = 2) =>
     new Promise<void>((resolve) => {
@@ -1833,53 +1934,37 @@ export default function Home() {
     }
     const beat = storyData.beats[selectedSceneIndex];
     if (!beat) { setSelectedActionIndex(null); return; }
+    
+    let targetIdx: number | null = null;
     const compiledTrack = beat.compiled_scene?.instance_tracks.find(track => track.actor_id === actorId);
-    const idx = compiledTrack?.clip_bindings[0]?.source_action_index ?? beat.actions.findIndex(a => a.actor_id === actorId);
-    setSelectedActionIndex(idx >= 0 ? idx : null);
+    
+    if (compiledTrack?.clip_bindings.length) {
+      // Find the clip binding active at the current playhead time
+      const activeBinding = compiledTrack.clip_bindings.find(b => 
+        currentTimeSeconds >= b.start_time && 
+        currentTimeSeconds <= (b.start_time + b.duration_seconds)
+      );
+      if (activeBinding) {
+        targetIdx = activeBinding.source_action_index;
+      } else {
+        // Fallback to the last binding that started before playhead, or just the first binding
+        const previousBindings = compiledTrack.clip_bindings.filter(b => b.start_time <= currentTimeSeconds);
+        if (previousBindings.length > 0) {
+          targetIdx = previousBindings[previousBindings.length - 1].source_action_index;
+        } else {
+          targetIdx = compiledTrack.clip_bindings[0].source_action_index;
+        }
+      }
+    } else {
+      // Fallback before compilation
+      const idx = beat.actions.findIndex(a => a.actor_id === actorId);
+      targetIdx = idx >= 0 ? idx : null;
+    }
+    
+    setSelectedActionIndex(targetIdx);
   };
 
-  const handleActorScaleChange = (actorId: string, scale: number) => {
-    setStoryData(prev => {
-      if (!prev) return prev;
-      const newBeats = [...prev.beats];
-      const beat = newBeats[selectedSceneIndex];
-      if (!beat) return prev;
-      const newActions = beat.actions.map(a => {
-        if (a.actor_id !== actorId) return a;
-        return {
-          ...a,
-          spatial_transform: {
-            ...(a.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
-            scale,
-          },
-        };
-      });
-      let nextCompiledScene = beat.compiled_scene;
-      if (nextCompiledScene) {
-        nextCompiledScene = {
-          ...nextCompiledScene,
-          instance_tracks: nextCompiledScene.instance_tracks.map(track => {
-            if (track.actor_id !== actorId) return track;
-            return {
-              ...track,
-              clip_bindings: track.clip_bindings.map(binding => ({
-                ...binding,
-                start_transform: {
-                  ...binding.start_transform,
-                  scale,
-                },
-                end_transform: binding.end_transform
-                  ? { ...binding.end_transform, scale }
-                  : binding.end_transform,
-              })),
-            };
-          }),
-        };
-      }
-      newBeats[selectedSceneIndex] = { ...beat, actions: newActions, compiled_scene: nextCompiledScene };
-      return { ...prev, beats: newBeats };
-    });
-  };
+
 
   const handleLayerMove = (actorId: string, direction: -1 | 1) => {
     // direction: -1 = up the list (higher Z, visually forward), 1 = down the list (lower Z, visually backward)
@@ -1940,59 +2025,167 @@ export default function Home() {
     });
   };
 
-  const handleActorPositionChange = (actorId: string, x: number, y: number) => {
+  const handleActorScaleChange = (actorId: string, scaleRatio: number) => {
     setStoryData(prev => {
       if (!prev) return prev;
       const newBeats = [...prev.beats];
       const beat = newBeats[selectedSceneIndex];
       if (!beat) return prev;
-      const newActions = beat.actions.map(a => {
-        if (a.actor_id !== actorId) return a;
-        return {
-          ...a,
-          spatial_transform: {
-            ...(a.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
-            x: Math.round(x),
-            y: Math.round(y),
-          },
-        };
-      });
-      let nextCompiledScene = beat.compiled_scene;
-      if (nextCompiledScene) {
-        nextCompiledScene = {
-          ...nextCompiledScene,
-          instance_tracks: nextCompiledScene.instance_tracks.map(track => {
-            if (track.actor_id !== actorId) return track;
-            const first = track.transform_track[0];
-            const dx = Math.round(x - (first?.x ?? x));
-            const dy = Math.round(y - (first?.y ?? y));
-            return {
-              ...track,
-              transform_track: track.transform_track.map(keyframe => ({
-                ...keyframe,
-                x: Math.round(keyframe.x + dx),
-                y: Math.round(keyframe.y + dy),
-              })),
-              clip_bindings: track.clip_bindings.map(binding => ({
-                ...binding,
-                start_transform: {
-                  ...binding.start_transform,
-                  x: Math.round(binding.start_transform.x + dx),
-                  y: Math.round(binding.start_transform.y + dy),
-                },
-                end_transform: binding.end_transform
-                  ? {
-                    ...binding.end_transform,
-                    x: Math.round(binding.end_transform.x + dx),
-                    y: Math.round(binding.end_transform.y + dy),
-                  }
-                  : binding.end_transform,
-              })),
-            };
-          }),
-        };
+
+      const targetActionIndex = selectedActionIndex !== null && beat.actions[selectedActionIndex]?.actor_id === actorId
+        ? selectedActionIndex
+        : beat.actions.findIndex(a => a.actor_id === actorId);
+
+      if (targetActionIndex === -1) return prev;
+
+      const newActions = [...beat.actions];
+      const targetedAction = newActions[targetActionIndex];
+      const actionDelay = targetedAction.animation_overrides?.delay ?? 0;
+      const actionDuration = targetedAction.duration_seconds || 2;
+      
+      const isMovementMotion = motionNeedsTarget(targetedAction.motion);
+      
+      const newSpatialTransform = {
+        ...(targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
+      };
+      let newTargetSpatialTransform = targetedAction.target_spatial_transform 
+         ? { ...targetedAction.target_spatial_transform } 
+         : undefined;
+
+      const editStart = selectedKeyframe === 'start' || !selectedKeyframe;
+      const editEnd = selectedKeyframe === 'end' || !selectedKeyframe;
+
+      if (selectedKeyframe === 'start' && isMovementMotion && !newTargetSpatialTransform) {
+         const oldScale = newSpatialTransform.scale;
+         const duration = targetedAction.duration_seconds || 2;
+         const travel = Math.max(220, Math.round(duration * 180));
+         const stageW = 1920;
+         const preferredDirection = (newSpatialTransform.x ?? 960) <= stageW / 2 ? 1 : -1;
+         newTargetSpatialTransform = { 
+           x: (newSpatialTransform.x ?? 960) + travel * preferredDirection, 
+           y: newSpatialTransform.y, 
+           scale: oldScale 
+         };
       }
-      newBeats[selectedSceneIndex] = { ...beat, actions: newActions, compiled_scene: nextCompiledScene };
+
+      const oldBaseScale = newSpatialTransform.scale;
+      const newBaseScale = Math.max(0.1, Math.min(3.0, oldBaseScale * scaleRatio));
+
+      if (editStart) {
+        newSpatialTransform.scale = newBaseScale;
+      }
+
+      if (editEnd && isMovementMotion) {
+        if (selectedKeyframe === 'end' && !newTargetSpatialTransform) {
+           const fallbackTarget = targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
+           newTargetSpatialTransform = { ...fallbackTarget };
+        }
+        
+        if (newTargetSpatialTransform) {
+           if (selectedKeyframe === 'end') {
+              newTargetSpatialTransform.scale = Math.max(0.1, Math.min(3.0, (newTargetSpatialTransform.scale ?? oldBaseScale) * scaleRatio));
+           } else {
+              newTargetSpatialTransform.scale = Math.max(0.1, Math.min(3.0, (newTargetSpatialTransform.scale ?? oldBaseScale) * (newBaseScale / oldBaseScale)));
+           }
+        }
+      }
+
+      newActions[targetActionIndex] = {
+        ...targetedAction,
+        spatial_transform: newSpatialTransform,
+        target_spatial_transform: newTargetSpatialTransform
+      };
+
+      const nextBeat = { ...beat, actions: newActions };
+      const previousCompiledScene = selectedSceneIndex > 0
+        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+        : null;
+      
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+      return { ...prev, beats: newBeats };
+    });
+  };
+
+  const handleActorPositionChange = (actorId: string, dx: number, dy: number) => {
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const beat = newBeats[selectedSceneIndex];
+      if (!beat) return prev;
+
+      // Only apply position to the currently targeted action, or the first action if none selected
+      const targetActionIndex = selectedActionIndex !== null && beat.actions[selectedActionIndex]?.actor_id === actorId
+        ? selectedActionIndex
+        : beat.actions.findIndex(a => a.actor_id === actorId);
+
+      if (targetActionIndex === -1) return prev;
+
+      const newActions = [...beat.actions];
+      const targetedAction = newActions[targetActionIndex];
+      const actionDelay = targetedAction.animation_overrides?.delay ?? 0;
+      const actionDuration = targetedAction.duration_seconds || 2;
+      
+      const isMovementMotion = motionNeedsTarget(targetedAction.motion);
+      
+      const newSpatialTransform = {
+        ...(targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
+      };
+      let newTargetSpatialTransform = targetedAction.target_spatial_transform 
+         ? { ...targetedAction.target_spatial_transform } 
+         : undefined;
+
+      const editStart = selectedKeyframe === 'start' || !selectedKeyframe;
+      const editEnd = selectedKeyframe === 'end' || !selectedKeyframe;
+
+      // 1. If explicit 'start' edit, and no target, bake the target so it doesn't move.
+      if (selectedKeyframe === 'start' && isMovementMotion && !newTargetSpatialTransform) {
+         const oldX = newSpatialTransform.x;
+         const duration = targetedAction.duration_seconds || 2;
+         const travel = Math.max(220, Math.round(duration * 180));
+         const stageW = 1920;
+         const preferredDirection = oldX <= stageW / 2 ? 1 : -1;
+         newTargetSpatialTransform = { 
+           x: oldX + travel * preferredDirection, 
+           y: newSpatialTransform.y, 
+           scale: newSpatialTransform.scale 
+         };
+      }
+
+      // 2. Apply Start edit
+      if (editStart) {
+        newSpatialTransform.x = Math.round(newSpatialTransform.x + dx);
+        newSpatialTransform.y = Math.round(newSpatialTransform.y + dy);
+      }
+
+      // 3. Apply End edit
+      if (editEnd && isMovementMotion) {
+        // If explicit 'end' edit and no target, we must initialize it to edit it independently
+        if (selectedKeyframe === 'end' && !newTargetSpatialTransform) {
+           const fallbackTarget = targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
+           newTargetSpatialTransform = { ...fallbackTarget };
+        }
+        
+        // Only apply dx/dy to target if it exists. (If it doesn't exist, editStart moved the base, which moves the implicit target).
+        if (newTargetSpatialTransform) {
+           newTargetSpatialTransform.x = Math.round((newTargetSpatialTransform.x ?? 960) + dx);
+           newTargetSpatialTransform.y = Math.round((newTargetSpatialTransform.y ?? 950) + dy);
+        }
+      }
+
+      newActions[targetActionIndex] = {
+        ...targetedAction,
+        spatial_transform: newSpatialTransform,
+        target_spatial_transform: newTargetSpatialTransform
+      };
+
+      const nextBeat = { ...beat, actions: newActions };
+      const previousCompiledScene = selectedSceneIndex > 0
+        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+        : null;
+      
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
       return { ...prev, beats: newBeats };
     });
   };
@@ -2345,34 +2538,69 @@ export default function Home() {
                               </div>
                             </div>
 
-                            {/* Draft Vector Rig Button */}
+                            {/* Actor Toolbar */}
                             {actorReferences[actor.id] && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setDraftingActorId(actor.id);
-                                  // Load cached rig if it exists, otherwise prepare for new generation
-                                  setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
-                                  setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
-                                  setDraftReview(null);
-                                  setRigFixPrompt("");
-                                  setDraftError(null);
-                                }}
-                                className={`p-1.5 rounded transition-colors group-hover:opacity-100 ${actor.drafted_rig
-                                  ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 opacity-100 border border-emerald-200 dark:border-emerald-700/50"
-                                  : "text-neutral-400 hover:text-cyan-500 opacity-0 bg-transparent"
-                                  }`}
-                                title={actor.drafted_rig ? "View Vector Rig" : "Generate SVG Vector Rig"}
-                              >
-                                {actor.drafted_rig ? (
-                                  <div className="relative">
+                              <div className="flex items-center gap-1">
+                                {/* Add to Timeline Button */}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const actionIndex = storyData?.beats[selectedSceneIndex]?.actions.length ?? 0;
+                                    setSelectedActorId(actor.id);
+                                    setSelectedActionIndex(actionIndex);
+                                    setStoryData(prev => {
+                                      if (!prev || !prev.beats[selectedSceneIndex]) return prev;
+                                      const newBeats = [...prev.beats];
+                                      const currentBeat = newBeats[selectedSceneIndex];
+                                      const newActions = [...currentBeat.actions, {
+                                        actor_id: actor.id,
+                                        motion: "idle",
+                                        style: "normal",
+                                        duration_seconds: 2,
+                                      }];
+                                      const nextBeat = { ...currentBeat, actions: newActions };
+                                      const previousCompiledScene = selectedSceneIndex > 0
+                                        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+                                        : null;
+                                      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+                                      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                      return { ...prev, beats: newBeats };
+                                    });
+                                  }}
+                                  className="p-1.5 rounded text-neutral-400 hover:text-cyan-500 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors opacity-0 group-hover:opacity-100"
+                                  title="Add to Timeline"
+                                >
+                                  <Plus size={14} />
+                                </button>
+                                
+                                {/* Draft Vector Rig Button */}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setDraftingActorId(actor.id);
+                                    // Load cached rig if it exists, otherwise prepare for new generation
+                                    setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                                    setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                                    setDraftReview(null);
+                                    setRigFixPrompt("");
+                                    setDraftError(null);
+                                  }}
+                                  className={`p-1.5 rounded transition-colors group-hover:opacity-100 ${actor.drafted_rig
+                                    ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 opacity-100 border border-emerald-200 dark:border-emerald-700/50"
+                                    : "text-neutral-400 hover:text-cyan-500 opacity-0 bg-transparent"
+                                    }`}
+                                  title={actor.drafted_rig ? "View Vector Rig" : "Generate SVG Vector Rig"}
+                                >
+                                  {actor.drafted_rig ? (
+                                    <div className="relative">
+                                      <Sparkles size={14} />
+                                      <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border border-white dark:border-neutral-900"></div>
+                                    </div>
+                                  ) : (
                                     <Sparkles size={14} />
-                                    <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border border-white dark:border-neutral-900"></div>
-                                  </div>
-                                ) : (
-                                  <Sparkles size={14} />
-                                )}
-                              </button>
+                                  )}
+                                </button>
+                              </div>
                             )}
                           </div>
 
@@ -2402,6 +2630,7 @@ export default function Home() {
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setClipPreviewState({ actorId: actor.id, clipName });
+                                    clipPreviewPlayheadRef.current = 0;
                                     setClipPreviewPlayhead(0);
                                     setClipPreviewPlaying(true);
                                   }}
@@ -3205,25 +3434,30 @@ export default function Home() {
                       </div>
 
                       {/* 2. Timeline Ruler Header (Track Labels & Time Ticks) */}
-                      <div className="h-8 border-b border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#111] flex items-center shrink-0 z-20 relative transition-colors duration-300">
-                        <div className="w-48 border-r border-neutral-200 dark:border-neutral-800/60 h-full flex items-center px-4 bg-neutral-50 dark:bg-[#0a0a0a] shrink-0 transition-colors">
-                          <span className="text-[10px] text-neutral-500 dark:text-neutral-600 font-bold uppercase tracking-wider">Layers</span>
-                        </div>
-                        <div className="flex-1 h-full relative overflow-hidden transition-colors" ref={timelineRef}>
-
-                          {/* Playhead line + knob */}
-                          <div className="absolute top-0 bottom-[-500px] w-[1px] bg-emerald-500/80 z-50 pointer-events-none dark:mix-blend-screen shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.8)]" style={{ left: `${playheadPos}%` }}>
+                      <div className="h-8 border-b border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#111] shrink-0 z-30 relative transition-colors duration-300 overflow-x-auto overflow-y-hidden [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]" ref={timelineRef} onScroll={(e) => {
+                        if (tracksRef.current && tracksRef.current.scrollLeft !== e.currentTarget.scrollLeft) {
+                          tracksRef.current.scrollLeft = e.currentTarget.scrollLeft;
+                        }
+                      }}>
+                        <div className="flex h-full" style={{ minWidth: `${Math.max(100, (totalDuration / 15) * 100)}%` }}>
+                          <div className="w-48 border-r border-neutral-200 dark:border-neutral-800/60 h-full flex items-center px-4 bg-neutral-50 dark:bg-[#0a0a0a] shrink-0 transition-colors z-40 sticky left-0">
+                            <span className="text-[10px] text-neutral-500 dark:text-neutral-600 font-bold uppercase tracking-wider">Layers</span>
+                          </div>
+                          <div className="flex-1 h-full relative transition-colors pointer-events-none">
+                            {/* Playhead line + knob */}
+                          <div className="absolute top-0 bottom-0 w-[2px] bg-emerald-500/80 z-50 pointer-events-none dark:mix-blend-screen shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.8)]" style={{ left: `${playheadPos}%` }}>
                             <div
-                              className={`absolute top-0 left-1/2 -translate-x-1/2 w-3 h-4 bg-gradient-to-b from-emerald-400 to-emerald-600 rounded-b-[3px] cursor-grab active:cursor-grabbing border-b border-l border-r border-emerald-300 shadow-[0_2px_10px_rgba(16,185,129,0.5)] pointer-events-auto flex items-center justify-center flex-col gap-[2px] ${isDraggingPlayhead ? 'scale-110' : ''}`}
+                              className={`absolute top-0 left-1/2 -translate-x-1/2 w-4 h-5 bg-gradient-to-b from-emerald-400 to-emerald-600 rounded-b-[4px] cursor-grab active:cursor-grabbing border-b border-l border-r border-emerald-300 shadow-[0_2px_10px_rgba(16,185,129,0.5)] pointer-events-auto flex items-center justify-center flex-col gap-[2px] ${isDraggingPlayhead ? 'scale-110' : ''}`}
                               onMouseDown={() => setIsDraggingPlayhead(true)}
                             >
-                              <span className="w-1.5 h-px bg-emerald-200/80"></span>
-                              <span className="w-1.5 h-px bg-emerald-200/80"></span>
+                              <span className="w-2 h-px bg-emerald-200/80"></span>
+                              <span className="w-2 h-px bg-emerald-200/80"></span>
+                              <span className="w-2 h-px bg-emerald-200/80"></span>
                             </div>
                           </div>
 
                           {/* Frame grid + second labels */}
-                          <div className="absolute inset-0 flex items-end pb-1 pointer-events-none select-none">
+                          <div className="absolute inset-0 flex items-end pb-1 pointer-events-none select-none overflow-hidden">
                             {Array.from({ length: Math.ceil(totalDuration) + 1 }).map((_, s) => {
                               const pct = (s / totalDuration) * 100;
                               return (
@@ -3246,11 +3480,26 @@ export default function Home() {
                               );
                             })}
                           </div>
+                          </div>
                         </div>
                       </div>
 
                       {/* 3. Timeline Tracks */}
-                      <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col">
+                      <div className="flex-1 overflow-y-auto overflow-x-auto custom-scrollbar flex flex-col relative pb-8" ref={tracksRef} onScroll={(e) => {
+                        if (timelineRef.current && timelineRef.current.scrollLeft !== e.currentTarget.scrollLeft) {
+                          timelineRef.current.scrollLeft = e.currentTarget.scrollLeft;
+                        }
+                      }}>
+                        <div className="flex flex-col relative" style={{ minWidth: `${Math.max(100, (totalDuration / 15) * 100)}%` }}>
+                          
+                          {/* Playhead line extension correctly overlaying all tracks */}
+                          <div className="absolute inset-0 flex pointer-events-none z-[100]">
+                            <div className="w-48 shrink-0" />
+                            <div className="flex-1 relative overflow-hidden">
+                              <div className="absolute top-0 bottom-0 w-[2px] bg-emerald-500/80 dark:mix-blend-screen shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.8)]" style={{ left: `${playheadPos}%` }} />
+                            </div>
+                          </div>
+
                         {!storyData || storyData.beats.length === 0 ? (
                           <div className="h-full flex items-center justify-center text-xs text-neutral-500 font-mono">No scene selected.</div>
                         ) : (() => {
@@ -3259,21 +3508,22 @@ export default function Home() {
                             <>
                               {/* Background / Environment Layer */}
                               <div className="h-9 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
-                                <div className="w-48 h-full flex items-center gap-2 px-4 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors">
+                                <div className="w-48 h-full flex items-center gap-2 px-4 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors z-30 sticky left-0">
                                   <Mountain size={10} className="text-neutral-400 dark:text-neutral-600 shrink-0" />
                                   <span className="text-[10px] text-neutral-500 dark:text-neutral-500 font-medium truncate">Background</span>
                                   {beat.drafted_background && <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 ml-auto shrink-0" title="Background generated" />}
                                 </div>
-                                <div className="flex-1 h-full relative overflow-hidden">
+                                <div className="flex-1 h-full relative overflow-hidden pointer-events-none">
                                   {beat.compiled_scene?.background_ambient?.length ? (
                                     beat.compiled_scene.background_ambient.map(binding => {
                                       const duration = totalDuration > 0 ? totalDuration : Math.max(beat.compiled_scene?.duration_seconds || 1, 1);
+                                      const visibleDuration = Math.min(binding.duration_seconds, duration);
                                       const left = `${(binding.start_time / duration) * 100}%`;
-                                      const width = `${Math.max((binding.duration_seconds / duration) * 100, 3)}%`;
+                                      const width = `${Math.max((visibleDuration / duration) * 100, 3)}%`;
                                       return (
                                         <div
                                           key={binding.id}
-                                          className="absolute inset-y-1.5 rounded bg-repeating-gradient opacity-50 dark:opacity-30"
+                                          className="absolute inset-y-1.5 rounded bg-repeating-gradient opacity-50 dark:opacity-30 pointer-events-auto cursor-pointer"
                                           style={{
                                             left,
                                             width,
@@ -3289,7 +3539,7 @@ export default function Home() {
                                       );
                                     })
                                   ) : (
-                                    <div className="absolute inset-y-1.5 left-0 right-0 rounded bg-repeating-gradient opacity-20 dark:opacity-10"
+                                    <div className="absolute inset-y-1.5 left-0 right-0 rounded bg-repeating-gradient opacity-20 dark:opacity-10 pointer-events-auto"
                                       style={{ background: 'repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(99,102,241,0.15) 8px, rgba(99,102,241,0.15) 9px)' }}>
                                       <div className="absolute inset-0 border border-indigo-200 dark:border-indigo-700/20 rounded" />
                                       <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[9px] font-mono text-indigo-300 dark:text-indigo-700 select-none">no bg motion</span>
@@ -3348,7 +3598,7 @@ export default function Home() {
 
                                 return (
                                   <div key={`track-${actorId}`} className="h-9 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
-                                    <div className="w-48 h-full flex items-center gap-2 px-3 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors group/trackheader relative">
+                                    <div className="w-48 h-full flex items-center gap-2 px-3 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors group/trackheader relative z-20">
                                       <div className="w-5 h-5 rounded shrink-0 bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
                                         {actorReferences[actorId]
                                           ? <img src={actorReferences[actorId]} alt="" className="w-full h-full object-cover" />
@@ -3371,7 +3621,7 @@ export default function Home() {
 
                                       {hasRig && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 ml-auto" title="Rig ready" />}
                                     </div>
-                                    <div className="flex-1 h-full relative overflow-hidden">
+                                    <div className="flex-1 h-full relative overflow-visible">
                                       {hasIdleClip && (
                                         <div
                                           className="absolute inset-y-1.5 left-0 right-0 rounded"
@@ -3387,38 +3637,81 @@ export default function Home() {
                                         const isSelected = selectedActionIndex === binding.source_action_index;
                                         const isIdleMotion = ['idle', 'stare'].includes(binding.motion.toLowerCase());
                                         const bindingLabel = binding.clip_id === "base_object" ? `${binding.motion} • object` : binding.motion;
-                                        if (isIdleMotion) return null;
                                         return (
                                           <div
                                             key={binding.id}
-                                            className={`absolute inset-y-1.5 rounded flex items-center px-2 cursor-pointer transition-colors z-10 group/pill ${isSelected
-                                                ? 'bg-cyan-500/40 border border-cyan-400 text-cyan-700 dark:text-cyan-300'
-                                                : 'bg-blue-100 dark:bg-blue-600/25 border border-blue-300 dark:border-blue-500/50 hover:bg-blue-200 dark:hover:bg-blue-600/35 text-blue-700 dark:text-blue-300'
+                                            className={`absolute inset-y-2 rounded flex items-center px-2 cursor-pointer transition-all z-10 group/pill ${isSelected
+                                                ? 'bg-cyan-500/10 border border-cyan-400 text-cyan-800 dark:text-cyan-200 shadow-sm'
+                                                : isIdleMotion 
+                                                  ? 'bg-neutral-100 dark:bg-neutral-700/50 border border-neutral-300 dark:border-neutral-600/50 hover:bg-neutral-200 dark:hover:bg-neutral-600/70 text-neutral-600 dark:text-neutral-300'
+                                                  : 'bg-blue-100 dark:bg-blue-600/25 border border-blue-300 dark:border-blue-500/50 hover:bg-blue-200 dark:hover:bg-blue-600/35 text-blue-700 dark:text-blue-300'
                                               }`}
-                                            style={{ left: `${clipStartPct}%`, width: `${clipWidthPct}%` }}
+                                            style={{ left: `${clipStartPct}%`, width: `${clipWidthPct}%`, minWidth: '24px' }}
                                             onMouseDown={(e) => {
                                               if (e.button !== 0) return; // Only left click
+                                              setSelectedKeyframe(null);
                                               handlePillMouseDown(e, binding.source_action_index, actorId, binding.start_time, binding.duration_seconds, 'move');
                                             }}
                                             onClick={() => {
                                               setSelectedActionIndex(binding.source_action_index);
                                               setSelectedActorId(actorId);
+                                              setSelectedKeyframe(null);
+                                              setPlayheadPos(totalDuration > 0 ? (binding.start_time / totalDuration) * 100 : 0);
                                             }}
                                           >
-                                            <span className="absolute -left-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
-                                            <span className="text-[9px] font-mono truncate pl-1 user-select-none">{bindingLabel}</span>
-                                            {binding.style && <span className="text-[8px] font-mono text-blue-400 dark:text-blue-500 ml-1 truncate user-select-none">({binding.style})</span>}
-                                            <span className="absolute -right-1 top-1/2 -translate-y-1/2 text-[10px] text-blue-400 dark:text-blue-400 leading-none select-none">◆</span>
-                                            
-                                            {/* Edge Grabber for Resizing Duration */}
                                             <div 
-                                              className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-cyan-400/30 rounded-r z-20 flex items-center justify-center opacity-0 group-hover/pill:opacity-100 transition-opacity"
+                                              className="absolute -left-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rotate-45 flex items-center justify-center group-hover/pill:scale-110 transition-transform z-20 cursor-pointer" 
+                                              title="Select Start Keyframe"
+                                              onClick={(e) => e.stopPropagation()}
                                               onMouseDown={(e) => {
-                                                if (e.button !== 0) return;
-                                                handlePillMouseDown(e, binding.source_action_index, actorId, binding.start_time, binding.duration_seconds, 'resize');
+                                                e.stopPropagation();
+                                                setIsPlaying(false);
+                                                setSelectedActionIndex(binding.source_action_index);
+                                                setSelectedActorId(actorId);
+                                                setSelectedKeyframe('start');
+                                                const newTime = binding.start_time;
+                                                const newPos = totalDuration > 0 ? (newTime / totalDuration) * 100 : 0;
+                                                setPlayheadPos(newPos);
+                                                handlePlayheadUpdate(newTime);
                                               }}
                                             >
-                                              <div className="w-[1px] h-3 bg-cyan-500/50" />
+                                              <div className={`w-2.5 h-2.5 outline outline-2 ${isSelected && selectedKeyframe === 'start' ? 'outline-cyan-400 bg-cyan-100 dark:bg-cyan-900 shadow-[0_0_8px_rgba(6,182,212,0.8)]' : isSelected ? 'outline-cyan-500 bg-white dark:bg-neutral-900' : 'outline-blue-400 dark:outline-blue-500 bg-white dark:bg-neutral-800 group-hover/pill:outline-blue-500 dark:group-hover/pill:outline-blue-400'}`} />
+                                            </div>
+
+                                            <span className="text-[10px] font-mono font-medium truncate pl-2 user-select-none opacity-90 mx-auto pointer-events-none">{bindingLabel}</span>
+                                            {binding.style && <span className="text-[9px] font-mono ml-1 truncate user-select-none opacity-70 pointer-events-none">({binding.style})</span>}
+                                            
+                                            {/* End Keyframe Node */}
+                                            <div 
+                                              className="absolute -right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rotate-45 flex items-center justify-center group-hover/pill:scale-110 transition-transform z-20 cursor-pointer" 
+                                              title="Select End Keyframe"
+                                              onClick={(e) => e.stopPropagation()}
+                                              onMouseDown={(e) => {
+                                                e.stopPropagation();
+                                                setIsPlaying(false);
+                                                setSelectedActionIndex(binding.source_action_index);
+                                                setSelectedActorId(actorId);
+                                                setSelectedKeyframe('end');
+                                                const newTime = binding.start_time + binding.duration_seconds;
+                                                const newPos = totalDuration > 0 ? (newTime / totalDuration) * 100 : 0;
+                                                setPlayheadPos(newPos);
+                                                handlePlayheadUpdate(newTime);
+                                              }}
+                                            >
+                                              <div className={`w-2.5 h-2.5 outline outline-2 ${isSelected && selectedKeyframe === 'end' ? 'outline-cyan-400 bg-cyan-100 dark:bg-cyan-900 shadow-[0_0_8px_rgba(6,182,212,0.8)]' : isSelected ? 'outline-cyan-500 bg-white dark:bg-neutral-900' : 'outline-blue-400 dark:outline-blue-500 bg-white dark:bg-neutral-800 group-hover/pill:outline-blue-500 dark:group-hover/pill:outline-blue-400'}`} />
+                                            </div>
+                                            
+                                            {/* Edge Grabber for Resizing Duration (physically distinct handle separated from the keyframe) */}
+                                            <div 
+                                              className="absolute -right-3.5 top-0 bottom-0 w-3 cursor-col-resize z-30 flex items-center justify-center opacity-0 group-hover/pill:opacity-100 transition-opacity"
+                                              onMouseDown={(e) => {
+                                                if (e.button !== 0) return;
+                                                e.stopPropagation();
+                                                handlePillMouseDown(e, binding.source_action_index, actorId, binding.start_time, binding.duration_seconds, 'resize');
+                                              }}
+                                              title="Drag to resize clip duration"
+                                            >
+                                              <div className="w-[3px] h-3 bg-cyan-500/80 rounded-full" />
                                             </div>
                                           </div>
                                         );
@@ -3456,6 +3749,7 @@ export default function Home() {
                             </>
                           );
                         })()}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -3627,15 +3921,15 @@ export default function Home() {
                         <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-2 uppercase tracking-wider flex items-center gap-2">
                           <Play size={12} /> Motion
                         </div>
-                        <input
-                          list="motion-suggestions"
+                        <select
                           value={action.motion}
                           onChange={e => {
                             const newMotion = e.target.value;
                             setStoryData(prev => {
                               if (!prev) return prev;
                               const newBeats = [...prev.beats];
-                              const newActions = [...newBeats[selectedSceneIndex].actions];
+                              const currentBeat = newBeats[selectedSceneIndex];
+                              const newActions = [...currentBeat.actions];
                               newActions[selectedActionIndex] = {
                                 ...newActions[selectedActionIndex],
                                 motion: newMotion,
@@ -3644,23 +3938,339 @@ export default function Home() {
                                   ? newActions[selectedActionIndex].target_spatial_transform
                                   : undefined,
                               };
-                              newBeats[selectedSceneIndex] = { ...newBeats[selectedSceneIndex], actions: newActions };
+                              const nextBeat = { ...currentBeat, actions: newActions };
+                              const previousCompiledScene = selectedSceneIndex > 0
+                                ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+                                : null;
+                              const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+                              newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
                               return { ...prev, beats: newBeats };
                             });
                           }}
-                          className="w-full h-8 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 px-2 text-xs text-neutral-700 dark:text-neutral-300 shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
-                        />
-                        <datalist id="motion-suggestions">
-                          {Array.from(new Set([
-                            action.motion,
-                            ...(storyData?.actors_detected.find(a => a.id === action.actor_id)?.drafted_rig
-                              ? Object.keys(storyData.actors_detected.find(a => a.id === action.actor_id)?.drafted_rig?.rig_data.motion_clips || {})
-                              : []),
-                            'idle', 'walk', 'run', 'jump', 'swim', 'crawl', 'fly', 'slither', 'glide', 'drive', 'wave', 'sit', 'hide', 'panic', 'celebrate'
-                          ])).map(m => (
-                            <option key={m} value={m} />
-                          ))}
-                        </datalist>
+                          className="w-full h-8 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 px-2 text-xs text-neutral-700 dark:text-neutral-300 shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-cyan-500/50 cursor-pointer appearance-none"
+                        >
+                          {(() => {
+                            const rig = storyData?.actors_detected.find(a => a.id === action.actor_id)?.drafted_rig;
+                            const availableMotions = new Set<string>();
+                            availableMotions.add(action.motion); // Always keep current motion as an option
+                            if (rig?.rig_data.motion_clips) {
+                              Object.keys(rig.rig_data.motion_clips).forEach(m => availableMotions.add(m));
+                            } else {
+                              // If no rig, at least allow idle and whatever it is now
+                              availableMotions.add('idle');
+                            }
+                            return Array.from(availableMotions).map(m => (
+                              <option key={m} value={m}>{m}</option>
+                            ));
+                          })()}
+                        </select>
+                      </div>
+
+                      {/* Transforms Editor */}
+                      <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800/40 relative mt-4">
+                        {selectedKeyframe && (
+                          <div className="absolute -top-3 left-0 bg-cyan-100/90 text-cyan-800 dark:bg-cyan-900/80 dark:text-cyan-200 px-2 py-0.5 rounded text-[9px] font-bold tracking-widest uppercase border border-cyan-200 dark:border-cyan-800 backdrop-blur shadow-sm">
+                            Editing {selectedKeyframe} Keyframe
+                          </div>
+                        )}
+                        {(!selectedKeyframe || selectedKeyframe === 'start') && (
+                          <div className={`p-2 rounded-lg transition-colors ${selectedKeyframe === 'start' ? 'bg-cyan-50 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : ''}`}>
+                            <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex justify-between items-center">
+                              <span className={selectedKeyframe === 'start' ? 'text-cyan-600 dark:text-cyan-400 font-bold' : ''}>Start Keyframe</span>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 mb-2">
+                              {[
+                                { label: 'X', prop: 'x', val: action.spatial_transform?.x ?? 960 },
+                                { label: 'Y', prop: 'y', val: action.spatial_transform?.y ?? 950 },
+                                { label: 'Scale', prop: 'scale', val: action.spatial_transform?.scale ?? 0.5, step: 0.05 }
+                              ].map((field) => (
+                                <div key={`start-${field.prop}`} className="flex flex-col gap-1">
+                                  <label className="text-[9px] text-neutral-400 font-mono tracking-widest">{field.label}</label>
+                                  <input
+                                    type="number"
+                                    step={field.step || 1}
+                                    value={typeof field.val === 'number' ? Number((field.val).toFixed(2)) : field.val}
+                                    onChange={(e) => {
+                                      const val = parseFloat(e.target.value);
+                                      if (isNaN(val)) return;
+                                      setStoryData(prev => {
+                                        if (!prev) return prev;
+                                        const newBeats = [...prev.beats];
+                                        const currentBeat = newBeats[selectedSceneIndex];
+                                        const newActions = [...currentBeat.actions];
+                                        const currentAction = newActions[selectedActionIndex];
+                                        
+                                        const oldVal = (currentAction.spatial_transform as any)?.[field.prop] ?? (field.prop === 'scale' ? 0.5 : (field.prop === 'x' ? 960 : 950));
+                                        const diff = val - oldVal;
+                                        
+                                        const newSpatialTransform = {
+                                          ...(currentAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
+                                          [field.prop]: val
+                                        };
+                                        
+                                        // Shift target if available
+                                        const newTargetSpatialTransform = currentAction.target_spatial_transform ? { ...currentAction.target_spatial_transform } : undefined;
+                                        if (newTargetSpatialTransform) {
+                                          if (field.prop === 'x' || field.prop === 'y') {
+                                            newTargetSpatialTransform[field.prop] = (newTargetSpatialTransform[field.prop] ?? oldVal) + diff;
+                                          } else if (field.prop === 'scale') {
+                                            newTargetSpatialTransform.scale = (newTargetSpatialTransform.scale ?? oldVal) * (val / oldVal);
+                                          }
+                                        }
+
+                                        newActions[selectedActionIndex] = {
+                                          ...currentAction,
+                                          spatial_transform: newSpatialTransform,
+                                          target_spatial_transform: newTargetSpatialTransform
+                                        };
+
+                                        const nextBeat = { ...currentBeat, actions: newActions };
+                                        const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+                                        const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+                                        newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                        return { ...prev, beats: newBeats };
+                                      });
+                                    }}
+                                    className={`w-full h-7 bg-white dark:bg-neutral-900 rounded border px-1.5 text-xs font-mono shadow-inner focus:outline-none focus:ring-1 transition-colors ${selectedKeyframe === 'start' ? 'border-cyan-300 dark:border-cyan-700/50 text-cyan-800 dark:text-cyan-300 focus:ring-cyan-500/50' : 'border-neutral-200 dark:border-neutral-700/50 text-neutral-700 dark:text-neutral-300 focus:ring-cyan-500/30'}`}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                            <div className="flex gap-4">
+                              <label className="flex items-center gap-1.5 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={action.spatial_transform?.flip_x ?? false}
+                                  onChange={(e) => {
+                                    setStoryData(prev => {
+                                      if (!prev) return prev;
+                                      const newBeats = [...prev.beats];
+                                      const currentBeat = newBeats[selectedSceneIndex];
+                                      const newActions = [...currentBeat.actions];
+                                      newActions[selectedActionIndex] = {
+                                        ...newActions[selectedActionIndex],
+                                        spatial_transform: {
+                                          ...(newActions[selectedActionIndex].spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
+                                          flip_x: e.target.checked
+                                        }
+                                      };
+                                      const nextBeat = { ...currentBeat, actions: newActions };
+                                      const recompiled = compileBeatToScene(nextBeat, availableRigs, selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null, stageOrientation);
+                                      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                      return { ...prev, beats: newBeats };
+                                    });
+                                  }}
+                                  className={`rounded border-neutral-300 text-cyan-500 focus:ring-cyan-500/50 dark:border-neutral-600 dark:bg-neutral-800 ${selectedKeyframe === 'start' ? 'ring-1 ring-cyan-400' : ''}`}
+                                />
+                                <span className={`text-[9px] font-mono tracking-widest uppercase ${selectedKeyframe === 'start' ? 'text-cyan-700 dark:text-cyan-400' : 'text-neutral-500 dark:text-neutral-400'}`}>Flip X</span>
+                              </label>
+                              <label className="flex items-center gap-1.5 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={action.spatial_transform?.flip_y ?? false}
+                                  onChange={(e) => {
+                                    setStoryData(prev => {
+                                      if (!prev) return prev;
+                                      const newBeats = [...prev.beats];
+                                      const currentBeat = newBeats[selectedSceneIndex];
+                                      const newActions = [...currentBeat.actions];
+                                      newActions[selectedActionIndex] = {
+                                        ...newActions[selectedActionIndex],
+                                        spatial_transform: {
+                                          ...(newActions[selectedActionIndex].spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
+                                          flip_y: e.target.checked
+                                        }
+                                      };
+                                      const nextBeat = { ...currentBeat, actions: newActions };
+                                      const recompiled = compileBeatToScene(nextBeat, availableRigs, selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null, stageOrientation);
+                                      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                      return { ...prev, beats: newBeats };
+                                    });
+                                  }}
+                                  className={`rounded border-neutral-300 text-cyan-500 focus:ring-cyan-500/50 dark:border-neutral-600 dark:bg-neutral-800 ${selectedKeyframe === 'start' ? 'ring-1 ring-cyan-400' : ''}`}
+                                />
+                                <span className={`text-[9px] font-mono tracking-widest uppercase ${selectedKeyframe === 'start' ? 'text-cyan-700 dark:text-cyan-400' : 'text-neutral-500 dark:text-neutral-400'}`}>Flip Y</span>
+                              </label>
+                            </div>
+                          </div>
+                        )}
+
+                        {motionNeedsTarget(action.motion) && (!selectedKeyframe || selectedKeyframe === 'end') && (
+                          <div className={`mt-2 p-2 rounded-lg transition-colors ${selectedKeyframe === 'end' ? 'bg-cyan-50 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : ''}`}>
+                            <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex justify-between items-center">
+                              <span className={selectedKeyframe === 'end' ? 'text-cyan-600 dark:text-cyan-400 font-bold' : ''}>End Keyframe</span>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 mb-2">
+                              {[
+                                { label: 'X', prop: 'x', val: action.target_spatial_transform?.x ?? (action.spatial_transform?.x ?? 960) },
+                                { label: 'Y', prop: 'y', val: action.target_spatial_transform?.y ?? (action.spatial_transform?.y ?? 950) },
+                                { label: 'Scale', prop: 'scale', val: action.target_spatial_transform?.scale ?? (action.spatial_transform?.scale ?? 0.5), step: 0.05 }
+                              ].map((field) => (
+                                <div key={`end-${field.prop}`} className="flex flex-col gap-1">
+                                  <label className="text-[9px] text-neutral-400 font-mono tracking-widest">{field.label}</label>
+                                  <input
+                                    type="number"
+                                    step={field.step || 1}
+                                    value={typeof field.val === 'number' ? Number((field.val).toFixed(2)) : field.val}
+                                    onChange={(e) => {
+                                      const val = parseFloat(e.target.value);
+                                      if (isNaN(val)) return;
+                                      setStoryData(prev => {
+                                        if (!prev) return prev;
+                                        const newBeats = [...prev.beats];
+                                        const currentBeat = newBeats[selectedSceneIndex];
+                                        const newActions = [...currentBeat.actions];
+                                        const fallbackTarget = newActions[selectedActionIndex].spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
+                                        newActions[selectedActionIndex] = {
+                                          ...newActions[selectedActionIndex],
+                                          target_spatial_transform: {
+                                            ...fallbackTarget,
+                                            ...(newActions[selectedActionIndex].target_spatial_transform || {}),
+                                            [field.prop]: val
+                                          }
+                                        };
+                                        const nextBeat = { ...currentBeat, actions: newActions };
+                                        const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+                                        const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+                                        newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                        return { ...prev, beats: newBeats };
+                                      });
+                                    }}
+                                    className={`w-full h-7 bg-white dark:bg-neutral-900 rounded border px-1.5 text-xs font-mono shadow-inner focus:outline-none focus:ring-1 transition-colors ${selectedKeyframe === 'end' ? 'border-cyan-300 dark:border-cyan-700/50 text-cyan-800 dark:text-cyan-300 focus:ring-cyan-500/50' : 'border-neutral-200 dark:border-neutral-700/50 text-cyan-700 dark:text-cyan-400 focus:ring-cyan-500/30'}`}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                            <div className="flex gap-4">
+                              <label className="flex items-center gap-1.5 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={action.target_spatial_transform?.flip_x ?? action.spatial_transform?.flip_x ?? false}
+                                  onChange={(e) => {
+                                    setStoryData(prev => {
+                                      if (!prev) return prev;
+                                      const newBeats = [...prev.beats];
+                                      const currentBeat = newBeats[selectedSceneIndex];
+                                      const newActions = [...currentBeat.actions];
+                                      const fallbackTarget = newActions[selectedActionIndex].spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
+                                      newActions[selectedActionIndex] = {
+                                        ...newActions[selectedActionIndex],
+                                        target_spatial_transform: {
+                                          ...fallbackTarget,
+                                          ...(newActions[selectedActionIndex].target_spatial_transform || {}),
+                                          flip_x: e.target.checked
+                                        }
+                                      };
+                                      const nextBeat = { ...currentBeat, actions: newActions };
+                                      const recompiled = compileBeatToScene(nextBeat, availableRigs, selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null, stageOrientation);
+                                      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                      return { ...prev, beats: newBeats };
+                                    });
+                                  }}
+                                  className={`rounded border-neutral-300 text-cyan-500 focus:ring-cyan-500/50 dark:border-neutral-600 dark:bg-neutral-800 ${selectedKeyframe === 'end' ? 'ring-1 ring-cyan-400' : ''}`}
+                                />
+                                <span className={`text-[9px] font-mono tracking-widest uppercase ${selectedKeyframe === 'end' ? 'text-cyan-700 dark:text-cyan-400' : 'text-neutral-500 dark:text-neutral-400'}`}>Flip X</span>
+                              </label>
+                              <label className="flex items-center gap-1.5 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={action.target_spatial_transform?.flip_y ?? action.spatial_transform?.flip_y ?? false}
+                                  onChange={(e) => {
+                                    setStoryData(prev => {
+                                      if (!prev) return prev;
+                                      const newBeats = [...prev.beats];
+                                      const currentBeat = newBeats[selectedSceneIndex];
+                                      const newActions = [...currentBeat.actions];
+                                      const fallbackTarget = newActions[selectedActionIndex].spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
+                                      newActions[selectedActionIndex] = {
+                                        ...newActions[selectedActionIndex],
+                                        target_spatial_transform: {
+                                          ...fallbackTarget,
+                                          ...(newActions[selectedActionIndex].target_spatial_transform || {}),
+                                          flip_y: e.target.checked
+                                        }
+                                      };
+                                      const nextBeat = { ...currentBeat, actions: newActions };
+                                      const recompiled = compileBeatToScene(nextBeat, availableRigs, selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null, stageOrientation);
+                                      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                      return { ...prev, beats: newBeats };
+                                    });
+                                  }}
+                                  className={`rounded border-neutral-300 text-cyan-500 focus:ring-cyan-500/50 dark:border-neutral-600 dark:bg-neutral-800 ${selectedKeyframe === 'end' ? 'ring-1 ring-cyan-400' : ''}`}
+                                />
+                                <span className={`text-[9px] font-mono tracking-widest uppercase ${selectedKeyframe === 'end' ? 'text-cyan-700 dark:text-cyan-400' : 'text-neutral-500 dark:text-neutral-400'}`}>Flip Y</span>
+                              </label>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Timeline Editor */}
+                      <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800/40 mt-4">
+                        <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider">
+                          Timeline Properties
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[9px] text-neutral-400 font-mono tracking-widest">Delay (s)</label>
+                            <input
+                              type="number"
+                              step={0.1}
+                              min={0}
+                              value={Number((action.animation_overrides?.delay ?? 0).toFixed(2))}
+                              onChange={(e) => {
+                                const val = Math.max(0, parseFloat(e.target.value) || 0);
+                                setStoryData(prev => {
+                                  if (!prev) return prev;
+                                  const newBeats = [...prev.beats];
+                                  const currentBeat = newBeats[selectedSceneIndex];
+                                  const newActions = [...currentBeat.actions];
+                                  newActions[selectedActionIndex] = {
+                                    ...newActions[selectedActionIndex],
+                                    animation_overrides: {
+                                      ...(newActions[selectedActionIndex].animation_overrides || {}),
+                                      delay: val
+                                    }
+                                  };
+                                  const nextBeat = { ...currentBeat, actions: newActions };
+                                  const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+                                  const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+                                  newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                  return { ...prev, beats: newBeats };
+                                });
+                              }}
+                              className="w-full h-7 bg-white dark:bg-neutral-900 rounded border border-neutral-200 dark:border-neutral-700/50 px-1.5 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-inner focus:outline-none focus:ring-1 focus:ring-cyan-500/30 transition-colors"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[9px] text-neutral-400 font-mono tracking-widest">Duration (s)</label>
+                            <input
+                              type="number"
+                              step={0.1}
+                              min={0.1}
+                              value={Number((action.duration_seconds).toFixed(2))}
+                              onChange={(e) => {
+                                const val = Math.max(0.1, parseFloat(e.target.value) || 0.1);
+                                setStoryData(prev => {
+                                  if (!prev) return prev;
+                                  const newBeats = [...prev.beats];
+                                  const currentBeat = newBeats[selectedSceneIndex];
+                                  const newActions = [...currentBeat.actions];
+                                  newActions[selectedActionIndex] = {
+                                    ...newActions[selectedActionIndex],
+                                    duration_seconds: val
+                                  };
+                                  const nextBeat = { ...currentBeat, actions: newActions };
+                                  const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+                                  const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+                                  newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                  return { ...prev, beats: newBeats };
+                                });
+                              }}
+                              className="w-full h-7 bg-white dark:bg-neutral-900 rounded border border-neutral-200 dark:border-neutral-700/50 px-1.5 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-inner focus:outline-none focus:ring-1 focus:ring-cyan-500/30 transition-colors"
+                            />
+                          </div>
+                        </div>
                       </div>
 
                       {binding && (
@@ -4067,7 +4677,7 @@ export default function Home() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setClipPreviewPlaying(prev => !prev)}
+                  onClick={handleClipPreviewToggle}
                   className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${clipPreviewPlaying
                       ? "bg-amber-500 text-[#0a0a0a] hover:bg-amber-400"
                       : "bg-emerald-500 text-white hover:bg-emerald-400"
@@ -4085,6 +4695,7 @@ export default function Home() {
                   onClick={() => {
                     setClipPreviewState(null);
                     setClipPreviewPlaying(false);
+                    clipPreviewPlayheadRef.current = 0;
                     setClipPreviewPlayhead(0);
                   }}
                   className="p-2 -mr-2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
@@ -4104,10 +4715,7 @@ export default function Home() {
                   isPlaying={clipPreviewPlaying}
                   playheadTime={clipPreviewPlayhead}
                   loop={true}
-                  onPlayheadUpdate={(timeSeconds) => {
-                    const duration = clipPreviewBundle.compiledScene.duration_seconds || 1;
-                    setClipPreviewPlayhead(Math.min(duration, timeSeconds));
-                  }}
+                  onPlayheadUpdate={handleClipPreviewPlayheadUpdate}
                 />
               </div>
 

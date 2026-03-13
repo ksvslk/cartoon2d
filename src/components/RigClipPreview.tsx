@@ -5,7 +5,7 @@ import { DraftsmanData } from "@/lib/schema/rig";
 import { resolvePlayableMotionClip } from "@/lib/motion/compiled_ik";
 import { EvaluatedMotionGoals, estimateMotionClipDuration, evaluateMotionIntentAtTime } from "@/lib/motion/intent";
 import { buildPoseGraph } from "@/lib/ik/graph";
-import { createRestPoseState } from "@/lib/ik/pose";
+import { createRestPoseState, PoseState } from "@/lib/ik/pose";
 import { solvePoseFromGoals } from "@/lib/ik/goal_solver";
 import { applyPoseToSvg, mountRigSvg } from "@/lib/ik/svgPose";
 import { validateRigForMotion } from "@/lib/motion/validation";
@@ -40,6 +40,7 @@ export function RigClipPreview({
   const rafRef = useRef<number | null>(null);
   const lastFrameRef = useRef<number | null>(null);
   const currentTimeRef = useRef(playheadTime);
+  const lastPoseRef = useRef<PoseState | null>(null);
 
   const motionClip = rig.rig_data.motion_clips?.[clipId];
   const durationSeconds = useMemo(() => estimateMotionClipDuration(motionClip), [motionClip]);
@@ -64,34 +65,40 @@ export function RigClipPreview({
   const graph = useMemo(() => buildPoseGraph(rig, activeView), [activeView, rig]);
   const restPose = useMemo(() => createRestPoseState(graph), [graph]);
 
-  const renderAtTime = useCallback((timeSeconds: number) => {
+  const renderAtTime = useCallback((timeSeconds: number, resetContinuity = false) => {
     if (!svgRef.current) return;
+    if (resetContinuity) {
+      lastPoseRef.current = null;
+    }
     const goals = playableClip?.intent
       ? evaluateMotionIntentAtTime(playableClip.intent, graph, timeSeconds)
       : EMPTY_GOALS;
-    const solved = solvePoseFromGoals(graph, goals, restPose);
+    const solved = solvePoseFromGoals(graph, goals, lastPoseRef.current ?? restPose);
     applyPoseToSvg(svgRef.current, graph, solved.layout, activeView);
+    lastPoseRef.current = solved.pose;
   }, [activeView, graph, playableClip, restPose]);
 
   useEffect(() => {
     const containerEl = containerRef.current;
     if (!containerEl) return;
     svgRef.current = mountRigSvg(containerEl, rig, activeView);
+    lastPoseRef.current = null;
     return () => {
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
       lastFrameRef.current = null;
+      lastPoseRef.current = null;
       svgRef.current = null;
       containerEl.innerHTML = "";
     };
   }, [activeView, renderAtTime, rig]);
 
   useEffect(() => {
-    currentTimeRef.current = playheadTime;
     if (!isPlaying) {
-      renderAtTime(playheadTime);
+      currentTimeRef.current = playheadTime;
+      renderAtTime(playheadTime, true);
     }
   }, [isPlaying, playheadTime, renderAtTime]);
 
@@ -101,6 +108,9 @@ export function RigClipPreview({
       rafRef.current = null;
     }
     lastFrameRef.current = null;
+    if (!isPlaying) {
+      lastPoseRef.current = null;
+    }
 
     if (!isPlaying) return;
 
@@ -113,7 +123,9 @@ export function RigClipPreview({
 
       const elapsedMs = now - lastFrameRef.current;
       if (elapsedMs >= minFrameMs) {
-        const elapsedSeconds = elapsedMs / 1000;
+        const frameCount = Math.max(1, Math.floor(elapsedMs / minFrameMs));
+        const advancedMs = frameCount * minFrameMs;
+        const elapsedSeconds = advancedMs / 1000;
         let nextTime = currentTimeRef.current + elapsedSeconds;
         if (durationSeconds > 0) {
           if (loop) {
@@ -124,7 +136,7 @@ export function RigClipPreview({
         }
 
         currentTimeRef.current = nextTime;
-        lastFrameRef.current = now;
+        lastFrameRef.current += advancedMs;
         renderAtTime(nextTime);
         onPlayheadUpdate?.(nextTime);
       }

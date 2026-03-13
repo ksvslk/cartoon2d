@@ -1228,6 +1228,7 @@ Rules:
     - Set explicit phases (e.g., 0.0 for Leg A, 0.5 for Leg B to create alternating walking motion).
     - Or sweeping generic waves (e.g. 0.0, 0.1, 0.2 down a spine for a fish tail or slithering snake).
     - amplitudeDeg must be reasonable (e.g., 10-30 degrees for gentle motion, 40-70 for intense).
+    - frequency is cycles per clip and must be a whole number (1, 2, 3, ...) so the loop closes exactly on frame 0.
 16. (CRITICAL) Provide explicit "rootMotion" for torso/body translation if the character should bob, bounce, or dip during locomotion (e.g., dipping down at t: 0.25 and t: 0.75 for walking footsteps). Use flat 0 if they glide (like a car or fish).
 
 JSON shape:

@@ -1,7 +1,7 @@
 import gsap from "gsap";
 import { ClipBindingIKPlayback, CompiledSceneData, StoryBeatData } from "../schema/story";
 import { DraftsmanData, RigMotionClip } from "../schema/rig";
-import { inferAutoTargetTransform, motionNeedsTarget, normalizeMotionKey, suggestMotionAliases } from "./semantics";
+import { normalizeMotionKey, suggestMotionAliases } from "./semantics";
 import {
   OBJECT_ANIM_PATTERNS,
   addAmbientBindingToTimeline,
@@ -94,15 +94,16 @@ function getActorNaturalOrigin(container: HTMLElement, actorId: string): {
 function timelineVarsForTransform(
   container: HTMLElement,
   actorId: string,
-  transform: { x: number; y: number; scale: number },
+  transform: { x: number; y: number; scale: number; flip_x?: boolean; flip_y?: boolean },
   facingSign: number,
+  verticalSign = transform.flip_y ? -1 : 1,
 ): gsap.TweenVars {
   const { naturalCX, naturalBottom } = getActorNaturalOrigin(container, actorId);
   return {
     x: transform.x - naturalCX,
     y: transform.y - naturalBottom,
     scaleX: facingSign * transform.scale,
-    scaleY: transform.scale,
+    scaleY: verticalSign * transform.scale,
     svgOrigin: `${naturalCX} ${naturalBottom}`,
   };
 }
@@ -118,43 +119,58 @@ function addCompiledTransformTrack(
   tl: gsap.core.Timeline,
   container: HTMLElement,
   actorId: string,
-  transformTrack: Array<{ time: number; x: number; y: number; scale: number }>,
+  transformTrack: Array<{ time: number; x: number; y: number; scale: number; flip_x?: boolean; flip_y?: boolean }>,
   initialFacingSign?: number,
+  isBackwardMotion?: boolean,
 ) {
   const sorted = [...transformTrack].sort((a, b) => a.time - b.time);
   if (sorted.length === 0) return;
 
   let facingSign = initialFacingSign ?? 1;
-  for (let i = 0; i < sorted.length; i += 1) {
-    const current = sorted[i];
-    const next = sorted[i + 1];
+  const keyframeFacingSigns = sorted.map((current, index) => {
+    if (current.flip_x !== undefined) {
+      facingSign = current.flip_x ? -1 : 1;
+      return facingSign;
+    }
 
+    const next = sorted[index + 1];
     if (next) {
       const deltaX = next.x - current.x;
-      if (deltaX < -10) facingSign = -1;
-      else if (deltaX > 10) facingSign = 1;
+      if (isBackwardMotion) {
+        if (deltaX < -10) facingSign = 1;
+        else if (deltaX > 10) facingSign = -1;
+      } else {
+        if (deltaX < -10) facingSign = -1;
+        else if (deltaX > 10) facingSign = 1;
+      }
     }
+
+    return facingSign;
+  });
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    const current = sorted[i];
+    const currentFacingSign = keyframeFacingSigns[i];
+    const currentVerticalSign = current.flip_y ? -1 : 1;
 
     tl.set(
       `#actor_group_${actorId}`,
-      timelineVarsForTransform(container, actorId, current, facingSign),
+      timelineVarsForTransform(container, actorId, current, currentFacingSign, currentVerticalSign),
       current.time,
     );
 
+    const next = sorted[i + 1];
     if (!next) continue;
+
     const segmentDuration = next.time - current.time;
     if (segmentDuration <= 0) continue;
-
-    const deltaX = next.x - current.x;
-    if (deltaX < -10) facingSign = -1;
-    else if (deltaX > 10) facingSign = 1;
 
     tl.to(
       `#actor_group_${actorId}`,
       {
-        ...timelineVarsForTransform(container, actorId, next, facingSign),
+        ...timelineVarsForTransform(container, actorId, next, currentFacingSign, currentVerticalSign),
         duration: segmentDuration,
-        ease: "power1.inOut",
+        ease: "none",
       },
       current.time,
     );
@@ -445,8 +461,13 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
         .sort((left, right) => left.start_time - right.start_time)[0]
         ?.ik_playback?.motion_spec?.locomotion?.preferredDirection;
       const initialFacingSign = facingSignForDirection(initialDirection);
+      
+      const isBackwardMotion = track.clip_bindings.some(b => 
+        b.ik_playback?.motion_spec?.locomotion?.preferredDirection === "backward" ||
+        normalizeMotionKey(b.motion).includes("backward")
+      );
 
-      addCompiledTransformTrack(tl, container, id, track.transform_track, initialFacingSign);
+      addCompiledTransformTrack(tl, container, id, track.transform_track, initialFacingSign, isBackwardMotion);
 
       track.clip_bindings.forEach(binding => {
         const m = normalizeMotionKey(binding.motion);

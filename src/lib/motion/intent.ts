@@ -21,20 +21,42 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+function normalizeDegrees(value: number): number {
+  let next = value;
+  while (next > 180) next -= 360;
+  while (next < -180) next += 360;
+  return round2(next);
+}
+
+function shortestAngleDelta(from: number, to: number): number {
+  return normalizeDegrees(to - from);
+}
+
+function lerpDegrees(from: number, to: number, alpha: number): number {
+  return normalizeDegrees(from + (shortestAngleDelta(from, to) * alpha));
+}
+
+function dedupeSamplesByTime<T extends { t: number }>(samples: T[]): T[] {
+  const byTime = new Map<number, T>();
+  samples.forEach((sample) => {
+    byTime.set(sample.t, sample);
+  });
+  return Array.from(byTime.values()).sort((left, right) => left.t - right.t);
+}
+
 function ensureLoopedRotationSamples(
   samples: Array<{ t: number; rotation: number }>,
 ): Array<{ t: number; rotation: number }> {
-  const ordered = [...samples]
+  const ordered = dedupeSamplesByTime([...samples]
     .filter((sample) => Number.isFinite(sample.t) && Number.isFinite(sample.rotation))
-    .map((sample) => ({ t: round2(clamp(sample.t, 0, 1)), rotation: round2(sample.rotation) }))
-    .sort((left, right) => left.t - right.t);
+    .map((sample) => ({ t: round2(clamp(sample.t, 0, 1)), rotation: normalizeDegrees(sample.rotation) })));
   if (ordered.length === 0) return [];
 
   const loopStart = ordered[0].t === 0 ? ordered[0] : { ...ordered[0], t: 0 };
   const result = ordered[0].t === 0 ? [...ordered] : [loopStart, ...ordered];
   const last = result[result.length - 1];
-  if (last.t < 1 || Math.abs(last.rotation - loopStart.rotation) > 0.1) {
-    result.push({ ...loopStart, t: 1 });
+  if (last.t < 1) {
+    result.push({ ...last, t: 1 });
   } else if (last.t !== 1) {
     result[result.length - 1] = { ...last, t: 1 };
   }
@@ -44,15 +66,14 @@ function ensureLoopedRotationSamples(
 function ensureLoopedEffectorSamples(
   samples: Array<{ t: number; x: number; y: number; weight?: number }>,
 ): Array<{ t: number; x: number; y: number; weight?: number }> {
-  const ordered = [...samples]
+  const ordered = dedupeSamplesByTime([...samples]
     .filter((sample) => Number.isFinite(sample.t) && Number.isFinite(sample.x) && Number.isFinite(sample.y))
     .map((sample) => ({
       t: round2(clamp(sample.t, 0, 1)),
       x: round2(sample.x),
       y: round2(sample.y),
       weight: typeof sample.weight === "number" ? round2(sample.weight) : sample.weight,
-    }))
-    .sort((left, right) => left.t - right.t);
+    })));
   if (ordered.length === 0) return [];
 
   const loopStart = ordered[0].t === 0 ? ordered[0] : { ...ordered[0], t: 0 };
@@ -62,8 +83,10 @@ function ensureLoopedEffectorSamples(
     Math.abs(last.x - loopStart.x) <= 0.1 &&
     Math.abs(last.y - loopStart.y) <= 0.1 &&
     Math.abs((last.weight ?? 1) - (loopStart.weight ?? 1)) <= 0.05;
-  if (last.t < 1 || !sameAsStart) {
-    result.push({ ...loopStart, t: 1 });
+  if (last.t < 1) {
+    result.push({ ...last, t: 1 });
+  } else if (!sameAsStart) {
+    result[result.length - 1] = { ...last, t: 1 };
   } else if (last.t !== 1) {
     result[result.length - 1] = { ...last, t: 1 };
   }
@@ -73,15 +96,14 @@ function ensureLoopedEffectorSamples(
 function ensureLoopedRootSamples(
   samples: Array<{ t: number; x?: number; y?: number; rotation?: number }>,
 ): Array<{ t: number; x?: number; y?: number; rotation?: number }> {
-  const ordered = [...samples]
+  const ordered = dedupeSamplesByTime([...samples]
     .filter((sample) => Number.isFinite(sample.t))
     .map((sample) => ({
       t: round2(clamp(sample.t, 0, 1)),
       x: typeof sample.x === "number" ? round2(sample.x) : undefined,
       y: typeof sample.y === "number" ? round2(sample.y) : undefined,
-      rotation: typeof sample.rotation === "number" ? round2(sample.rotation) : undefined,
-    }))
-    .sort((left, right) => left.t - right.t);
+      rotation: typeof sample.rotation === "number" ? normalizeDegrees(sample.rotation) : undefined,
+    })));
   if (ordered.length === 0) return [];
 
   const loopStart = ordered[0].t === 0 ? ordered[0] : { ...ordered[0], t: 0 };
@@ -90,9 +112,11 @@ function ensureLoopedRootSamples(
   const sameAsStart =
     Math.abs((last.x ?? 0) - (loopStart.x ?? 0)) <= 0.1 &&
     Math.abs((last.y ?? 0) - (loopStart.y ?? 0)) <= 0.1 &&
-    Math.abs((last.rotation ?? 0) - (loopStart.rotation ?? 0)) <= 0.1;
-  if (last.t < 1 || !sameAsStart) {
-    result.push({ ...loopStart, t: 1 });
+    Math.abs(shortestAngleDelta(last.rotation ?? 0, loopStart.rotation ?? 0)) <= 0.1;
+  if (last.t < 1) {
+    result.push({ ...last, t: 1 });
+  } else if (!sameAsStart) {
+    result[result.length - 1] = { ...last, t: 1 };
   } else if (last.t !== 1) {
     result[result.length - 1] = { ...last, t: 1 };
   }
@@ -115,7 +139,8 @@ function interpolateSamples<T extends { t: number }>(
     const next = ordered[index + 1];
     if (normalizedTime < current.t || normalizedTime > next.t) continue;
     const span = Math.max(0.0001, next.t - current.t);
-    return [current, next, (normalizedTime - current.t) / span];
+    const linearAlpha = (normalizedTime - current.t) / span;
+    return [current, next, linearAlpha];
   }
 
   return [ordered[ordered.length - 1], ordered[ordered.length - 1], 0];
@@ -126,6 +151,20 @@ function lerpOptional(from: number | undefined, to: number | undefined, alpha: n
   const start = from ?? to ?? 0;
   const end = to ?? from ?? 0;
   return round2(start + ((end - start) * alpha));
+}
+
+function lerpAngleOptional(from: number | undefined, to: number | undefined, alpha: number): number | undefined {
+  if (from === undefined && to === undefined) return undefined;
+  const start = from ?? to ?? 0;
+  const end = to ?? from ?? 0;
+  return lerpDegrees(start, end, alpha);
+}
+
+function normalizeLoopedWaveFrequency(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  // Reusable clips are looped by default, so procedural waves must land on
+  // a whole number of cycles per clip or the pose snaps at the seam.
+  return Math.max(1, Math.round(value));
 }
 
 function normalizedPhase(timeSeconds: number, durationSeconds: number): number {
@@ -366,6 +405,7 @@ export function sanitizeMotionIntentForRig(
         wave.amplitudeDeg,
         candidate.sourceChain?.primary ? 0.72 : 0.5,
       ),
+      frequency: normalizeLoopedWaveFrequency(wave.frequency),
       falloff: candidate.sourceChain ? waveFalloffForChain(candidate.sourceChain, intent.locomotion.mode) : wave.falloff,
     }))),
   };
@@ -510,7 +550,7 @@ export function evaluateMotionIntentAtTime(
     const samples = interpolateSamples(track.samples || [], normalizedTime);
     if (!samples) return acc;
     const [from, to, alpha] = samples;
-    acc[track.nodeId] = round2(from.rotation + ((to.rotation - from.rotation) * alpha));
+    acc[track.nodeId] = lerpDegrees(from.rotation, to.rotation, alpha);
     return acc;
   }, {});
   const effectorTargets = (intent?.effectorGoals || []).flatMap((goal) => {
@@ -560,7 +600,7 @@ export function evaluateMotionIntentAtTime(
       ? {
           x: lerpOptional(rootSample[0].x, rootSample[1].x, rootSample[2]) || 0,
           y: lerpOptional(rootSample[0].y, rootSample[1].y, rootSample[2]) || 0,
-          rotation: lerpOptional(rootSample[0].rotation, rootSample[1].rotation, rootSample[2]),
+          rotation: lerpAngleOptional(rootSample[0].rotation, rootSample[1].rotation, rootSample[2]),
         }
       : undefined,
     effectorTargets,

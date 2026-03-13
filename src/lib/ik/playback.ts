@@ -1,7 +1,7 @@
 import gsap from "gsap";
 import { DraftsmanData, RigMotionIntent } from "../schema/rig";
 import { buildPoseGraph, PoseGraph } from "./graph";
-import { clampLocalRotation, computePoseLayout, createRestPoseState, PoseState } from "./pose";
+import { createRestPoseState, PoseState } from "./pose";
 import { applyPoseToSvg } from "./svgPose";
 import { solvePoseFromGoals } from "./goal_solver";
 import { EvaluatedMotionGoals, evaluateMotionIntentAtTime } from "../motion/intent";
@@ -39,53 +39,6 @@ function resolveViewId(actor: IKPlaybackActor, requestedView?: string): string {
     return actor.renderState.currentView;
   }
   return actor.defaultView;
-}
-
-function round2(value: number): number {
-  return Number(value.toFixed(2));
-}
-
-function normalizeDegrees(value: number): number {
-  let next = value;
-  while (next > 180) next -= 360;
-  while (next < -180) next += 360;
-  return round2(next);
-}
-
-function clampStep(value: number, maxStep: number): number {
-  return Math.max(-maxStep, Math.min(maxStep, value));
-}
-
-function stabilizePoseForPlayback(
-  graph: PoseGraph,
-  currentPose: PoseState,
-  targetPose: PoseState,
-): PoseState {
-  const nextPose: PoseState = {
-    rootTranslations: {},
-    localRotations: {},
-  };
-
-  graph.roots.forEach((rootId) => {
-    const current = currentPose.rootTranslations[rootId] || { x: 0, y: 0 };
-    const target = targetPose.rootTranslations[rootId] || current;
-    const dx = clampStep((target.x - current.x) * 0.62, 18);
-    const dy = clampStep((target.y - current.y) * 0.62, 18);
-    nextPose.rootTranslations[rootId] = {
-      x: round2(current.x + dx),
-      y: round2(current.y + dy),
-    };
-  });
-
-  graph.nodes.forEach((node) => {
-    const current = currentPose.localRotations[node.id] ?? 0;
-    const target = targetPose.localRotations[node.id] ?? current;
-    const delta = normalizeDegrees(target - current);
-    const stepped = current + clampStep(delta * 0.62, 8);
-    nextPose.localRotations[node.id] = clampLocalRotation(graph, node.id, stepped);
-  });
-
-  return nextPose;
 }
 
 function buildNodeLookup(graph: PoseGraph): Map<string, string> {
@@ -204,7 +157,7 @@ export function syncPlaybackActors(actors: IKPlaybackActor[]): void {
     }
 
     if (viewState.appliedIntent !== intent) {
-      viewState.currentPose = undefined;
+      // Do not clear currentPose; we want to stabilize/blend from the last frame of the old clip
       viewState.appliedIntent = intent;
     }
 
@@ -214,9 +167,14 @@ export function syncPlaybackActors(actors: IKPlaybackActor[]): void {
       actor.playbackState.clipTimeSeconds,
     );
     actor.playbackState.currentGoals = goals;
-    const solved = solvePoseFromGoals(viewState.graph, goals, viewState.restPose);
+    
+    const solved = solvePoseFromGoals(
+      viewState.graph,
+      goals,
+      viewState.currentPose ?? viewState.restPose,
+    );
+    
     viewState.currentPose = solved.pose;
-    const layout = solved.layout;
-    applyPoseToSvg(actor.actorGroup, viewState.graph, layout, viewId);
+    applyPoseToSvg(actor.actorGroup, viewState.graph, solved.layout, viewId);
   });
 }
