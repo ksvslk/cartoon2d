@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MotionDirectionSchema, MotionFamilySchema, MotionLocomotionModeSchema } from "./motion_spec";
+import { MotionDirectionSchema, MotionFamilySchema, MotionLocomotionModeSchema, RigMotionIntentAxialWaveSchema, RigMotionIntentRootSampleSchema } from "./motion_spec";
 
 export const PivotPointSchema = z.object({
     x: z.number().describe("The absolute X coordinate of the pivot point within the 1000x1000 viewBox."),
@@ -174,13 +174,6 @@ export const AnimationClipSchema = z.union([
     z.array(AnimationKeyframeSchema),
 ]);
 
-export const RigMotionIntentRootSampleSchema = z.object({
-    t: z.number().min(0).max(1).describe("Normalized clip time for this root-motion sample."),
-    x: z.number().optional().describe("Optional root X offset at this sample."),
-    y: z.number().optional().describe("Optional root Y offset at this sample."),
-    rotation: z.number().optional().describe("Optional root local rotation at this sample."),
-});
-
 export const RigMotionIntentEffectorSampleSchema = z.object({
     t: z.number().min(0).max(1).describe("Normalized clip time for this effector sample."),
     x: z.number().describe("Goal X position for the effector sample."),
@@ -203,15 +196,6 @@ export const RigMotionIntentRotationSampleSchema = z.object({
 export const RigMotionIntentRotationTrackSchema = z.object({
     nodeId: z.string().describe("Canonical IK node driven by this local rotation track."),
     samples: z.array(RigMotionIntentRotationSampleSchema).default([]).describe("Time-sampled local rotations for the node."),
-});
-
-export const RigMotionIntentAxialWaveSchema = z.object({
-    chainId: z.string().optional().describe("Optional canonical chain identifier for this wave."),
-    nodeIds: z.array(z.string()).default([]).describe("Ordered canonical node IDs that this wave affects."),
-    amplitudeDeg: z.number().describe("Peak local rotation magnitude in degrees."),
-    frequency: z.number().positive().default(1).describe("Cycles per clip."),
-    phase: z.number().default(0).describe("Phase offset in cycles."),
-    falloff: z.enum(["uniform", "tip_bias", "root_bias"]).default("uniform").describe("How the wave amplitude is distributed along the node list."),
 });
 
 export const RigMotionIntentContactSchema = z.object({
@@ -297,10 +281,7 @@ export type DraftsmanData = z.infer<typeof DraftsmanSchema>;
 export type RigBone = z.infer<typeof RigBoneSchema>;
 export type AnimationKeyframe = z.infer<typeof AnimationKeyframeSchema>;
 export type AnimationClip = z.infer<typeof AnimationClipSchema>;
-export type RigMotionIntentRootSample = z.infer<typeof RigMotionIntentRootSampleSchema>;
 export type RigMotionIntentEffectorSample = z.infer<typeof RigMotionIntentEffectorSampleSchema>;
-export type RigMotionIntentEffectorGoal = z.infer<typeof RigMotionIntentEffectorGoalSchema>;
-export type RigMotionIntentAxialWave = z.infer<typeof RigMotionIntentAxialWaveSchema>;
 export type RigMotionIntentContact = z.infer<typeof RigMotionIntentContactSchema>;
 export type RigMotionIntentPin = z.infer<typeof RigMotionIntentPinSchema>;
 export type RigMotionIntent = z.infer<typeof RigMotionIntentSchema>;

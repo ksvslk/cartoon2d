@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { DraftsmanSchema, RigMotionIntentSchema, RigMotionIntentRootSampleSchema } from "./rig";
-import { MotionSpecSchema } from "./motion_spec";
+import { DraftsmanSchema, RigMotionIntentSchema } from "./rig";
+import { MotionSpecSchema, RigMotionIntentRootSampleSchema } from "./motion_spec";
 
 export type StageOrientation = "landscape" | "portrait";
 

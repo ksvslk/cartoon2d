@@ -13,8 +13,8 @@ type StepResult = {
   layout: PoseLayout;
 };
 
-function round2(value: number): number {
-  return Number(value.toFixed(2));
+function precise(value: number): number {
+  return value;
 }
 
 function distance(a: Point, b: Point): number {
@@ -46,7 +46,13 @@ export function createRagdollState(layout: PoseLayout): RagdollState {
   };
 }
 
-export function stepRagdoll(graph: PoseGraph, pose: PoseState, ragdoll: RagdollState, dtSeconds = 1 / 60): StepResult {
+export function stepRagdoll(
+  graph: PoseGraph,
+  pose: PoseState,
+  ragdoll: RagdollState,
+  dtSeconds = 1 / 60,
+  dragTarget?: { nodeId: string; x: number; y: number } | null,
+): StepResult {
   const nextRagdoll: RagdollState = {
     positions: Object.fromEntries(
       Object.entries(ragdoll.positions).map(([nodeId, point]) => [nodeId, { x: point.x, y: point.y }]),
@@ -57,8 +63,9 @@ export function stepRagdoll(graph: PoseGraph, pose: PoseState, ragdoll: RagdollS
   };
 
   const pins = pinTargets(graph);
-  const gravity = 1800 * dtSeconds * dtSeconds;
-  const damping = 0.992;
+  // Less intense gravity so lengths don't stretch as hard against rest constraints
+  const gravity = 1200 * dtSeconds * dtSeconds;
+  const damping = 0.82;
 
   graph.nodes.forEach((node) => {
     const current = nextRagdoll.positions[node.id];
@@ -71,68 +78,65 @@ export function stepRagdoll(graph: PoseGraph, pose: PoseState, ragdoll: RagdollS
       return;
     }
 
-    const velocity = {
-      x: (current.x - previous.x) * damping,
-      y: (current.y - previous.y) * damping,
+    // Constrain absolute velocity to prevent unrecoverable numeric explosions
+    // when a rigid mouse drag forces multiple limbs to stretch/snap instantly.
+    const maxVelocity = 35;
+    const rawVx = (current.x - previous.x) * damping;
+    const rawVy = (current.y - previous.y) * damping;
+    const magnitude = Math.hypot(rawVx, rawVy);
+    
+    const velocity = magnitude > maxVelocity ? {
+      x: (rawVx / magnitude) * maxVelocity,
+      y: (rawVy / magnitude) * maxVelocity,
+    } : {
+      x: rawVx,
+      y: rawVy,
     };
+
+    // Apply a velvet sleep threshold - if velocity is microscopic, zero it.
+    if (Math.abs(velocity.x) < 0.05) velocity.x = 0;
+    if (Math.abs(velocity.y) < 0.05) velocity.y = 0;
 
     nextRagdoll.previousPositions[node.id] = { x: current.x, y: current.y };
     nextRagdoll.positions[node.id] = {
-      x: round2(current.x + velocity.x),
-      y: round2(Math.min(floorYForNode(node), current.y + velocity.y + gravity)),
+      x: current.x + velocity.x,
+      y: Math.min(floorYForNode(node), current.y + velocity.y + gravity),
     };
   });
 
-  for (let iteration = 0; iteration < 8; iteration += 1) {
-    graph.nodes.forEach((node) => {
-      if (!node.parentId || typeof node.restLength !== "number" || node.restLength <= 0) return;
-      const parentPos = nextRagdoll.positions[node.parentId];
-      const nodePos = nextRagdoll.positions[node.id];
-      const targetLength = node.restLength;
-      const currentLength = distance(parentPos, nodePos) || 0.0001;
-      const diff = (currentLength - targetLength) / currentLength;
-      const offset = {
-        x: round2((nodePos.x - parentPos.x) * 0.5 * diff),
-        y: round2((nodePos.y - parentPos.y) * 0.5 * diff),
-      };
-
-      const parentPinned = Boolean(pins[node.parentId]);
-      const nodePinned = Boolean(pins[node.id]);
-
-      if (!parentPinned) {
-        nextRagdoll.positions[node.parentId] = {
-          x: round2(parentPos.x + (nodePinned ? offset.x * 2 : offset.x)),
-          y: round2(parentPos.y + (nodePinned ? offset.y * 2 : offset.y)),
-        };
-      }
-
-      if (!nodePinned) {
-        nextRagdoll.positions[node.id] = {
-          x: round2(nodePos.x - (parentPinned ? offset.x * 2 : offset.x)),
-          y: round2(Math.min(floorYForNode(node), nodePos.y - (parentPinned ? offset.y * 2 : offset.y))),
-        };
-      }
-    });
-
-    Object.entries(pins).forEach(([nodeId, point]) => {
-      nextRagdoll.positions[nodeId] = { x: point.x, y: point.y };
-      nextRagdoll.previousPositions[nodeId] = { x: point.x, y: point.y };
-    });
+  const dynamicPins: Record<string, Point> = {};
+  if (dragTarget) {
+    dynamicPins[dragTarget.nodeId] = { x: dragTarget.x, y: dragTarget.y };
   }
 
   const projected = projectConstraintPositions(graph, nextRagdoll.positions, pose, {
-    iterations: 5,
-    lengthIterations: 3,
+    iterations: 18,
+    lengthIterations: 8,
+    dynamicPins,
   });
-  nextRagdoll.positions = Object.fromEntries(
-    Object.entries(projected.positions).map(([nodeId, point]) => [nodeId, { x: point.x, y: point.y }]),
-  );
-  const nextPose = projected.pose;
-  const solvedLayout = projected.layout;
+  graph.nodes.forEach((node) => {
+    const projectedPoint = projected.positions[node.id];
+    if (projectedPoint) {
+      const diffX = projectedPoint.x - nextRagdoll.positions[node.id].x;
+      const diffY = projectedPoint.y - nextRagdoll.positions[node.id].y;
+      
+      nextRagdoll.positions[node.id] = { x: projectedPoint.x, y: projectedPoint.y };
+      const previous = nextRagdoll.previousPositions[node.id];
+      if (previous) {
+        // Offset the previous physics frame correctly so constraint fulfillment
+        // isn't mathematically perceived as "free kinetic energy" by the Verlet integrator.
+        // This makes joint limits and mouse dragging 100% solid and un-bouncy.
+        nextRagdoll.previousPositions[node.id] = {
+          x: previous.x + diffX,
+          y: previous.y + diffY,
+        };
+      }
+    }
+  });
 
   return {
     ragdoll: nextRagdoll,
-    pose: nextPose,
-    layout: solvedLayout,
+    pose: projected.pose,
+    layout: projected.layout,
   };
 }

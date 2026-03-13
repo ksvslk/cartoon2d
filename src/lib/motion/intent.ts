@@ -256,9 +256,22 @@ function defaultWavePhase(
   index: number,
   mode: MotionSpec["locomotion"]["mode"],
 ): number {
-  if (chain.primary) return 0;
-  if (mode === "none") return index * 0.08;
-  return 0.12 + (index * 0.08);
+  if (mode === "none") {
+    // In-place idles/breathing are mostly unified, but offset slightly
+    return chain.primary ? 0 : index * 0.08;
+  }
+  
+  // Locomotion (Walk/Run/Swim/Fly)
+  // We MUST alternate phases so the character doesn't "bunny hop" with both legs swinging in sync.
+  // Chain 0 (Leg A) = 0.0
+  // Chain 1 (Leg B) = 0.5 (Opposite leg swings back)
+  // Chain 2 (Arm A) = 0.5 (Opposite phase to Leg A, contralateral)
+  // Chain 3 (Arm B) = 0.0 (Opposite phase to Arm A)
+  const isOpposingPhase = index % 2 !== 0;
+  
+  // Arms usually swing slightly behind the legs, add a tiny drag offset (0.12)
+  const drag = chain.primary ? 0 : 0.12; 
+  return (isOpposingPhase ? 0.5 : 0.0) + drag;
 }
 
 function branchWaveMultiplier(mode: MotionSpec["locomotion"]["mode"]): number {
@@ -392,6 +405,33 @@ function deriveAxialWavesFromSpec(
   return defaultWavesForTopology(rig, buildMotionTopology(rig), motionSpec);
 }
 
+function deriveRootMotionFromSpec(
+  motionSpec: MotionSpec,
+): RigMotionIntent["rootMotion"] {
+  // If we are stationary, no body bobbing
+  if (motionSpec.locomotion.mode === "none" || motionSpec.locomotion.mode === "slide_on_contact") {
+    return [];
+  }
+  
+  // If moving, bounce the body to simulate weight shift
+  // A walk cycle operates roughly at 2x the frequency of the leg swing
+  // (the body goes up when legs cross, down when legs extend)
+  // We'll create a simple 2-beat sine approximation over the 0-1 phase.
+  const bounceAmp = motionSpec.locomotion.mode === "bounce_on_contact" ? 18 : 
+                    motionSpec.locomotion.mode === "arc" ? 6 : 10;
+                    
+  const scale = motionSpec.amplitude || 1;
+  const h = bounceAmp * scale;
+
+  return [
+    { t: 0.00, y: 0 },
+    { t: 0.25, y: h },
+    { t: 0.50, y: 0 },
+    { t: 0.75, y: h },
+    { t: 1.00, y: 0 }
+  ];
+}
+
 export function estimateMotionClipDuration(motionClip: RigMotionClip | undefined): number {
   if (!motionClip) return 2;
   const displayDuration = (motionClip.displayKeyframes || []).reduce((max, keyframe) => {
@@ -443,10 +483,14 @@ export function buildMotionIntentFromSpec(params: {
       mode: params.motionSpec.locomotion.mode,
       direction: params.motionSpec.locomotion.preferredDirection,
     },
-    rootMotion: [],
+    rootMotion: params.motionSpec.rootMotion && params.motionSpec.rootMotion.length > 0
+      ? params.motionSpec.rootMotion
+      : deriveRootMotionFromSpec(params.motionSpec),
     effectorGoals: [],
     rotationTracks: [],
-    axialWaves: deriveAxialWavesFromSpec(rig, params.motionSpec),
+    axialWaves: params.motionSpec.axialWaves && params.motionSpec.axialWaves.length > 0
+      ? params.motionSpec.axialWaves
+      : deriveAxialWavesFromSpec(rig, params.motionSpec),
     contacts,
     pins: [],
     leadNodes,

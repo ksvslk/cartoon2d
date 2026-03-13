@@ -19,7 +19,7 @@ function normalizeDegrees(value: number): number {
   let next = value;
   while (next > 180) next -= 360;
   while (next < -180) next += 360;
-  return round2(next);
+  return next;
 }
 
 function restAngleOf(graph: PoseGraph, nodeId: string): number {
@@ -27,7 +27,7 @@ function restAngleOf(graph: PoseGraph, nodeId: string): number {
   if (!node?.parentId) return 0;
   const parent = graph.nodeMap.get(node.parentId);
   if (!parent) return 0;
-  return round2((Math.atan2(node.restWorld.y - parent.restWorld.y, node.restWorld.x - parent.restWorld.x) * 180) / Math.PI);
+  return (Math.atan2(node.restWorld.y - parent.restWorld.y, node.restWorld.x - parent.restWorld.x) * 180) / Math.PI;
 }
 
 export function createRestPoseState(graph: PoseGraph): PoseState {
@@ -55,8 +55,9 @@ export function clonePoseState(state: PoseState): PoseState {
 
 export function clampLocalRotation(graph: PoseGraph, nodeId: string, value: number): number {
   const node = graph.nodeMap.get(nodeId);
-  if (!node?.rotationLimit) return normalizeDegrees(value);
-  return round2(Math.max(node.rotationLimit[0], Math.min(node.rotationLimit[1], value)));
+  const normalized = normalizeDegrees(value);
+  if (!node?.rotationLimit) return normalized;
+  return Math.max(node.rotationLimit[0], Math.min(node.rotationLimit[1], normalized));
 }
 
 export function computePoseLayout(graph: PoseGraph, pose: PoseState): PoseLayout {
@@ -74,8 +75,8 @@ export function computePoseLayout(graph: PoseGraph, pose: PoseState): PoseLayout
     if (!node.parentId) {
       const translation = pose.rootTranslations[nodeId] || { x: 0, y: 0 };
       positions[nodeId] = {
-        x: round2(node.restWorld.x + translation.x),
-        y: round2(node.restWorld.y + translation.y),
+        x: node.restWorld.x + translation.x,
+        y: node.restWorld.y + translation.y,
       };
       absoluteRotations[nodeId] = normalizeDegrees(parentAbsoluteDelta + localRotation);
     } else {
@@ -84,8 +85,8 @@ export function computePoseLayout(graph: PoseGraph, pose: PoseState): PoseLayout
       const currentAngle = normalizeDegrees(restAngle + parentAbsoluteDelta + localRotation);
       const length = node.restLength ?? Math.hypot(node.restWorld.x - graph.nodeMap.get(node.parentId)!.restWorld.x, node.restWorld.y - graph.nodeMap.get(node.parentId)!.restWorld.y);
       positions[nodeId] = {
-        x: round2(parentPos.x + Math.cos((currentAngle * Math.PI) / 180) * length),
-        y: round2(parentPos.y + Math.sin((currentAngle * Math.PI) / 180) * length),
+        x: parentPos.x + Math.cos((currentAngle * Math.PI) / 180) * length,
+        y: parentPos.y + Math.sin((currentAngle * Math.PI) / 180) * length,
       };
       absoluteRotations[nodeId] = normalizeDegrees(parentAbsoluteDelta + localRotation);
     }
@@ -119,8 +120,8 @@ export function rootLocalRotationFromLayout(graph: PoseGraph, layout: PoseLayout
       const child = graph.nodeMap.get(childId);
       const childPos = layout.positions[childId];
       if (!child || !childPos) return undefined;
-      const current = round2((Math.atan2(childPos.y - rootPos.y, childPos.x - rootPos.x) * 180) / Math.PI);
-      const rest = round2((Math.atan2(child.restWorld.y - node.restWorld.y, child.restWorld.x - node.restWorld.x) * 180) / Math.PI);
+      const current = (Math.atan2(childPos.y - rootPos.y, childPos.x - rootPos.x) * 180) / Math.PI;
+      const rest = (Math.atan2(child.restWorld.y - node.restWorld.y, child.restWorld.x - node.restWorld.x) * 180) / Math.PI;
       return current - rest;
     })
     .filter((value): value is number => typeof value === "number");
@@ -129,11 +130,16 @@ export function rootLocalRotationFromLayout(graph: PoseGraph, layout: PoseLayout
   return clampLocalRotation(
     graph,
     rootId,
-    round2(deltas.reduce((sum, value) => sum + value, 0) / deltas.length),
+    deltas.reduce((sum, value) => sum + value, 0) / deltas.length,
   );
 }
 
-export function derivePoseStateFromLayout(graph: PoseGraph, currentPose: PoseState, layout: PoseLayout): PoseState {
+export function derivePoseStateFromLayout(
+  graph: PoseGraph, 
+  currentPose: PoseState, 
+  layout: PoseLayout,
+  options: { preserveRootRotation?: boolean; rootRotationBlend?: number } = {}
+): PoseState {
   const next = clonePoseState(currentPose);
 
   graph.roots.forEach((rootId) => {
@@ -141,10 +147,21 @@ export function derivePoseStateFromLayout(graph: PoseGraph, currentPose: PoseSta
     const current = layout.positions[rootId];
     if (!root || !current) return;
     next.rootTranslations[rootId] = {
-      x: round2(current.x - root.restWorld.x),
-      y: round2(current.y - root.restWorld.y),
+      x: current.x - root.restWorld.x,
+      y: current.y - root.restWorld.y,
     };
-    next.localRotations[rootId] = rootLocalRotationFromLayout(graph, layout, rootId);
+    if (options.preserveRootRotation) {
+      next.localRotations[rootId] = currentPose.localRotations[rootId] ?? 0;
+    } else {
+      const derived = rootLocalRotationFromLayout(graph, layout, rootId);
+      if (typeof options.rootRotationBlend === "number") {
+        const prev = currentPose.localRotations[rootId] ?? 0;
+        const diff = normalizeDegrees(derived - prev);
+        next.localRotations[rootId] = clampLocalRotation(graph, rootId, prev + diff * options.rootRotationBlend);
+      } else {
+        next.localRotations[rootId] = derived;
+      }
+    }
   });
 
   const visit = (nodeId: string, parentAbsolute = 0) => {
@@ -155,7 +172,7 @@ export function derivePoseStateFromLayout(graph: PoseGraph, currentPose: PoseSta
       const currentPos = layout.positions[nodeId];
       const parentPos = layout.positions[node.parentId];
       if (currentPos && parentPos) {
-        const currentAngle = round2((Math.atan2(currentPos.y - parentPos.y, currentPos.x - parentPos.x) * 180) / Math.PI);
+        const currentAngle = (Math.atan2(currentPos.y - parentPos.y, currentPos.x - parentPos.x) * 180) / Math.PI;
         const restAngle = restAngleOf(graph, nodeId);
         next.localRotations[nodeId] = clampLocalRotation(graph, nodeId, currentAngle - restAngle - parentAbsolute);
       }
@@ -173,8 +190,8 @@ export function translateRoot(state: PoseState, rootId: string, delta: Point): P
   const next = clonePoseState(state);
   const current = next.rootTranslations[rootId] || { x: 0, y: 0 };
   next.rootTranslations[rootId] = {
-    x: round2(current.x + delta.x),
-    y: round2(current.y + delta.y),
+    x: current.x + delta.x,
+    y: current.y + delta.y,
   };
   return next;
 }
@@ -184,8 +201,8 @@ export function setRootPosition(graph: PoseGraph, state: PoseState, rootId: stri
   if (!root) return state;
   const next = clonePoseState(state);
   next.rootTranslations[rootId] = {
-    x: round2(target.x - root.restWorld.x),
-    y: round2(target.y - root.restWorld.y),
+    x: target.x - root.restWorld.x,
+    y: target.y - root.restWorld.y,
   };
   return next;
 }

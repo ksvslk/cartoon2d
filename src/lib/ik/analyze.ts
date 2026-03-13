@@ -266,19 +266,9 @@ function warningForAttachmentIntegrity(ik: RigIKData, nodes: RigIKNode[]): strin
     const parentBinding = bindingByNode.get(node.parent);
     if (!childBinding || !parentBinding) return;
 
-    if (!childBinding.socket && !parentBinding.socket) {
-      warnings.push(`${node.id} has no explicit attachment socket in ${defaultView}; connected parts should declare how they attach.`);
+    if (!childBinding.socket && !parentBinding.socket && !childBinding.pivot) {
+      warnings.push(`${node.id} has no explicit attachment socket or pivot in ${defaultView}; connected parts should declare how they attach.`);
       return;
-    }
-
-    const childAttachment = resolveAttachmentPoint(childBinding);
-    const parentAttachment = resolveAttachmentPoint(parentBinding);
-    if (!childAttachment || !parentAttachment) return;
-
-    const attachmentGap = distance(parentAttachment, childAttachment);
-    const tolerance = Math.max(14, Math.min(32, (node.restLength || 0) * 0.18 || 18));
-    if (attachmentGap > tolerance) {
-      warnings.push(`${node.id} attachment gap in ${defaultView} is ${attachmentGap.toFixed(1)}px from parent ${node.parent}.`);
     }
   });
 

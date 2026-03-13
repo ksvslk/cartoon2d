@@ -613,9 +613,12 @@ ${requestedViewPrefixGuide}
 4. **Target Views (strict)**: The \`requiredViews\` list defines exactly which view containers you should output. Do NOT generate extra view groups.
 5. **Essential Rigging Only (CRITICAL)**: DO NOT over-rig. You must ONLY group and rig the dominant articulating masses and continuous branches of the subject for EACH view. Combine smaller non-moving details deeply inside their primary parent groups.
 6. **No Flat JPEGs**: Do not embed raster images using <image>. You must draw the subject purely in vector paths (<path>, <circle>, <rect>, etc).
-7. **Hidden Overlap Geometry (CRITICAL JOINTS)**: Child segments MUST NOT float away from their parents. Extend hidden overlap geometry inside the parent mass so connected parts look physically attached instead of cut off at the silhouette edge.
+7. **Hidden Overlap Geometry & Sockets (CRITICAL JOINTS)**: Child segments MUST physically overlap their parents. The visual geometry of a child (like \`arm_lower\`) MUST extend upwards to exactly perfectly cover the {x,y} coordinate of the \`socket\` declared in the parent (\`arm_upper\`). DO NOT leave gaping whitespace between segments.
 8. **Rounded Attachment Ends (CRITICAL)**: Any child shape that joins a parent should end with rounded, tapered, or capsule-like geometry at the attachment. Avoid hard flat cutoffs. Prefer circles, ovals, and curved caps at connection points so deformation stays readable during rotation.
-9. **Single Connected Object (CRITICAL)**: Treat each requested view as one connected subject, not a pile of detached floating pieces. Non-root bones must attach back into the main mass through a real parent relationship and an explicit socket or overlap connection.
+9. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
+   - Furthest background limbs (like \`rear_leg\`) MUST appear mathematically first in the \`<g>\` block.
+   - Foreground limbs (like \`front_leg\`) MUST appear last.
+   - You MUST group related parts together (e.g. \`arm_lower\` visually drawn inside or adjacent to \`arm_upper\`). Treat each requested view as one physically coherent, assembled subject, not a pile of detached floating pieces.
 10. **Preserve Major Silhouette Features**: Never omit any silhouette-defining extension, branch, protrusion, or contour break visible in the reference image. If the source image clearly shows a distinct shape, it must remain readable in the SVG.
 11. **Visemes and Emotions (CRITICAL)**: If the subject has a face-like or front-facing expressive region, place two sub-containers there: \`<g id="mouth_visemes">\` and \`<g id="emotions">\`. If the subject is not expressive, still include minimal placeholder groups in the most relevant front-facing parent group so downstream tools stay consistent.
    - **Visemes:** Include \`#mouth_idle\` (visibility="visible"), \`#mouth_A\` (visibility="hidden"), \`#mouth_E\` (hidden), \`#mouth_I\` (hidden), \`#mouth_O\` (hidden), \`#mouth_U\` (hidden), \`#mouth_M\` (hidden).
@@ -628,7 +631,7 @@ ${requestedViewPrefixGuide}
    - Never split one continuous mass into extra bones just to label anatomy. Keep the hierarchy structural, sparse, and reusable.
    - \`side\`: \`left\`, \`right\`, or \`center\`
    - \`length\`: approximate segment length in SVG units
-   - \`socket\`: preferred attachment/socket point within the parent
+   - \`socket\` (CRITICAL): EXPLICITLY specify the preferred attachment point {x,y} within the parent. Missing sockets break IK and animation rendering! Every bone with a parent MUST have a \`socket\`.
    - \`contactRole\`: \`none\`, \`ground\`, \`wall\`, \`water\`, or \`grip\`
    - \`massClass\`: \`light\`, \`medium\`, or \`heavy\`
 14. **Interaction Nulls**: Include semantic points for interaction, like "#front__grip_point" or "#side_left__grip_point".
@@ -644,16 +647,16 @@ CRITICAL SHAPE: You must output ONLY a SINGLE valid JSON object matching this ex
   "rig_data": {
     "bones": [
       { "id": "3q_right__root",         "pivot": { "x": 500, "y": 520 }, "kind": "root", "side": "center", "massClass": "heavy" },
-      { "id": "3q_right__core_front",   "pivot": { "x": 560, "y": 500 }, "parent": "3q_right__root", "kind": "body", "side": "right", "massClass": "medium" },
-      { "id": "3q_right__core_rear",    "pivot": { "x": 430, "y": 540 }, "parent": "3q_right__root", "kind": "body", "side": "left", "massClass": "medium" },
-      { "id": "3q_right__branch_upper", "pivot": { "x": 520, "y": 360 }, "parent": "3q_right__root", "kind": "other", "side": "center", "massClass": "light" },
-      { "id": "3q_right__branch_lower", "pivot": { "x": 480, "y": 670 }, "parent": "3q_right__root", "kind": "other", "side": "center", "contactRole": "ground", "massClass": "light" },
+      { "id": "3q_right__core_front",   "pivot": { "x": 560, "y": 500 }, "socket": { "x": 560, "y": 500 }, "parent": "3q_right__root", "kind": "body", "side": "right", "massClass": "medium" },
+      { "id": "3q_right__core_rear",    "pivot": { "x": 430, "y": 540 }, "socket": { "x": 430, "y": 540 }, "parent": "3q_right__root", "kind": "body", "side": "left", "massClass": "medium" },
+      { "id": "3q_right__branch_upper", "pivot": { "x": 520, "y": 360 }, "socket": { "x": 520, "y": 360 }, "parent": "3q_right__root", "kind": "other", "side": "center", "massClass": "light" },
+      { "id": "3q_right__branch_lower", "pivot": { "x": 480, "y": 670 }, "socket": { "x": 480, "y": 670 }, "parent": "3q_right__root", "kind": "other", "side": "center", "contactRole": "ground", "massClass": "light" },
       { "id": "side_left__root",        "pivot": { "x": 500, "y": 520 }, "kind": "root", "side": "center", "massClass": "heavy" },
-      { "id": "side_left__core_a",      "pivot": { "x": 560, "y": 500 }, "parent": "side_left__root", "kind": "body", "side": "left", "massClass": "medium" },
-      { "id": "side_left__branch_a",    "pivot": { "x": 450, "y": 360 }, "parent": "side_left__root", "kind": "other", "side": "left", "massClass": "light" },
+      { "id": "side_left__core_a",      "pivot": { "x": 560, "y": 500 }, "socket": { "x": 560, "y": 500 }, "parent": "side_left__root", "kind": "body", "side": "left", "massClass": "medium" },
+      { "id": "side_left__branch_a",    "pivot": { "x": 450, "y": 360 }, "socket": { "x": 450, "y": 360 }, "parent": "side_left__root", "kind": "other", "side": "left", "massClass": "light" },
       { "id": "front__root",            "pivot": { "x": 500, "y": 520 }, "kind": "root", "side": "center", "massClass": "heavy" },
-      { "id": "front__branch_l",        "pivot": { "x": 420, "y": 500 }, "parent": "front__root", "kind": "other", "side": "left", "massClass": "light" },
-      { "id": "front__branch_r",        "pivot": { "x": 580, "y": 500 }, "parent": "front__root", "kind": "other", "side": "right", "massClass": "light" }
+      { "id": "front__branch_l",        "pivot": { "x": 420, "y": 500 }, "socket": { "x": 420, "y": 500 }, "parent": "front__root", "kind": "other", "side": "left", "massClass": "light" },
+      { "id": "front__branch_r",        "pivot": { "x": 580, "y": 500 }, "socket": { "x": 580, "y": 500 }, "parent": "front__root", "kind": "other", "side": "right", "massClass": "light" }
     ],
     "interactionNulls": ["3q_right__anchor_point", "side_left__anchor_point"],
     "visemes": ["mouth_idle", "mouth_A", "mouth_E", "mouth_I", "mouth_O", "mouth_U", "mouth_M"],
@@ -1224,6 +1227,11 @@ Rules:
 12. Restrict motion to the subject's identity and the rig motion affordance profile. Subjects with limited articulation should prefer whole-object translation, orientation shifts, or minimal internal deformation.
 13. Reusable actor actions are built for looping by default. The motion must close cleanly back onto frame 0 with no visible snap.
 14. If the requested action cannot be satisfied safely, return blockedReasons with concise human-readable reasons instead of forcing the motion.
+15. (CRITICAL) Provide explicit "axialWaves" defining sine-wave rotational animation for the parts that move. You act as the core animator. Do NOT rely on fallback math.
+    - Set explicit phases (e.g., 0.0 for Leg A, 0.5 for Leg B to create alternating walking motion).
+    - Or sweeping generic waves (e.g. 0.0, 0.1, 0.2 down a spine for a fish tail or slithering snake).
+    - amplitudeDeg must be reasonable (e.g., 10-30 degrees for gentle motion, 40-70 for intense).
+16. (CRITICAL) Provide explicit "rootMotion" for torso/body translation if the character should bob, bounce, or dip during locomotion (e.g., dipping down at t: 0.25 and t: 0.75 for walking footsteps). Use flat 0 if they glide (like a car or fish).
 
 JSON shape:
 {
@@ -1235,8 +1243,15 @@ JSON shape:
   "locomotion": { "mode": "translate", "preferredDirection": "right" },
   "contacts": [{ "boneId": "segment_03", "target": "wall", "phaseStart": 0, "phaseEnd": 1 }],
   "leadBones": ["segment_00", "segment_03"],
+  "axialWaves": [
+    { "nodeIds": ["segment_00", "segment_01", "segment_02", "segment_03"], "amplitudeDeg": 25, "frequency": 1, "phase": 0, "falloff": "root_bias" },
+    { "nodeIds": ["fin_top"], "amplitudeDeg": 15, "frequency": 2, "phase": 0.5, "falloff": "uniform" }
+  ],
+  "rootMotion": [
+    { "t": 0.0, "y": 0 }, { "t": 0.25, "y": -4 }, { "t": 0.5, "y": 0 }, { "t": 0.75, "y": 4 }, { "t": 1.0, "y": 0 }
+  ],
   "blockedReasons": [],
-  "notes": "Continuous chain-led loop with modest branch motion."
+  "notes": "Continuous spine-led sweeping loop with fluid root bobbing."
 }
 `;
 
@@ -1419,28 +1434,9 @@ function postProcessAndRepairSVG(rawSvgString: string, rigMap: DraftsmanData["ri
             continue;
         }
 
-        if (bone.parent && parent?.pivot && element) {
-            const nearestSocket = nearestPointOnBox(box, parent.pivot);
-            const detachment = distanceBetween(nearestSocket, parent.pivot);
-            const threshold = Math.max(18, Math.min(120, Math.max(boxWidth(box), boxHeight(box)) * 0.2));
-
-            if (detachment > threshold) {
-                const dx = round2(parent.pivot.x - nearestSocket.x);
-                const dy = round2(parent.pivot.y - nearestSocket.y);
-                appendTranslate(element, dx, dy);
-
-                const movedIds = [bone.id, ...getDescendantIds(bone.id, childrenByParent)];
-                repairedRig.bones = repairedRig.bones.map((candidate) => (
-                    movedIds.includes(candidate.id) && candidate.pivot
-                        ? { ...candidate, pivot: { x: round2(candidate.pivot.x + dx), y: round2(candidate.pivot.y + dy) } }
-                        : candidate
-                ));
-
-                fixes.push(`Snapped #${bone.id} to parent socket #${bone.parent} (${Math.round(dx)}, ${Math.round(dy)}).`);
-                currentBoneMap = boneMap();
-                elementBoxes = collectElementBoxes(svgElement);
-            }
-        }
+        // Detachment snapping logic removed: the LLM natively draws connected geometry.
+        // Forcing child bounding boxes to snap to parent pivots mathematically destroys
+        // extremities like hands and feet by teleporting them to elbows and knees.
     }
 
     currentBoneMap = boneMap();

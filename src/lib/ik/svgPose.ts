@@ -5,7 +5,7 @@ import { PoseLayout } from "./pose";
 import { applyDeterministicRigAssembly } from "../svg/assembly";
 
 function round2(value: number): number {
-  return Number(value.toFixed(2));
+  return value;
 }
 
 function collectRigViewIds(scopeRoot: ParentNode): string[] {

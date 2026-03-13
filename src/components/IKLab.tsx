@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DraftsmanData, RigIKConstraint, RigIKData } from "@/lib/schema/rig";
 import { PoseGraph, buildPoseGraph, ensureRigIK } from "@/lib/ik/graph";
 import { IKToolbar } from "./IKToolbar";
 import { IKInspector } from "./IKInspector";
 import { IKStage } from "./IKStage";
-import { PoseState, computePoseLayout, createRestPoseState, setRootPosition } from "@/lib/ik/pose";
-import { rootIdForNode, solveEffectorCCD } from "@/lib/ik/solver";
+import { PoseState, computePoseLayout, createRestPoseState } from "@/lib/ik/pose";
 import { RagdollState, createRagdollState, stepRagdoll } from "@/lib/ik/physics";
 
 type SolverFeedback = {
@@ -78,7 +77,10 @@ export function IKLab({
 
   const poseRef = useRef(poseSnapshot.pose);
   const ragdollRef = useRef<RagdollState | null>(null);
+  const dragTargetRef = useRef<{ nodeId: string; x: number; y: number } | null>(null);
   const graph = useMemo(() => buildPoseGraph(normalizedData, activeView), [normalizedData, activeView]);
+  const graphResetKeyRef = useRef(graphResetKey);
+  const ragdollEnabledRef = useRef(ragdollEnabled);
   const poseState = poseSnapshot.key === graphResetKey ? poseSnapshot.pose : createRestPoseState(graph);
   const activeSolverFeedback = useMemo(
     () => (solverFeedback.key === graphResetKey ? solverFeedback : { key: graphResetKey, saturatedNodeIds: [] }),
@@ -101,6 +103,14 @@ export function IKLab({
   }, [poseState]);
 
   useEffect(() => {
+    graphResetKeyRef.current = graphResetKey;
+  }, [graphResetKey]);
+
+  useEffect(() => {
+    ragdollEnabledRef.current = ragdollEnabled;
+  }, [ragdollEnabled]);
+
+  useEffect(() => {
     if (normalizedData !== data && onChange) {
       onChange(normalizedData);
     }
@@ -115,17 +125,20 @@ export function IKLab({
     let frameId = 0;
     let lastTime = performance.now();
 
-    const tick = (now: number) => {
-      const dt = Math.min(0.033, Math.max(0.008, (now - lastTime) / 1000));
-      lastTime = now;
+    const tick = () => {
+      // Force a perfectly stable 60Hz physics step.
+      // Dynamic `dt` from requestAnimationFrame causes Verlet integration and FABRIK limits 
+      // to violently explode if the browser drops even a single 120hz frame.
+      const fixedDt = 1 / 60;
 
       const currentPose = poseRef.current;
       const currentLayout = computePoseLayout(graph, currentPose);
       const ragdoll = ragdollRef.current || createRagdollState(currentLayout);
-      const result = stepRagdoll(graph, currentPose, ragdoll, dt);
+      const result = stepRagdoll(graph, currentPose, ragdoll, fixedDt, dragTargetRef.current);
       ragdollRef.current = result.ragdoll;
       poseRef.current = result.pose;
-      setPoseSnapshot({ key: graphResetKey, pose: result.pose });
+
+      setPoseSnapshot({ key: graphResetKey, pose: poseRef.current });
       frameId = window.requestAnimationFrame(tick);
     };
 
@@ -163,33 +176,31 @@ export function IKLab({
     setSolverFeedback({ key: graphResetKey, saturatedNodeIds: [] });
   };
 
-  const handleDragNode = (nodeId: string, target: { x: number; y: number }) => {
-    if (ragdollEnabled) {
-      setRagdollEnabled(false);
-      ragdollRef.current = null;
+  const beginDrag = useCallback(() => {
+    // We no longer turn off ragdoll when dragging. Physics handles the drag!
+  }, []);
+
+  const handleDragUpdate = useCallback((nodeId: string | null, target: { x: number; y: number } | null) => {
+    if (nodeId && target) {
+      dragTargetRef.current = { nodeId, x: target.x, y: target.y };
+    } else {
+      dragTargetRef.current = null;
     }
+  }, []);
 
-    const node = graph.nodeMap.get(nodeId);
-    if (!node) return;
-
-    if (!node.parentId || graph.roots.includes(nodeId)) {
-      const rootId = rootIdForNode(graph, nodeId);
-      const nextPose = setRootPosition(graph, poseRef.current, rootId, target);
-      poseRef.current = nextPose;
-      setPoseSnapshot({ key: graphResetKey, pose: nextPose });
-      setSolverFeedback({ key: graphResetKey, saturatedNodeIds: [] });
-      return;
-    }
-
-    const result = solveEffectorCCD(graph, poseRef.current, nodeId, target);
-    poseRef.current = result.pose;
-    setPoseSnapshot({ key: graphResetKey, pose: result.pose });
+  const handleCommitDrag = useCallback((
+    nextPose: PoseState,
+    feedback: { unreachableEffectorId?: string; saturatedNodeIds: string[] },
+  ) => {
+    const activeGraphResetKey = graphResetKeyRef.current;
+    poseRef.current = nextPose;
+    setPoseSnapshot({ key: activeGraphResetKey, pose: nextPose });
     setSolverFeedback({
-      key: graphResetKey,
-      unreachableEffectorId: result.reached ? undefined : nodeId,
-      saturatedNodeIds: result.saturatedNodeIds,
+      key: activeGraphResetKey,
+      unreachableEffectorId: feedback.unreachableEffectorId,
+      saturatedNodeIds: feedback.saturatedNodeIds,
     });
-  };
+  }, []);
 
   const togglePin = (nodeId: string) => {
     if (!onChange) return;
@@ -271,17 +282,21 @@ export function IKLab({
           </div>
         </div>
         <IKStage
+          key={`${activeView}:${graphResetKey}`}
           data={normalizedData}
           graph={graph}
+          poseState={poseState}
           layout={layout}
           activeView={activeView}
           selectedNodeId={resolvedSelectedNodeId}
           invalidNodeIds={invalidNodeIds}
           pinnedNodeIds={pinnedIds}
           draggableNodeIds={draggableNodeIds}
+          ragdollEnabled={ragdollActive}
           onSelectNode={setSelectedNodeId}
-          onDragNode={handleDragNode}
-          onEndDrag={() => undefined}
+          onBeginDrag={beginDrag}
+          onDragUpdate={handleDragUpdate}
+          onCommitDrag={handleCommitDrag}
         />
       </div>
 

@@ -12,7 +12,7 @@ export type SolveResult = {
 };
 
 function round2(value: number): number {
-  return Number(value.toFixed(2));
+  return value;
 }
 
 function distance(a: Point, b: Point): number {
@@ -23,7 +23,7 @@ function normalizeDegrees(value: number): number {
   let next = value;
   while (next > 180) next -= 360;
   while (next < -180) next += 360;
-  return round2(next);
+  return next;
 }
 
 function biasRotationTowardsPreferred(graph: PoseGraph, nodeId: string, value: number): number {
@@ -44,6 +44,10 @@ function enabledPinIds(graph: PoseGraph): Set<string> {
       .filter((constraint) => constraint.type === "pin" && constraint.enabled)
       .map((constraint) => constraint.nodeId),
   );
+}
+
+function hasEnabledPins(graph: PoseGraph): boolean {
+  return graph.constraints.some((constraint) => constraint.type === "pin" && constraint.enabled);
 }
 
 function chainToRoot(graph: PoseGraph, nodeId: string): string[] {
@@ -97,7 +101,7 @@ export function solveEffectorCCD(
 
       const currentToEffector = Math.atan2(effector.y - joint.y, effector.x - joint.x);
       const currentToTarget = Math.atan2(target.y - joint.y, target.x - joint.x);
-      const deltaDegrees = round2(((currentToTarget - currentToEffector) * 180) / Math.PI);
+      const deltaDegrees = ((currentToTarget - currentToEffector) * 180) / Math.PI;
 
       const currentRotation = candidate.localRotations[nodeId] ?? 0;
       const unclampedRotation = currentRotation + deltaDegrees;
@@ -113,9 +117,23 @@ export function solveEffectorCCD(
     }
   }
 
+  if (!hasEnabledPins(graph)) {
+    return {
+      pose: candidate,
+      layout,
+      chainNodeIds: nodeIds,
+      anchorId,
+      reached: distance(layout.positions[effectorId], target) <= tolerance,
+      saturatedNodeIds: Array.from(saturatedNodeIds).sort(),
+    };
+  }
+
   const relaxed = relaxPoseGraph(graph, candidate, {
     goalNodeId: effectorId,
     goalTarget: target,
+    preserveNodeIds: nodeIds,
+    iterations: 3,
+    lengthIterations: 2,
   });
 
   layout = relaxed.layout;
@@ -151,7 +169,7 @@ export function localRotationForNode(graph: PoseGraph, layout: PoseLayout, nodeI
   const parentAbs = layout.absoluteRotations[node.parentId] ?? 0;
   if (!parentPos || !currentPos) return 0;
 
-  const currentAngle = round2((Math.atan2(currentPos.y - parentPos.y, currentPos.x - parentPos.x) * 180) / Math.PI);
-  const restAngle = round2((Math.atan2(node.restWorld.y - graph.nodeMap.get(node.parentId)!.restWorld.y, node.restWorld.x - graph.nodeMap.get(node.parentId)!.restWorld.x) * 180) / Math.PI);
+  const currentAngle = (Math.atan2(currentPos.y - parentPos.y, currentPos.x - parentPos.x) * 180) / Math.PI;
+  const restAngle = (Math.atan2(node.restWorld.y - graph.nodeMap.get(node.parentId)!.restWorld.y, node.restWorld.x - graph.nodeMap.get(node.parentId)!.restWorld.x) * 180) / Math.PI;
   return clampLocalRotation(graph, nodeId, currentAngle - restAngle - parentAbs);
 }

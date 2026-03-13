@@ -18,8 +18,9 @@ export type ConstraintProjectResult = {
   saturatedNodeIds: string[];
 };
 
-function round2(value: number): number {
-  return Number(value.toFixed(2));
+// We avoid rounding inside the solver to prevent integration jitter loop.
+function precise(value: number): number {
+  return value;
 }
 
 function distance(a: Point, b: Point): number {
@@ -74,14 +75,14 @@ function applyGoals(
     if (!current) return;
     const appliedStrength = Math.max(0, Math.min(1, (goal.weight ?? 1) * strength));
     positions[goal.nodeId] = {
-      x: round2((current.x * (1 - appliedStrength)) + (goal.target.x * appliedStrength)),
-      y: round2((current.y * (1 - appliedStrength)) + (goal.target.y * appliedStrength)),
+      x: (current.x * (1 - appliedStrength)) + (goal.target.x * appliedStrength),
+      y: (current.y * (1 - appliedStrength)) + (goal.target.y * appliedStrength),
     };
   });
 }
 
 function projectLengths(graph: PoseGraph, positions: Record<string, Point>, pins: Record<string, Point>): void {
-  graph.nodes.forEach((node) => {
+  const constrainNode = (node: PoseGraph["nodes"][number]) => {
     if (!node.parentId || typeof node.restLength !== "number" || node.restLength <= 0) return;
     const parent = positions[node.parentId];
     const current = positions[node.id];
@@ -90,8 +91,8 @@ function projectLengths(graph: PoseGraph, positions: Record<string, Point>, pins
     const currentDistance = distance(parent, current) || 0.0001;
     const error = (currentDistance - node.restLength) / currentDistance;
     const delta = {
-      x: round2((current.x - parent.x) * error),
-      y: round2((current.y - parent.y) * error),
+      x: (current.x - parent.x) * error,
+      y: (current.y - parent.y) * error,
     };
 
     const parentMobility = mobilityForNode(graph, node.parentId, pins);
@@ -101,25 +102,32 @@ function projectLengths(graph: PoseGraph, positions: Record<string, Point>, pins
 
     if (parentMobility > 0) {
       positions[node.parentId] = {
-        x: round2(parent.x + delta.x * (parentMobility / totalMobility)),
-        y: round2(parent.y + delta.y * (parentMobility / totalMobility)),
+        x: parent.x + delta.x * (parentMobility / totalMobility),
+        y: parent.y + delta.y * (parentMobility / totalMobility),
       };
     }
 
     if (nodeMobility > 0) {
       positions[node.id] = {
-        x: round2(current.x - delta.x * (nodeMobility / totalMobility)),
-        y: round2(current.y - delta.y * (nodeMobility / totalMobility)),
+        x: current.x - delta.x * (nodeMobility / totalMobility),
+        y: current.y - delta.y * (nodeMobility / totalMobility),
       };
     }
-  });
+  };
+
+  // Backwards pass (leaves to root) propagates end-effector pins up the chain instantly
+  const reversedNodes = [...graph.nodes].reverse();
+  reversedNodes.forEach(constrainNode);
+  
+  // Forwards pass (root to leaves) propagates root inertia down the chain instantly
+  graph.nodes.forEach(constrainNode);
 }
 
 function nudgeTowardsPreferred(
   graph: PoseGraph,
   pose: PoseState,
   preserveNodeIds: Set<string>,
-  strength = 0.12,
+  strength = 0.005,
 ): PoseState {
   const next = clonePoseState(pose);
 
@@ -128,7 +136,7 @@ function nudgeTowardsPreferred(
     if (preserveNodeIds.has(node.id)) return;
     if (typeof node.preferredBend !== "number") return;
     const current = next.localRotations[node.id] ?? 0;
-    const blended = round2((current * (1 - strength)) + (node.preferredBend * strength));
+    const blended = (current * (1 - strength)) + (node.preferredBend * strength);
     next.localRotations[node.id] = clampLocalRotation(graph, node.id, blended);
   });
 
@@ -156,7 +164,7 @@ export function projectConstraintPositions(
   options: ConstraintProjectOptions = {},
 ): ConstraintProjectResult {
   const iterations = options.iterations ?? 6;
-  const lengthIterations = options.lengthIterations ?? 4;
+  const lengthIterations = options.lengthIterations ?? 5;
   const goalTargets = options.goalTargets && options.goalTargets.length > 0
     ? options.goalTargets
     : (options.goalNodeId && options.goalTarget
@@ -170,27 +178,32 @@ export function projectConstraintPositions(
   let positions = clonePositions(inputPositions);
   let candidatePose = clonePoseState(seedPose);
 
+  // Apply time-domain restorative biases ONCE per physics tick
+  candidatePose = nudgeTowardsPreferred(graph, candidatePose, preserveNodeIds, 0.01);
+
   for (let iteration = 0; iteration < iterations; iteration += 1) {
     const baseLayout = computePoseLayout(graph, candidatePose);
 
-    applyGoals(positions, goalTargets, pins, 1);
-    applyPins(positions, pins);
-
+    // 1. Vector Length Satisfaction
     for (let lengthPass = 0; lengthPass < lengthIterations; lengthPass += 1) {
+      applyGoals(positions, goalTargets, pins, 0.3);
       projectLengths(graph, positions, pins);
-      candidatePose = derivePoseStateFromLayout(graph, candidatePose, {
-        positions,
-        absoluteRotations: baseLayout.absoluteRotations,
-        localRotations: baseLayout.localRotations,
-      });
-      candidatePose = nudgeTowardsPreferred(graph, candidatePose, preserveNodeIds);
-      positions = clonePositions(computePoseLayout(graph, candidatePose).positions);
-      applyGoals(positions, goalTargets, pins, 0.88);
       applyPins(positions, pins);
     }
+
+    // 2. Angular Limit Satisfaction
+    // Distribute root blending evenly across iterations to sum to a smooth drag (e.g. 15% follow per frame)
+    candidatePose = derivePoseStateFromLayout(graph, candidatePose, {
+      positions,
+      absoluteRotations: baseLayout.absoluteRotations,
+      localRotations: baseLayout.localRotations,
+    }, { rootRotationBlend: 0.15 / iterations });
+
+    // 3. Update spatial layout to adhere to clipped angles
+    positions = clonePositions(computePoseLayout(graph, candidatePose).positions);
   }
 
-  const layout = computePoseLayout(graph, candidatePose);
+  let layout = computePoseLayout(graph, candidatePose);
   const saturatedNodeIds = collectSaturatedNodeIds(graph, candidatePose);
 
   return {
