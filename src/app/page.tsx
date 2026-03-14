@@ -13,11 +13,13 @@ import { DraftsmanData } from "@/lib/schema/rig";
 import { RigViewer } from "@/components/RigViewer";
 import { IKLab } from "@/components/IKLab";
 import { RigClipPreview } from "@/components/RigClipPreview";
+import { ensureRigIK } from "@/lib/ik/graph";
+import { matchLegacyViewPrefix, normalizeViewId, normalizeViewIds } from "@/lib/ik/view_ids";
+import { inferRigProfile } from "@/lib/motion/affordance";
 import { inferAutoTargetTransform, motionNeedsTarget, normalizeMotionKey, suggestMotionAliases } from "@/lib/motion/semantics";
 import { compileBeatToScene, inferTransformOnlyPlaybackPolicy } from "@/lib/motion/compiler";
 import { motionClipToIKPlayback, resolvePlayableMotionClip } from "@/lib/motion/compiled_ik";
 import { estimateMotionClipDuration } from "@/lib/motion/intent";
-import { normalizeViewIds } from "@/lib/ik/view_ids";
 
 import { ThemeToggle } from "@/components/ThemeToggle";
 
@@ -158,6 +160,13 @@ function formatMotionDebugLines(report: MotionDebugReport): string[] {
     `[DEBUG] Spec summary: model amp=${report.modelSpec.amplitude}, final amp=${report.finalSpec.amplitude}, intensity=${report.finalSpec.intensity}, view=${report.finalSpec.preferredView || "auto"}, leads=${report.finalSpec.leadBones.join(", ") || "none"}.`,
   ];
 
+  lines.push(
+    `[DEBUG] Quality grade: profile=${report.qualityGrade.profile}, score=${report.qualityGrade.score}/5, rootSamples=${report.qualityGrade.metrics.rootSampleCount}, meaningfulInterior=${report.qualityGrade.metrics.meaningfulInteriorRootSamples}, axes=${report.qualityGrade.metrics.activeRootAxes.join(", ") || "none"}, waves=${report.qualityGrade.metrics.waveCount}.`,
+  );
+  if (report.qualityGrade.reasons.length > 0) {
+    lines.push(`[DEBUG] Quality notes: ${report.qualityGrade.reasons.join(" | ")}.`);
+  }
+
   if (!report.preflight.ok) {
     lines.push(`[DEBUG] Preflight blocked: ${report.preflight.errors.join(" | ")}.`);
   }
@@ -272,8 +281,149 @@ function extractRigViews(svgData: string): string[] {
   return normalizeViewIds(matches.length > 0 ? matches : ["view_3q_right"], "view_3q_right");
 }
 
+function extractPrimaryRigView(svgData: string): string {
+  try {
+    const parser = new DOMParser();
+    const document = parser.parseFromString(svgData, "image/svg+xml");
+    const visibleView = Array.from(document.querySelectorAll<SVGGElement>('g[id^="view_"]')).find((viewGroup) => {
+      const normalizedViewId = normalizeViewId(viewGroup.id);
+      if (!normalizedViewId) return false;
+      return (viewGroup.getAttribute("display") || "").toLowerCase() !== "none";
+    });
+    return normalizeViewId(visibleView?.id || null) || extractRigViews(svgData)[0] || "view_3q_right";
+  } catch {
+    return extractRigViews(svgData)[0] || "view_3q_right";
+  }
+}
+
 function mergeRigViews(...viewGroups: Array<Array<string> | undefined>): string[] {
   return normalizeViewIds(viewGroups.flatMap((views) => views || []), "view_3q_right");
+}
+
+function inferScopedViewId(value: string): string | undefined {
+  const lower = value.toLowerCase();
+  const genericPrefix = lower.match(/^([a-z0-9_]+)__/);
+  if (genericPrefix) {
+    return normalizeViewId(`view_${genericPrefix[1]}`);
+  }
+  return matchLegacyViewPrefix(lower)?.viewId;
+}
+
+function mergeRigViewUpdate(existingRig: DraftsmanData, incomingRig: DraftsmanData, replacedViews: string[]): DraftsmanData {
+  const replaceViews = new Set(normalizeViewIds(replacedViews, "view_3q_right"));
+  if (replaceViews.size === 0) return incomingRig;
+
+  try {
+    const parser = new DOMParser();
+    const existingDocument = parser.parseFromString(existingRig.svg_data, "image/svg+xml");
+    const incomingDocument = parser.parseFromString(incomingRig.svg_data, "image/svg+xml");
+    const existingSvg = existingDocument.querySelector("svg");
+    const incomingSvg = incomingDocument.querySelector("svg");
+
+    if (!existingSvg || !incomingSvg) {
+      return incomingRig;
+    }
+
+    const existingVisibleView = extractPrimaryRigView(existingRig.svg_data);
+
+    Array.from(existingSvg.querySelectorAll<SVGGElement>('g[id^="view_"]')).forEach((viewGroup) => {
+      const normalizedViewId = normalizeViewId(viewGroup.id);
+      if (!normalizedViewId || !replaceViews.has(normalizedViewId)) return;
+      viewGroup.remove();
+    });
+
+    const importedViews = Array.from(incomingSvg.querySelectorAll<SVGGElement>('g[id^="view_"]'))
+      .filter((viewGroup) => {
+        const normalizedViewId = normalizeViewId(viewGroup.id);
+        return Boolean(normalizedViewId && replaceViews.has(normalizedViewId));
+      })
+      .map((viewGroup) => existingDocument.importNode(viewGroup, true) as SVGGElement);
+
+    importedViews.forEach((viewGroup) => existingSvg.appendChild(viewGroup));
+
+    const preferredVisibleView = replaceViews.has(existingVisibleView)
+      ? (normalizeViewId(importedViews[0]?.id || null) || existingVisibleView)
+      : existingVisibleView;
+
+    Array.from(existingSvg.querySelectorAll<SVGGElement>('g[id^="view_"]')).forEach((viewGroup) => {
+      const normalizedViewId = normalizeViewId(viewGroup.id);
+      if (!normalizedViewId) return;
+      viewGroup.setAttribute("display", normalizedViewId === preferredVisibleView ? "inline" : "none");
+    });
+
+    const keepExistingScopedId = (id: string) => {
+      const scopedViewId = inferScopedViewId(id);
+      return !scopedViewId || !replaceViews.has(scopedViewId);
+    };
+
+    const mergedRig = ensureRigIK({
+      ...existingRig,
+      svg_data: existingSvg.outerHTML,
+      rig_data: {
+        ...existingRig.rig_data,
+        ...incomingRig.rig_data,
+        bones: [
+          ...existingRig.rig_data.bones.filter((bone) => keepExistingScopedId(bone.id)),
+          ...incomingRig.rig_data.bones,
+        ],
+        interactionNulls: Array.from(new Set([
+          ...existingRig.rig_data.interactionNulls.filter((id) => keepExistingScopedId(id)),
+          ...incomingRig.rig_data.interactionNulls,
+        ])),
+        visemes: Array.from(new Set([
+          ...(existingRig.rig_data.visemes || []),
+          ...(incomingRig.rig_data.visemes || []),
+        ])),
+        emotions: Array.from(new Set([
+          ...(existingRig.rig_data.emotions || []),
+          ...(incomingRig.rig_data.emotions || []),
+        ])),
+      },
+    });
+
+    const profile = inferRigProfile(mergedRig);
+    return {
+      ...mergedRig,
+      rig_data: {
+        ...mergedRig.rig_data,
+        profile: profile.profile,
+        profile_report: profile,
+      },
+    };
+  } catch {
+    return incomingRig;
+  }
+}
+
+function selectRequiredRigViews(params: {
+  plannedViews: string[];
+  existingViews?: string[];
+}): { requestedViews: string[]; missingViews: string[]; primaryObservedView: string } {
+  const plannedViews = mergeRigViews(params.plannedViews);
+  const existingViews = mergeRigViews(params.existingViews || []);
+  const primaryObservedView = plannedViews[0] || "view_3q_right";
+
+  if (existingViews.length === 0) {
+    return {
+      requestedViews: [primaryObservedView],
+      missingViews: [primaryObservedView],
+      primaryObservedView,
+    };
+  }
+
+  if (existingViews.includes(primaryObservedView)) {
+    return {
+      requestedViews: [primaryObservedView],
+      missingViews: [],
+      primaryObservedView,
+    };
+  }
+
+  return {
+    requestedViews: [primaryObservedView],
+    missingViews: [primaryObservedView],
+    primaryObservedView,
+  };
 }
 
 function buildActorRigDescription(actor: StoryGenerationData["actors_detected"][number]): string {
@@ -1637,10 +1787,16 @@ export default function Home() {
             }
           }
 
-          const missingViews = actorRig
-            ? plannedViews.filter((viewId) => !existingViews.includes(viewId))
-            : plannedViews;
-          const requiredViews = mergeRigViews(plannedViews, existingViews);
+          const viewRequest = selectRequiredRigViews({
+            plannedViews,
+            existingViews,
+          });
+          const missingViews = viewRequest.missingViews;
+          const requiredViews = viewRequest.requestedViews;
+
+          if (plannedViews.length > requiredViews.length) {
+            addLog(`[REVIEW] Limiting '${actor.name}' rig to the currently needed view '${viewRequest.primaryObservedView}'. Additional views will only be generated when explicitly required by a later scene.`);
+          }
 
           if (!actorRig && referenceImage) {
             addLog(`> Starting Draftsman AI for '${actor.name}'...`);
@@ -1691,10 +1847,11 @@ export default function Home() {
               addLog(`[REVIEW] Draft quality for '${actor.name}': ${regeneratedRig.review.reasons.slice(0, 3).join(" ")}`);
             }
 
+            const mergedRig = mergeRigViewUpdate(actorRig, regeneratedRig.data, requiredViews);
             const updatedRig = {
-              ...regeneratedRig.data,
+              ...mergedRig,
               rig_data: {
-                ...regeneratedRig.data.rig_data,
+                ...mergedRig.rig_data,
                 motion_clips: {},
               },
             };
@@ -1710,7 +1867,7 @@ export default function Home() {
             });
 
             actorRig = updatedRig;
-            addLog(`[PAID] ✓ '${actor.name}' rig updated with views: ${requiredViews.join(', ')}.`);
+            addLog(`[PAID] ✓ '${actor.name}' rig updated with view: ${requiredViews.join(', ')}.`);
           } else if (actorRig) {
             addLog(`[REUSED] ✓ '${actor.name}' rig found in cache.`);
           } else {
@@ -1724,8 +1881,7 @@ export default function Home() {
               const motionKey = normalizeMotionKey(actorAction.motion);
               const transformOnlyPolicy = inferTransformOnlyPlaybackPolicy(nextRig, motionKey);
               if (transformOnlyPolicy.prefer) {
-                addLog(`[REVIEW] Motion '${motionKey}' for '${actor.name}' uses transform-only playback: ${transformOnlyPolicy.reason}.`);
-                continue;
+                addLog(`[REVIEW] Motion '${motionKey}' for '${actor.name}' uses transform-only playback: ${transformOnlyPolicy.reason}. Compiling motion intent for rigid whole-object playback.`);
               }
 
               const existingClipKey = suggestMotionAliases(motionKey).find(
@@ -4590,17 +4746,19 @@ export default function Home() {
                           setDraftReview(null);
 
                           try {
+                            const requestedView = extractPrimaryRigView(draftedRig.svg_data);
                             const description = `Name: ${actor.name}. Species: ${actor.species}. Personality: ${actor.personality}. Visuals: ${actor.attributes.join(', ')}. ${actor.visual_description}. CRITICAL FIX REQUEST: ${rigFixPrompt}. Preserve the same character identity, proportions, rig structure, and existing good parts. Repair only the missing or malformed parts while keeping the current views usable.`;
                             const generatedRig = await generateRigDraft({
                               generationReference: actorReference,
                               description,
-                              requiredViews: extractRigViews(draftedRig.svg_data),
+                              requiredViews: [requestedView],
                               qualityMode: "reviewable",
                             });
+                            const mergedRig = mergeRigViewUpdate(draftedRig, generatedRig.data, [requestedView]);
                             const existingClips = actor.drafted_rig?.rig_data.motion_clips;
                             const nextDraft = (existingClips && Object.keys(existingClips).length > 0)
-                              ? { ...generatedRig.data, rig_data: { ...generatedRig.data.rig_data, motion_clips: existingClips } }
-                              : generatedRig.data;
+                              ? { ...mergedRig, rig_data: { ...mergedRig.rig_data, motion_clips: existingClips } }
+                              : mergedRig;
 
                             setDraftedRig(nextDraft);
                             setOriginalDraftedRig(JSON.parse(JSON.stringify(nextDraft)));

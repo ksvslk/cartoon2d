@@ -12,7 +12,7 @@ import {
     RigRepairReport
 } from "@/lib/schema/rig";
 import { MotionSpec, MotionSpecSchema } from "@/lib/schema/motion_spec";
-import { constrainMotionSpecToRig, inferRigMotionAffordance, RigMotionAffordance } from "@/lib/motion/affordance";
+import { constrainMotionSpecToRig, inferRigMotionAffordance, inferRigProfile, RigMotionAffordance } from "@/lib/motion/affordance";
 import { inferMotionSpecForRig } from "@/lib/motion/spec";
 import { buildMotionIntentFromSpec } from "@/lib/motion/intent";
 import { MotionValidationDebug, validateRigForMotion } from "@/lib/motion/validation";
@@ -20,6 +20,7 @@ import { resolvePlayableMotionClip } from "@/lib/motion/compiled_ik";
 import { ensureRigIK } from "@/lib/ik/graph";
 import { CANONICAL_VIEW_IDS, genericViewPrefixForId, matchLegacyViewPrefix, normalizeViewId, normalizeViewIds } from "@/lib/ik/view_ids";
 import { runGeminiRequestWithRetry } from "@/lib/ai/retry";
+import { captureElementDrawOrder, reparentPreservingDrawOrder } from "@/lib/svg/assembly";
 
 // Initialize the Gemini client
 // Note: In production, ensure process.env.GEMINI_API_KEY is securely stored
@@ -103,9 +104,27 @@ export interface MotionDebugReport {
         warnings: string[];
         debug: MotionValidationDebug;
     };
+    qualityGrade: MotionQualityGrade;
     attempts: MotionDebugAttempt[];
     finalStatus: "compiled" | "blocked";
     finalMessage: string;
+}
+
+export interface MotionQualityGrade {
+    profile: "rigid_root_motion" | "general";
+    score: number;
+    acceptable: boolean;
+    reasons: string[];
+    metrics: {
+        rootSampleCount: number;
+        interiorRootSampleCount: number;
+        meaningfulInteriorRootSamples: number;
+        activeRootAxes: Array<"x" | "y" | "rotation">;
+        rootShapeScore: number;
+        loopClosed: boolean;
+        waveCount: number;
+        maxWaveAmplitudeDeg: number;
+    };
 }
 
 export interface MotionSpecDebugSummary {
@@ -145,6 +164,185 @@ export interface MotionDebugAttempt {
         errors: string[];
         warnings: string[];
         debug: MotionValidationDebug;
+    };
+}
+
+type MotionRootSample = NonNullable<MotionSpec["rootMotion"]>[number];
+
+function isRigidRootMotionProfile(affordance: RigMotionAffordance): boolean {
+    return affordance.deformationBudget <= 0.65 || affordance.primaryChainLength <= 2;
+}
+
+function applyRigProfile(data: DraftsmanData): DraftsmanData {
+    const normalized = ensureRigIK(data);
+    const profileReport = inferRigProfile(normalized);
+    return {
+        ...normalized,
+        rig_data: {
+            ...normalized.rig_data,
+            profile: profileReport.profile,
+            profile_report: profileReport,
+        },
+    };
+}
+
+function dedupeRootMotionSamples(samples: NonNullable<MotionSpec["rootMotion"]>): MotionRootSample[] {
+    const byTime = new Map<number, MotionRootSample>();
+    samples
+        .filter((sample) => Number.isFinite(sample.t))
+        .forEach((sample) => {
+            byTime.set(round2(clamp(sample.t, 0, 1)), {
+                t: round2(clamp(sample.t, 0, 1)),
+                x: typeof sample.x === "number" ? round2(sample.x) : undefined,
+                y: typeof sample.y === "number" ? round2(sample.y) : undefined,
+                rotation: typeof sample.rotation === "number" ? normalizeDegrees(sample.rotation) : undefined,
+            });
+        });
+    return Array.from(byTime.values()).sort((left, right) => left.t - right.t);
+}
+
+function rootAxisValue(sample: MotionRootSample, axis: "x" | "y" | "rotation"): number {
+    const value = sample[axis];
+    return typeof value === "number" ? value : 0;
+}
+
+function rootAxisThreshold(axis: "x" | "y" | "rotation"): number {
+    return axis === "rotation" ? 6 : 0.9;
+}
+
+function normalizeDegrees(value: number): number {
+    let next = value;
+    while (next > 180) next -= 360;
+    while (next < -180) next += 360;
+    return round2(next);
+}
+
+function rootAxisLoopDelta(start: MotionRootSample, end: MotionRootSample, axis: "x" | "y" | "rotation"): number {
+    const delta = rootAxisValue(end, axis) - rootAxisValue(start, axis);
+    return axis === "rotation" ? Math.abs(normalizeDegrees(delta)) : Math.abs(delta);
+}
+
+function interpolateRootAxis(start: MotionRootSample, end: MotionRootSample, t: number, axis: "x" | "y" | "rotation"): number {
+    const from = rootAxisValue(start, axis);
+    const to = rootAxisValue(end, axis);
+    if (axis === "rotation") {
+        return from + (normalizeDegrees(to - from) * t);
+    }
+    return from + ((to - from) * t);
+}
+
+function gradeMotionQuality(params: {
+    affordance: RigMotionAffordance;
+    motionSpec: MotionSpec;
+}): MotionQualityGrade {
+    const { affordance, motionSpec } = params;
+    const rigidProfile = isRigidRootMotionProfile(affordance);
+    const rootSamples = dedupeRootMotionSamples(motionSpec.rootMotion || []);
+    const interiorSamples = rootSamples.filter((sample) => sample.t > 0 && sample.t < 1);
+    const axes: Array<"x" | "y" | "rotation"> = ["x", "y", "rotation"];
+    const activeRootAxes = axes.filter((axis) => {
+        if (rootSamples.length === 0) return false;
+        let min = Number.POSITIVE_INFINITY;
+        let max = Number.NEGATIVE_INFINITY;
+        rootSamples.forEach((sample) => {
+            const value = rootAxisValue(sample, axis);
+            min = Math.min(min, value);
+            max = Math.max(max, value);
+        });
+        return Number.isFinite(min) && Number.isFinite(max) && Math.abs(max - min) >= rootAxisThreshold(axis);
+    });
+    const endpointsPresent = rootSamples.length >= 2 && rootSamples[0].t === 0 && rootSamples[rootSamples.length - 1].t === 1;
+    const loopClosed = endpointsPresent && axes.every((axis) => rootAxisLoopDelta(rootSamples[0], rootSamples[rootSamples.length - 1], axis) <= (axis === "rotation" ? 4 : 0.75));
+
+    let meaningfulInteriorRootSamples = 0;
+    let rootShapeScore = 0;
+    if (rootSamples.length >= 2) {
+        const start = rootSamples[0];
+        const end = rootSamples[rootSamples.length - 1];
+        const span = Math.max(0.0001, end.t - start.t);
+        interiorSamples.forEach((sample) => {
+            let sampleShapeScore = 0;
+            axes.forEach((axis) => {
+                const expected = interpolateRootAxis(start, end, (sample.t - start.t) / span, axis);
+                const deviation = axis === "rotation"
+                    ? Math.abs(normalizeDegrees(rootAxisValue(sample, axis) - expected))
+                    : Math.abs(rootAxisValue(sample, axis) - expected);
+                sampleShapeScore = Math.max(sampleShapeScore, deviation / rootAxisThreshold(axis));
+            });
+            if (sampleShapeScore >= 1) {
+                meaningfulInteriorRootSamples += 1;
+            }
+            rootShapeScore += sampleShapeScore;
+        });
+    }
+    rootShapeScore = round2(rootShapeScore);
+
+    const waveCount = (motionSpec.axialWaves || []).length;
+    const maxWaveAmplitudeDeg = round2(Math.max(0, ...(motionSpec.axialWaves || []).map((wave) => Math.abs(wave.amplitudeDeg))));
+    const requiresWholeObjectTiming = motionSpec.locomotion.mode !== "none" || (motionSpec.contacts || []).length > 0;
+    let score = 5;
+    const reasons: string[] = [];
+
+    if (rigidProfile) {
+        if (requiresWholeObjectTiming && rootSamples.length === 0) {
+            score = 0;
+            reasons.push("Rigid or low-deformation motion needs explicit rootMotion instead of fallback motion.");
+        } else {
+            if (rootSamples.length > 0 && !endpointsPresent) {
+                score -= 0.75;
+                reasons.push("rootMotion should include explicit samples at t=0 and t=1.");
+            }
+            if (rootSamples.length > 0 && !loopClosed) {
+                score -= 1.5;
+                reasons.push("rootMotion does not close cleanly back onto frame 0.");
+            }
+            if (requiresWholeObjectTiming && rootSamples.length < 4) {
+                score -= 2.5;
+                reasons.push("rootMotion is too sparse for believable rigid motion; expected at least 4 timed samples.");
+            } else if (requiresWholeObjectTiming && rootSamples.length < 5) {
+                score -= 1;
+                reasons.push("rootMotion is still sparse; 5 or more samples gives cleaner anticipation and settle.");
+            }
+            if (requiresWholeObjectTiming && activeRootAxes.length === 0) {
+                score -= 1.5;
+                reasons.push("rootMotion has no meaningful x, y, or rotation variation.");
+            }
+            if (requiresWholeObjectTiming && meaningfulInteriorRootSamples < 2) {
+                score -= 1.5;
+                reasons.push("rootMotion lacks enough interior timing changes for anticipation, overshoot, or settle.");
+            }
+            if (requiresWholeObjectTiming && rootShapeScore < 1.6) {
+                score -= 1;
+                reasons.push("rootMotion stays too close to a flat linear path, so the motion will read synthetic.");
+            }
+        }
+
+        if (waveCount > 0 && affordance.primaryChainLength <= 2 && maxWaveAmplitudeDeg > 12) {
+            score -= 1.5;
+            reasons.push("Axial waves are too strong for a topology without a meaningful continuous chain.");
+        } else if (waveCount > 0 && affordance.deformationBudget <= 0.65 && maxWaveAmplitudeDeg > 18) {
+            score -= 1;
+            reasons.push("Axial waves are too aggressive for this rig's deformation budget.");
+        }
+    }
+
+    score = round2(clamp(score, 0, 5));
+
+    return {
+        profile: rigidProfile ? "rigid_root_motion" : "general",
+        score,
+        acceptable: rigidProfile ? score >= 3.5 : true,
+        reasons,
+        metrics: {
+            rootSampleCount: rootSamples.length,
+            interiorRootSampleCount: interiorSamples.length,
+            meaningfulInteriorRootSamples,
+            activeRootAxes,
+            rootShapeScore,
+            loopClosed,
+            waveCount,
+            maxWaveAmplitudeDeg,
+        },
     };
 }
 
@@ -207,6 +405,7 @@ function buildMotionDebugReport(params: {
     modelSpec: MotionSpec;
     finalSpec: MotionSpec;
     preflight: ReturnType<typeof validateRigForMotion>;
+    qualityGrade: MotionQualityGrade;
     attempts: MotionDebugAttempt[];
     finalStatus: "compiled" | "blocked";
     finalMessage: string;
@@ -225,6 +424,7 @@ function buildMotionDebugReport(params: {
             warnings: [...params.preflight.warnings],
             debug: params.preflight.debug,
         },
+        qualityGrade: params.qualityGrade,
         attempts: params.attempts,
         finalStatus: params.finalStatus,
         finalMessage: params.finalMessage,
@@ -244,6 +444,7 @@ function buildCanonicalMotionClipFromSpec(params: {
             motion: params.motion,
             durationSeconds: params.durationSeconds,
             motionSpec: params.motionSpec,
+            allowFallbackSynthesis: false,
         }),
         displayKeyframes: [],
     };
@@ -254,6 +455,28 @@ function buildCanonicalMotionClipFromSpec(params: {
         motionClip: rawClip,
         durationSeconds: params.durationSeconds,
     }) || rawClip;
+}
+
+function enforceExplicitGeneratedMotionSpec(params: {
+    motionSpec: MotionSpec;
+    rigProfile: DraftsmanData["rig_data"]["profile"];
+}): MotionSpec {
+    const blockedReasons = [...(params.motionSpec.blockedReasons || [])];
+    const hasRootMotion = (params.motionSpec.rootMotion || []).length > 0;
+    const hasAxialWaves = (params.motionSpec.axialWaves || []).length > 0;
+
+    if (params.rigProfile === "rigid_object") {
+        if (!hasRootMotion) {
+            blockedReasons.push("Rigid-object motion spec must include explicit rootMotion. Generic fallback synthesis is disabled.");
+        }
+    } else if (!hasRootMotion && !hasAxialWaves) {
+        blockedReasons.push("Motion spec must include explicit rootMotion or axialWaves. Generic fallback synthesis is disabled.");
+    }
+
+    return {
+        ...params.motionSpec,
+        blockedReasons: Array.from(new Set(blockedReasons)),
+    };
 }
 
 function isRetriableMotionValidationError(error: string): boolean {
@@ -402,9 +625,9 @@ function buildIKPromptContext(rig: DraftsmanData) {
                     preferred: constraint.preferred,
                 };
             }
-                return {
-                    type: constraint.type,
-                    nodeId: constraint.nodeId,
+            return {
+                type: constraint.type,
+                nodeId: constraint.nodeId,
                 enabled: constraint.enabled,
                 x: constraint.x,
                 y: constraint.y,
@@ -525,7 +748,8 @@ Rules:
 3. Prefer canonical view IDs when possible: ${canonicalViews.join(", ")}.
 4. If no existing or canonical view fits the observed angle, you may return one custom \`view_*\` ID using short lowercase ASCII with underscores, e.g. \`view_rear_left_low\`.
 5. Return the minimum useful view set. Put the currently observed view first.
-6. Keep the answer view-driven, not anatomy-driven.
+6. Default to a single currently observed view. Do NOT propose speculative future views that are merely convenient or "nice to have".
+7. Keep the answer view-driven, not anatomy-driven.
 
 Actor:
 - actorName: ${params.actorName || "unknown"}
@@ -573,7 +797,7 @@ JSON shape:
     const parsed = SuggestedRigViewsSchema.parse(JSON.parse(json));
 
     return {
-        views: normalizeViewIds(parsed.views, existingViews[0] || "view_3q_right"),
+        views: normalizeViewIds(parsed.views, existingViews[0] || "view_3q_right").slice(0, 1),
         rationale: parsed.rationale,
         usage: {
             promptTokenCount: response.usageMetadata?.promptTokenCount || 0,
@@ -595,17 +819,33 @@ export async function processDraftsmanPrompt(
     const requestedViewPrefixGuide = requestedViews
         .map((viewId) => `   - \`${viewId}\` => \`${genericViewPrefixForId(viewId)}\``)
         .join("\n");
+    const requestedViewSvgExample = requestedViews
+        .map((viewId, index) => `<g id='${viewId}' display='${index === 0 ? "inline" : "none"}'>...</g>`)
+        .join("");
+    const requestedBoneJsonExample = requestedViews
+        .flatMap((viewId) => {
+            const prefix = genericViewPrefixForId(viewId);
+            return [
+                `      { "id": "${prefix}root", "pivot": { "x": 500, "y": 520 }, "zIndex": 10, "kind": "root", "side": "center", "massClass": "heavy" }`,
+                `      { "id": "${prefix}core", "pivot": { "x": 500, "y": 520 }, "socket": { "x": 500, "y": 520 }, "parent": "${prefix}root", "zIndex": 20, "kind": "body", "side": "center", "massClass": "medium" }`,
+            ];
+        })
+        .join(",\n");
+    const requestedInteractionNullExample = requestedViews
+        .map((viewId) => `"${genericViewPrefixForId(viewId)}anchor_point"`)
+        .join(", ");
     const DRAFTSMAN_SYSTEM_PROMPT = `
 You are the Draftsman, an expert SVG vector artist and technical rigger.
 Your job is to take a raster subject image and recreate it as a clean, highly-structured, animatable SVG vector file.
 
 CRITICAL REQUIREMENTS:
 1. **Resolution Independence**: The output SVG MUST use \`<svg viewBox="0 0 1000 1000">\`. This coordinate space must be strictly adhered to.
-2. **Minimalist & Clean 2D Styling**: KEEP IT EXTREMELY SIMPLE. Use clean, minimalist 2D vector shapes with solid flat colors. DO NOT create overly complex, disjointed, blocky, or 3D-like structural rigs. Prioritize visual resemblance over mechanical complexity.
+2. **Minimalist & Clean 2D Styling**: KEEP IT EXTREMELY SIMPLE. Use clean, minimalist 2D vector shapes with solid flat colors. Use the fewest coherent shapes necessary to preserve the subject. DO NOT create overly complex, disjointed, blocky, or 3D-like structural rigs. Prioritize visual resemblance, clean overlaps, and stable rig structure over decorative detail.
 3. **SUBJECT TURNAROUND SHEET — Requested Views Only (CRITICAL)**: You MUST draw the subject in a neutral rest pose ONLY for the requested top-level view containers. Each is an independent, fully-rigged drawing of the same subject from a different angle.
    Requested view containers:
 ${requestedViewGuide}
    Generate ONLY these requested views: ${requestedViews.join(", ")}.
+   Any extra top-level \`view_*\` container or bone prefix outside that requested set is invalid output.
    Make the first requested view visible by default (\`display="inline"\`), all others \`display="none"\`.
    Each view's bones MUST use a deterministic prefix derived from the view ID slug plus \`__\` (double underscore), for example:
 ${requestedViewPrefixGuide}
@@ -616,9 +856,12 @@ ${requestedViewPrefixGuide}
 7. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
    - Furthest background limbs (like \`rear_leg\`) MUST appear mathematically first in the \`<g>\` block.
    - Foreground limbs (like \`front_leg\`) MUST appear last.
+   - Preserve the exact front/back overlap relationships visible in the reference image. If one part covers another in the raster, the SVG group order must preserve that coverage.
+   - Mirror that same overlap ordering in each bone's semantic \`zIndex\` field. Lower \`zIndex\` = further back, higher \`zIndex\` = further forward.
    - You MUST group related parts together (e.g. \`arm_lower\` visually drawn inside or adjacent to \`arm_upper\`). Treat each requested view as one physically coherent, assembled subject, not a pile of detached floating pieces.
-8. **Preserve Major Silhouette Features**: Never omit any silhouette-defining extension, branch, protrusion, or contour break visible in the reference image. If the source image clearly shows a distinct shape, it must remain readable in the SVG. Allow shapes to float slightly if it is natural for the design (like stylized anime hair or capes).
-9. **Visemes and Emotions**: If the subject has a face-like or front-facing expressive region, place two sub-containers there: \`<g id="mouth_visemes">\` and \`<g id="emotions">\`. If the subject is not expressive, still include minimal placeholder groups in the most relevant front-facing parent group so downstream tools stay consistent.
+8. **Full-Length Framing (CRITICAL)**: Fit the complete subject inside the 1000x1000 viewBox with a small clean margin. Never crop or omit visible feet, hands, fins, tails, hats, props, wheels, or other silhouette-defining extremities from the reference image.
+9. **Preserve Major Silhouette Features**: Never omit any silhouette-defining extension, branch, protrusion, or contour break visible in the reference image. If the source image clearly shows a distinct shape, it must remain readable in the SVG. Allow shapes to float slightly if it is natural for the design (like stylized anime hair or capes).
+10. **Visemes and Emotions**: If the subject has a face-like or front-facing expressive region, place two sub-containers there: \`<g id="mouth_visemes">\` and \`<g id="emotions">\`. If the subject is not expressive, still include minimal placeholder groups in the most relevant front-facing parent group so downstream tools stay consistent.
    - **Visemes:** Include \`#mouth_idle\` (visibility="visible"), \`#mouth_A\` (visibility="hidden"), \`#mouth_E\` (hidden), \`#mouth_I\` (hidden), \`#mouth_O\` (hidden), \`#mouth_U\` (hidden), \`#mouth_M\` (hidden).
    - **Emotions:** Include \`#emotion_neutral\` (visibility="visible"), \`#emotion_happy\` (hidden), \`#emotion_sad\` (hidden), \`#emotion_angry\` (hidden), \`#emotion_surprised\` (hidden).
    - **Styling:** When expressive features exist, style them to match the subject personality. When they do not, keep them minimal and unobtrusive.
@@ -628,6 +871,7 @@ ${requestedViewPrefixGuide}
    - Treat extended \`kind\` labels as optional escape hatches only; use them only when the structure is visually unambiguous and stable across views.
    - Never split one continuous mass into extra bones just to label anatomy. Keep the hierarchy structural, sparse, and reusable.
    - \`side\`: \`left\`, \`right\`, or \`center\`
+   - \`zIndex\`: semantic draw order within the current view. Lower means further back; higher means further front when parts overlap.
    - \`length\`: approximate segment length in SVG units
    - \`socket\` (CRITICAL): EXPLICITLY specify the preferred attachment point {x,y} within the parent. Missing sockets break IK and animation rendering! Every bone with a parent MUST have a \`socket\`.
    - \`contactRole\`: \`none\`, \`ground\`, \`wall\`, \`water\`, or \`grip\`
@@ -641,22 +885,12 @@ ${requestedViewPrefixGuide}
 CRITICAL SHAPE: You must output ONLY a SINGLE valid JSON object matching this exact structure:
 \`\`\`json
 {
-  "svg_data": "<svg viewBox='0 0 1000 1000'><g id='view_3q_right' display='inline'>...</g><g id='view_front' display='none'>...</g><g id='view_side_right' display='none'>...</g><g id='view_top' display='none'>...</g><g id='view_back' display='none'>...</g></svg>",
+  "svg_data": "<svg viewBox='0 0 1000 1000'>${requestedViewSvgExample}</svg>",
   "rig_data": {
     "bones": [
-      { "id": "3q_right__root",         "pivot": { "x": 500, "y": 520 }, "kind": "root", "side": "center", "massClass": "heavy" },
-      { "id": "3q_right__core_front",   "pivot": { "x": 560, "y": 500 }, "socket": { "x": 560, "y": 500 }, "parent": "3q_right__root", "kind": "body", "side": "right", "massClass": "medium" },
-      { "id": "3q_right__core_rear",    "pivot": { "x": 430, "y": 540 }, "socket": { "x": 430, "y": 540 }, "parent": "3q_right__root", "kind": "body", "side": "left", "massClass": "medium" },
-      { "id": "3q_right__branch_upper", "pivot": { "x": 520, "y": 360 }, "socket": { "x": 520, "y": 360 }, "parent": "3q_right__root", "kind": "other", "side": "center", "massClass": "light" },
-      { "id": "3q_right__branch_lower", "pivot": { "x": 480, "y": 670 }, "socket": { "x": 480, "y": 670 }, "parent": "3q_right__root", "kind": "other", "side": "center", "contactRole": "ground", "massClass": "light" },
-      { "id": "side_left__root",        "pivot": { "x": 500, "y": 520 }, "kind": "root", "side": "center", "massClass": "heavy" },
-      { "id": "side_left__core_a",      "pivot": { "x": 560, "y": 500 }, "socket": { "x": 560, "y": 500 }, "parent": "side_left__root", "kind": "body", "side": "left", "massClass": "medium" },
-      { "id": "side_left__branch_a",    "pivot": { "x": 450, "y": 360 }, "socket": { "x": 450, "y": 360 }, "parent": "side_left__root", "kind": "other", "side": "left", "massClass": "light" },
-      { "id": "front__root",            "pivot": { "x": 500, "y": 520 }, "kind": "root", "side": "center", "massClass": "heavy" },
-      { "id": "front__branch_l",        "pivot": { "x": 420, "y": 500 }, "socket": { "x": 420, "y": 500 }, "parent": "front__root", "kind": "other", "side": "left", "massClass": "light" },
-      { "id": "front__branch_r",        "pivot": { "x": 580, "y": 500 }, "socket": { "x": 580, "y": 500 }, "parent": "front__root", "kind": "other", "side": "right", "massClass": "light" }
+${requestedBoneJsonExample}
     ],
-    "interactionNulls": ["3q_right__anchor_point", "side_left__anchor_point"],
+    "interactionNulls": [${requestedInteractionNullExample}],
     "visemes": ["mouth_idle", "mouth_A", "mouth_E", "mouth_I", "mouth_O", "mouth_U", "mouth_M"],
     "emotions": ["emotion_neutral", "emotion_happy", "emotion_sad", "emotion_angry", "emotion_surprised"],
     "motion_clips": {}
@@ -713,8 +947,8 @@ Do not write any text outside this JSON object. The \`svg_data\` property MUST c
             "No JSON object found in Gemini response.",
         );
 
-        const data = JSON.parse(text) as DraftsmanData;
-        const normalizedData = ensureRigIK(normalizeRigHierarchy(data));
+        const data = pruneRigToRequestedViews(JSON.parse(text) as DraftsmanData, requestedViews);
+        const normalizedData = applyRigProfile(normalizeRigHierarchy(data));
         return {
             data: normalizedData,
             usage: {
@@ -782,7 +1016,7 @@ Do not write any text outside this JSON object. The \`svg_data\` property MUST c
 
 export async function repairDraftedRig(data: DraftsmanData): Promise<DraftsmanData> {
     try {
-        return postProcessAndRepairSVG(data.svg_data, data.rig_data);
+        return applyRigProfile(postProcessAndRepairSVG(data.svg_data, data.rig_data));
     } catch (error: unknown) {
         console.error("Rig repair error:", error);
         const message = error instanceof Error ? error.message : String(error);
@@ -793,6 +1027,8 @@ export async function repairDraftedRig(data: DraftsmanData): Promise<DraftsmanDa
 function reviewDraftQuality(data: DraftsmanData, requestedViews: string[]): DraftQualityReview {
     const reasons: string[] = [];
     let score = 0;
+    const profileReport = data.rig_data.profile_report ?? inferRigProfile(data);
+    const profileMetrics = profileReport.metrics;
 
     const ikConfidence = data.rig_data.ik?.aiReport?.confidence ?? 1;
     const warnings = data.rig_data.ik?.aiReport?.warnings || [];
@@ -826,6 +1062,26 @@ function reviewDraftQuality(data: DraftsmanData, requestedViews: string[]): Draf
         reasons.push(disconnectedWarnings[0]);
     }
 
+    if (profileReport.profile === "rigid_object") {
+        if (profileMetrics.nodeCount > 6) {
+            score += 4;
+            reasons.push(`Rig is over-segmented for a mostly rigid subject (${profileMetrics.nodeCount} canonical nodes).`);
+        }
+        if (profileMetrics.effectors > 2) {
+            score += 2;
+            reasons.push(`Rigid subjects should not expose many independent effectors (${profileMetrics.effectors}).`);
+        }
+    } else if (profileReport.profile === "limited_articulation") {
+        if (profileMetrics.nodeCount > 12 && profileMetrics.primaryChainLength <= 3) {
+            score += 3;
+            reasons.push(`Rig complexity is high for its usable articulation (${profileMetrics.nodeCount} nodes, primary chain ${profileMetrics.primaryChainLength}).`);
+        }
+        if (profileMetrics.branchChainCount > 3 && profileMetrics.primaryChainLength <= 3) {
+            score += 2;
+            reasons.push(`Too many secondary branches are competing with a short primary chain.`);
+        }
+    }
+
     try {
         const dom = new JSDOM(data.svg_data, { contentType: "image/svg+xml" });
         const svgElement = dom.window.document.querySelector("svg");
@@ -853,6 +1109,11 @@ function reviewDraftQuality(data: DraftsmanData, requestedViews: string[]): Draf
                     reasons.push(`${viewId} is framed too small in the 1000x1000 canvas (${Math.round(width)}x${Math.round(height)}).`);
                 }
 
+                if (box.minX < 35 || box.maxX > 965 || box.minY < 25 || box.maxY > 975) {
+                    score += 3;
+                    reasons.push(`${viewId} is cropped or framed too tightly; the full subject needs visible margin for clean rig extraction.`);
+                }
+
                 if (Math.abs(centerX - 500) > 240 || Math.abs(centerY - 540) > 240) {
                     score += 1;
                     reasons.push(`${viewId} is badly centered in the frame.`);
@@ -877,6 +1138,12 @@ function normalizeRigHierarchy(data: DraftsmanData): DraftsmanData {
         const document = dom.window.document;
         const svgElement = document.querySelector("svg");
         if (!svgElement) return data;
+        const drawOrder = captureElementDrawOrder(svgElement);
+        const zIndexById = new Map(
+            data.rig_data.bones
+                .filter((bone) => typeof bone.zIndex === "number")
+                .map((bone) => [bone.id, bone.zIndex as number]),
+        );
 
         const isDescendantOf = (child: Element, parent: Element) => {
             let cursor: Element | null = child.parentElement;
@@ -908,11 +1175,15 @@ function normalizeRigHierarchy(data: DraftsmanData): DraftsmanData {
             if (childEl === parentEl) return;
             if (isDescendantOf(childEl, parentEl)) return;
 
-            parentEl.appendChild(childEl);
+            reparentPreservingDrawOrder(parentEl, childEl, drawOrder, zIndexById);
         });
 
         return {
             ...data,
+            rig_data: {
+                ...data.rig_data,
+                bones: assignBoneZIndexFromSvgOrder(data.rig_data.bones, svgElement),
+            },
             svg_data: svgElement.outerHTML,
         };
     } catch (error) {
@@ -948,10 +1219,14 @@ export async function generateMotionClipForRig(params: {
         durationSeconds: params.durationSeconds,
         rig: normalizedRig,
     });
-    const motionSpec = constrainMotionSpecToRig(normalizedRig, MotionSpecSchema.parse({
-        ...inferredSpec,
-        ...structuredSpecResult.spec,
-    }));
+    const motionSpec = enforceExplicitGeneratedMotionSpec({
+        motionSpec: constrainMotionSpecToRig(normalizedRig, MotionSpecSchema.parse(structuredSpecResult.spec)),
+        rigProfile: normalizedRig.rig_data.profile,
+    });
+    const qualityGrade = gradeMotionQuality({
+        affordance: motionAffordance,
+        motionSpec,
+    });
     const preflight = validateRigForMotion({
         rig: normalizedRig,
         motion: params.motion,
@@ -985,6 +1260,7 @@ export async function generateMotionClipForRig(params: {
                     modelSpec: structuredSpecResult.spec,
                     finalSpec: motionSpec,
                     preflight,
+                    qualityGrade,
                     attempts,
                     finalStatus: "blocked",
                     finalMessage: message,
@@ -1008,6 +1284,31 @@ export async function generateMotionClipForRig(params: {
                     modelSpec: structuredSpecResult.spec,
                     finalSpec: motionSpec,
                     preflight,
+                    qualityGrade,
+                    attempts,
+                    finalStatus: "blocked",
+                    finalMessage: message,
+                }),
+            },
+            usage: structuredSpecResult.usage,
+        };
+    }
+
+    if (!qualityGrade.acceptable) {
+        const message = qualityGrade.reasons.join(" ");
+        return {
+            blocked: {
+                message,
+                debugReport: buildMotionDebugReport({
+                    motion: params.motion,
+                    style: params.style,
+                    durationSeconds,
+                    affordance: motionAffordance,
+                    inferredSpec,
+                    modelSpec: structuredSpecResult.spec,
+                    finalSpec: motionSpec,
+                    preflight,
+                    qualityGrade,
                     attempts,
                     finalStatus: "blocked",
                     finalMessage: message,
@@ -1072,6 +1373,7 @@ export async function generateMotionClipForRig(params: {
                     modelSpec: structuredSpecResult.spec,
                     finalSpec: resolvedMotionSpec,
                     preflight,
+                    qualityGrade,
                     attempts,
                     finalStatus: "blocked",
                     finalMessage: message,
@@ -1087,6 +1389,9 @@ export async function generateMotionClipForRig(params: {
             validationWarnings: [
                 "Canonical motion clip synthesized directly from structured motion spec.",
                 ...(resolvedMotionSpec.notes ? [`Motion spec: ${resolvedMotionSpec.notes}`] : []),
+                ...(qualityGrade.profile === "rigid_root_motion" && qualityGrade.reasons.length > 0
+                    ? [`Motion quality grade ${qualityGrade.score}/5: ${qualityGrade.reasons.join(" | ")}`]
+                    : []),
                 ...(appliedAttenuationFactor < 1 ? [`Motion amplitude attenuated to ${round2(appliedAttenuationFactor)}x after validation backoff.`] : []),
                 ...preflight.warnings,
                 ...postflight.warnings,
@@ -1104,6 +1409,7 @@ export async function generateMotionClipForRig(params: {
                 modelSpec: structuredSpecResult.spec,
                 finalSpec: resolvedMotionSpec,
                 preflight,
+                qualityGrade,
                 attempts,
                 finalStatus: "compiled",
                 finalMessage: "Playable motion clip compiled successfully.",
@@ -1183,6 +1489,14 @@ export async function generateMotionSpecForRig(params: {
     const boneSummary = buildMotionBoneSummary(normalizedRig, nodeLookup);
     const availableViews = Object.keys(normalizedRig.rig_data.ik?.views || {}).sort();
     const motionAffordance = inferRigMotionAffordance(normalizedRig);
+    const rigProfileReport = normalizedRig.rig_data.profile_report ?? inferRigProfile(normalizedRig);
+    const prefersRigidRootMotion = rigProfileReport.profile !== "articulated";
+    const motionSpecModel = "gemini-3.1-pro-preview";
+    const motionStrategyGuidance = rigProfileReport.profile === "rigid_object"
+        ? "This rig is effectively rigid. Realism must come from whole-object rootMotion with anticipation, acceleration, overshoot, and settle. Avoid internal deformation except for the smallest safe accents."
+        : rigProfileReport.profile === "limited_articulation"
+            ? "This rig has limited articulation. Favor rootMotion and restrained primary-chain deformation. Avoid spreading large waves across secondary branches."
+            : "This rig can support internal deformation. Use axialWaves for chain motion and rootMotion for believable weight shift and travel.";
 
     const prompt = `
 You are a semantic motion planner for a deterministic 2D animation engine.
@@ -1209,6 +1523,12 @@ ${JSON.stringify(ikConstraintSummary, null, 2)}
 Rig motion affordance profile:
 ${JSON.stringify(motionAffordance, null, 2)}
 
+Deterministic rig profile:
+${JSON.stringify(rigProfileReport, null, 2)}
+
+Motion strategy guidance:
+${motionStrategyGuidance}
+
 Rules:
 1. Output ONLY JSON.
 2. motionFamily is only a short reusable label for the requested motion. It is metadata, not a rigid built-in animation category.
@@ -1224,12 +1544,14 @@ Rules:
 12. Restrict motion to the subject's identity and the rig motion affordance profile. Subjects with limited articulation should prefer whole-object translation, orientation shifts, or minimal internal deformation.
 13. Reusable actor actions are built for looping by default. The motion must close cleanly back onto frame 0 with no visible snap.
 14. If the requested action cannot be satisfied safely, return blockedReasons with concise human-readable reasons instead of forcing the motion.
-15. (CRITICAL) Provide explicit "axialWaves" defining sine-wave rotational animation for the parts that move. You act as the core animator. Do NOT rely on fallback math.
+15. (CRITICAL) Provide explicit "axialWaves" when the rig can safely support internal deformation. You act as the core animator. Do NOT rely on fallback math.
     - Set explicit phases (e.g., 0.0 for Leg A, 0.5 for Leg B to create alternating walking motion).
     - Or sweeping generic waves (e.g. 0.0, 0.1, 0.2 down a spine for a fish tail or slithering snake).
     - amplitudeDeg must be reasonable (e.g., 10-30 degrees for gentle motion, 40-70 for intense).
     - frequency is cycles per clip and must be a whole number (1, 2, 3, ...) so the loop closes exactly on frame 0.
-16. (CRITICAL) Provide explicit "rootMotion" for torso/body translation if the character should bob, bounce, or dip during locomotion (e.g., dipping down at t: 0.25 and t: 0.75 for walking footsteps). Use flat 0 if they glide (like a car or fish).
+16. (CRITICAL) Provide explicit "rootMotion" whenever realism depends on whole-object translation or weight shift. Use x, y, and rotation samples when useful for anticipation, drift, overshoot, recoil, or settle. Use flat 0 only if the subject should glide perfectly.
+17. For low-deformation or rigid subjects, realism must come primarily from rootMotion timing, spacing, and rotation, not from fake internal bending.
+18. There is no generic fallback synthesis for generated clips. If explicit rootMotion / axialWaves are missing where needed, the clip will be blocked.
 
 JSON shape:
 {
@@ -1253,40 +1575,163 @@ JSON shape:
 }
 `;
 
-    const response = await runGeminiRequestWithRetry(
-        "Draftsman motion-spec request",
-        () => ai.models.generateContent({
-            model: "gemini-3.1-pro-preview",
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
-            config: {
-                temperature: 0.2,
-            }
-        }),
-    );
+    const maxGenerationPasses = rigProfileReport.profile === "rigid_object" ? 2 : 1;
+    const usageTotals = {
+        promptTokenCount: 0,
+        candidatesTokenCount: 0,
+        totalTokenCount: 0,
+    };
+    let parsed: MotionSpec | undefined;
+    let rejectionFeedback = "";
 
-    const text = extractJSONObject(
-        response.text || "",
-        "Gemini returned an empty motion spec response.",
-        "No JSON motion spec found in Gemini response.",
-    );
-    const parsed = constrainMotionSpecToRig(
-        normalizedRig,
-        MotionSpecSchema.parse(normalizeGeneratedMotionSpecPayload(JSON.parse(text))),
-    );
+    for (let pass = 1; pass <= maxGenerationPasses; pass += 1) {
+        const attemptPrompt = rejectionFeedback
+            ? `${prompt}
+
+Revision feedback for the previous rejected rigid-motion spec:
+${rejectionFeedback}
+
+Return a revised JSON motion spec only.`
+            : prompt;
+        const response = await runGeminiRequestWithRetry(
+            `Draftsman motion-spec request${maxGenerationPasses > 1 ? ` pass ${pass}` : ""}`,
+            () => ai.models.generateContent({
+                model: motionSpecModel,
+                contents: [{ role: "user", parts: [{ text: attemptPrompt }] }],
+                config: {
+                    temperature: 0.2,
+                }
+            }),
+        );
+        usageTotals.promptTokenCount += response.usageMetadata?.promptTokenCount || 0;
+        usageTotals.candidatesTokenCount += response.usageMetadata?.candidatesTokenCount || 0;
+        usageTotals.totalTokenCount += response.usageMetadata?.totalTokenCount || 0;
+
+        const text = extractJSONObject(
+            response.text || "",
+            "Gemini returned an empty motion spec response.",
+            "No JSON motion spec found in Gemini response.",
+        );
+        parsed = constrainMotionSpecToRig(
+            normalizedRig,
+            MotionSpecSchema.parse(normalizeGeneratedMotionSpecPayload(JSON.parse(text))),
+        );
+
+        if (!prefersRigidRootMotion) {
+            break;
+        }
+
+        const qualityGrade = gradeMotionQuality({
+            affordance: motionAffordance,
+            motionSpec: parsed,
+        });
+        if (qualityGrade.acceptable || pass === maxGenerationPasses) {
+            break;
+        }
+
+        rejectionFeedback = [
+            `The previous spec scored ${qualityGrade.score}/5 for the rigid_root_motion quality gate and was rejected.`,
+            ...qualityGrade.reasons.map((reason) => `- ${reason}`),
+            `Current metrics: rootSampleCount=${qualityGrade.metrics.rootSampleCount}, meaningfulInteriorRootSamples=${qualityGrade.metrics.meaningfulInteriorRootSamples}, activeRootAxes=${qualityGrade.metrics.activeRootAxes.join(", ") || "none"}, waveCount=${qualityGrade.metrics.waveCount}, maxWaveAmplitudeDeg=${qualityGrade.metrics.maxWaveAmplitudeDeg}.`,
+            "Revise toward richer whole-object rootMotion timing and less internal deformation unless the topology safely supports it.",
+        ].join("\n");
+    }
+
+    if (!parsed) {
+        throw new Error("Motion-spec generation did not produce a parsed result.");
+    }
 
     return {
         spec: parsed,
-        usage: {
-            promptTokenCount: response.usageMetadata?.promptTokenCount || 0,
-            candidatesTokenCount: response.usageMetadata?.candidatesTokenCount || 0,
-            totalTokenCount: response.usageMetadata?.totalTokenCount || 0
-        }
+        usage: usageTotals,
     };
 }
 
 type Box = { minX: number; minY: number; maxX: number; maxY: number };
 type Point = { x: number; y: number };
 type SimpleTransform = { tx: number; ty: number; sx: number; sy: number };
+
+function assignBoneZIndexFromSvgOrder<T extends { id: string; zIndex?: number }>(
+    bones: T[],
+    svgElement: Element,
+): T[] {
+    const boneIds = new Set(bones.map((bone) => bone.id));
+    const scopedOrderById = new Map<string, number>();
+    const globalOrderById = new Map<string, number>();
+
+    Array.from(svgElement.children)
+        .filter((child): child is Element => child.tagName.toLowerCase() === "g" && Boolean(child.getAttribute("id")))
+        .forEach((group) => {
+            let localIndex = 0;
+            Array.from(group.querySelectorAll("g[id]")).forEach((element) => {
+                const id = element.getAttribute("id");
+                if (!id || !boneIds.has(id) || scopedOrderById.has(id)) return;
+                scopedOrderById.set(id, localIndex);
+                localIndex += 1;
+            });
+        });
+
+    Array.from(svgElement.querySelectorAll("g[id]")).forEach((element, index) => {
+        const id = element.getAttribute("id");
+        if (!id || !boneIds.has(id) || globalOrderById.has(id)) return;
+        globalOrderById.set(id, index);
+    });
+
+    return bones.map((bone) => {
+        if (typeof bone.zIndex === "number") return bone;
+        const zIndex = scopedOrderById.get(bone.id) ?? globalOrderById.get(bone.id);
+        return typeof zIndex === "number" ? { ...bone, zIndex } : bone;
+    });
+}
+
+function inferScopedViewId(value: string): string | undefined {
+    const lower = value.toLowerCase();
+    const genericPrefix = lower.match(/^([a-z0-9_]+)__/);
+    if (genericPrefix) {
+        return normalizeViewId(`view_${genericPrefix[1]}`);
+    }
+    return matchLegacyViewPrefix(lower)?.viewId;
+}
+
+function pruneRigToRequestedViews(data: DraftsmanData, requestedViews: string[]): DraftsmanData {
+    const keepViews = new Set(normalizeViewIds(requestedViews, "view_3q_right"));
+    try {
+        const dom = new JSDOM(data.svg_data, { contentType: "image/svg+xml" });
+        const document = dom.window.document;
+        const svgElement = document.querySelector("svg");
+        if (!svgElement) return data;
+
+        Array.from(svgElement.querySelectorAll<SVGGElement>('g[id^="view_"]')).forEach((viewGroup) => {
+            const normalizedViewId = normalizeViewId(viewGroup.id);
+            if (!normalizedViewId || keepViews.has(normalizedViewId)) return;
+            viewGroup.remove();
+        });
+
+        const primaryView = normalizeViewIds(requestedViews, "view_3q_right")[0] || "view_3q_right";
+        Array.from(svgElement.querySelectorAll<SVGGElement>('g[id^="view_"]')).forEach((viewGroup) => {
+            const normalizedViewId = normalizeViewId(viewGroup.id);
+            if (!normalizedViewId) return;
+            viewGroup.setAttribute("display", normalizedViewId === primaryView ? "inline" : "none");
+        });
+
+        const keepScopedId = (id: string) => {
+            const scopedViewId = inferScopedViewId(id);
+            return !scopedViewId || keepViews.has(scopedViewId);
+        };
+
+        return {
+            ...data,
+            svg_data: svgElement.outerHTML,
+            rig_data: {
+                ...data.rig_data,
+                bones: data.rig_data.bones.filter((bone) => keepScopedId(bone.id)),
+                interactionNulls: data.rig_data.interactionNulls.filter((id) => keepScopedId(id)),
+            },
+        };
+    } catch {
+        return data;
+    }
+}
 
 function postProcessAndRepairSVG(rawSvgString: string, rigMap: DraftsmanData["rig_data"]): { svg_data: string; rig_data: DraftsmanData["rig_data"] } {
     // 1. Parse string into a manipulatable DOM tree
@@ -1299,6 +1744,12 @@ function postProcessAndRepairSVG(rawSvgString: string, rigMap: DraftsmanData["ri
     const repairedRig = JSON.parse(JSON.stringify(rigMap)) as DraftsmanData["rig_data"];
     const fixes: string[] = [];
     const warnings: string[] = [];
+    const drawOrder = captureElementDrawOrder(svgElement);
+    const zIndexById = new Map(
+        repairedRig.bones
+            .filter((bone) => typeof bone.zIndex === "number")
+            .map((bone) => [bone.id, bone.zIndex as number]),
+    );
 
     // 2. Build explicit Allowlist of acceptable SVG IDs based on mathematical Rig structure
     const validIds = new Set<string>();
@@ -1412,7 +1863,7 @@ function postProcessAndRepairSVG(rawSvgString: string, rigMap: DraftsmanData["ri
                 const childEl = svgElement.querySelector(`g[id="${rootId}"]`) as Element | null;
                 const parentEl = svgElement.querySelector(`g[id="${primaryRootId}"]`) as Element | null;
                 if (childEl && parentEl && childEl !== parentEl) {
-                    parentEl.appendChild(childEl);
+                    reparentPreservingDrawOrder(parentEl, childEl, drawOrder, zIndexById);
                 }
             });
 
@@ -1440,7 +1891,7 @@ function postProcessAndRepairSVG(rawSvgString: string, rigMap: DraftsmanData["ri
     currentBoneMap = boneMap();
     elementBoxes = collectElementBoxes(svgElement);
 
-    repairedRig.bones = repairedRig.bones.map((bone) => {
+    repairedRig.bones = assignBoneZIndexFromSvgOrder(repairedRig.bones, svgElement).map((bone) => {
         const box = elementBoxes.get(bone.id);
         if (!box) return bone;
 
