@@ -123,6 +123,28 @@ function ensureLoopedRootSamples(
   return result;
 }
 
+function ensureWholeObjectMotionRecipe(
+  recipe: RigMotionIntent["wholeObjectMotion"] | undefined,
+): RigMotionIntent["wholeObjectMotion"] | undefined {
+  if (!recipe) return undefined;
+  const anchors = dedupeSamplesByTime((recipe.anchors || [])
+    .filter((anchor) => Number.isFinite(anchor.t))
+    .map((anchor) => ({
+      ...anchor,
+      t: round2(clamp(anchor.t, 0, 1)),
+      x: typeof anchor.x === "number" ? round2(anchor.x) : undefined,
+      y: typeof anchor.y === "number" ? round2(anchor.y) : undefined,
+      rotation: typeof anchor.rotation === "number" ? normalizeDegrees(anchor.rotation) : undefined,
+      scale: typeof anchor.scale === "number" ? round2(anchor.scale) : undefined,
+    })));
+
+  if (anchors.length < 2) return undefined;
+
+  return {
+    anchors,
+  };
+}
+
 function interpolateSamples<T extends { t: number }>(
   samples: T[],
   normalizedTime: number,
@@ -367,6 +389,7 @@ export function sanitizeMotionIntentForRig(
   const normalizedIntent: RigMotionIntent = {
     ...intent,
     rootMotion: ensureLoopedRootSamples(intent.rootMotion || []),
+    wholeObjectMotion: ensureWholeObjectMotionRecipe(intent.wholeObjectMotion),
     effectorGoals: (intent.effectorGoals || [])
       .filter((goal) => validNodeIds.has(goal.nodeId))
       .map((goal) => ({
@@ -419,16 +442,18 @@ export function sanitizeMotionIntentForRig(
 
   const axialWaves = normalizedIntent.rotationTracks.length > 0 || normalizedIntent.axialWaves.length > 0
     ? normalizedIntent.axialWaves
-    : defaultWavesForTopology(rig, topology, {
-        motionFamily: normalizedIntent.family,
-        tempo: 1,
-        amplitude: 1,
-        intensity: 0.5,
-        locomotion: {
-          mode: normalizedIntent.locomotion.mode,
-          preferredDirection: normalizedIntent.locomotion.direction,
-        },
-      });
+    : normalizedIntent.explicitChannelsOnly
+      ? []
+      : defaultWavesForTopology(rig, topology, {
+          motionFamily: normalizedIntent.family,
+          tempo: 1,
+          amplitude: 1,
+          intensity: 0.5,
+          locomotion: {
+            mode: normalizedIntent.locomotion.mode,
+            preferredDirection: normalizedIntent.locomotion.direction,
+          },
+        });
 
   return {
     ...normalizedIntent,
@@ -489,8 +514,10 @@ export function buildMotionIntentFromSpec(params: {
   motion: string;
   durationSeconds: number;
   motionSpec: MotionSpec;
+  allowFallbackSynthesis?: boolean;
 }): RigMotionIntent {
   const rig = "svg_data" in params.rig ? ensureRigIK(params.rig) : params.rig;
+  const allowFallbackSynthesis = params.allowFallbackSynthesis ?? true;
   const nodeByBoneId = new Map<string, string>();
   (rig.rig_data.ik?.nodes || []).forEach((node) => {
     (node.sourceBoneIds || []).forEach((boneId) => nodeByBoneId.set(boneId, node.id));
@@ -525,15 +552,21 @@ export function buildMotionIntentFromSpec(params: {
     },
     rootMotion: params.motionSpec.rootMotion && params.motionSpec.rootMotion.length > 0
       ? params.motionSpec.rootMotion
-      : deriveRootMotionFromSpec(params.motionSpec),
-    effectorGoals: [],
-    rotationTracks: [],
+      : allowFallbackSynthesis
+        ? deriveRootMotionFromSpec(params.motionSpec)
+        : [],
+    wholeObjectMotion: params.motionSpec.wholeObjectMotion,
+    effectorGoals: params.motionSpec.effectorGoals || [],
+    rotationTracks: params.motionSpec.rotationTracks || [],
     axialWaves: params.motionSpec.axialWaves && params.motionSpec.axialWaves.length > 0
       ? params.motionSpec.axialWaves
-      : deriveAxialWavesFromSpec(rig, params.motionSpec),
+      : allowFallbackSynthesis
+        ? deriveAxialWavesFromSpec(rig, params.motionSpec)
+        : [],
     contacts,
     pins: [],
     leadNodes,
+    explicitChannelsOnly: !allowFallbackSynthesis,
     notes: params.motionSpec.notes || `Solver-native motion intent for ${params.motion}.`,
   })!;
 }

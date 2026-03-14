@@ -29,8 +29,8 @@ interface StageProps {
     onPlayComplete?: () => void;
     selectedActorId?: string | null;
     onActorSelect?: (actorId: string | null) => void;
-    onActorPositionChange?: (actorId: string, x: number, y: number) => void;
-    onActorScaleChange?: (actorId: string, scale: number) => void;
+    onActorPositionChange?: (actorId: string, dx: number, dy: number) => void;
+    onActorScaleChange?: (actorId: string, scaleRatio: number) => void;
     stageOrientation?: StageOrientation;
 }
 
@@ -43,6 +43,11 @@ interface DragState {
     offsetY: number;
     initialDist: number;
     initialScale: number;
+    initialFeetX: number;
+    initialFeetY: number;
+    lastFeetX: number;
+    lastFeetY: number;
+    lastDist: number;
 }
 
 type TimelineWithIKSync = gsap.core.Timeline & {
@@ -61,6 +66,9 @@ function initialFacingSignForTrack(track: CompiledSceneData["instance_tracks"][n
     const sortedTransforms = [...track.transform_track].sort((left, right) => left.time - right.time);
     const firstTransform = sortedTransforms[0];
     const secondTransform = sortedTransforms[1];
+    if (firstTransform?.flip_x !== undefined) {
+        return firstTransform.flip_x ? -1 : 1;
+    }
     if (firstTransform && secondTransform) {
         const deltaX = secondTransform.x - firstTransform.x;
         if (deltaX < -10) return -1;
@@ -72,6 +80,24 @@ function initialFacingSignForTrack(track: CompiledSceneData["instance_tracks"][n
         ?.ik_playback?.motion_spec?.locomotion?.preferredDirection;
 
     return facingSignForDirection(preferredDirection) ?? 1;
+}
+
+function zIndexForTrackAtTime(
+    track: CompiledSceneData["instance_tracks"][number] | undefined,
+    timeSeconds: number,
+): number {
+    if (!track || track.transform_track.length === 0) return 10;
+    const sortedTransforms = [...track.transform_track].sort((left, right) => left.time - right.time);
+    if (timeSeconds <= sortedTransforms[0].time) {
+        return sortedTransforms[0].z_index ?? 10;
+    }
+    let active = sortedTransforms[0];
+    for (let index = 1; index < sortedTransforms.length; index += 1) {
+        const next = sortedTransforms[index];
+        if (timeSeconds < next.time) break;
+        active = next;
+    }
+    return active.z_index ?? 10;
 }
 
 export default function Stage({
@@ -134,13 +160,22 @@ export default function Stage({
     const ambientCtxRef = useRef<gsap.Context | null>(null);
     // Scrubable timeline returned by buildTimeline()
     const gsapTimelineRef = useRef<gsap.core.Timeline | null>(null);
+    const actorLayerOrderRef = useRef("");
 
     // Drag state ref — avoids re-renders during drag
     const dragRef = useRef<DragState | null>(null);
     const isDraggingRef = useRef(false);
+    const windowDragHandlersRef = useRef<{ move: (event: MouseEvent) => void; up: () => void } | null>(null);
 
     const syncTimelineIK = useCallback((timeline: gsap.core.Timeline | null) => {
         (timeline as TimelineWithIKSync | null)?.__ikSync?.();
+    }, []);
+
+    const detachWindowDragHandlers = useCallback(() => {
+        if (!windowDragHandlersRef.current) return;
+        window.removeEventListener("mousemove", windowDragHandlersRef.current.move);
+        window.removeEventListener("mouseup", windowDragHandlersRef.current.up);
+        windowDragHandlersRef.current = null;
     }, []);
 
     // ── SVG coordinate conversion ──────────────────────────────────────────────
@@ -226,14 +261,52 @@ export default function Stage({
         }
     }, []);
 
+    const syncActorLayerOrder = useCallback((timeSeconds: number) => {
+        const container = containerRef.current;
+        if (!container) return;
+        const domSvg = container.querySelector("svg");
+        const actorLayer = domSvg?.querySelector<SVGGElement>("#stage_actors");
+        if (!actorLayer) return;
+
+        const scene = compiledSceneRef.current;
+        const currentBeat = beatRef.current;
+        if (!currentBeat) return;
+
+        const actorEntries = scene?.instance_tracks.length
+            ? scene.instance_tracks.map((track) => ({
+                actorId: track.actor_id,
+                zIndex: zIndexForTrackAtTime(track, timeSeconds),
+            }))
+            : Array.from(new Set(currentBeat.actions.map((action) => action.actor_id))).map((actorId) => {
+                const actionData = currentBeat.actions.find((action) => action.actor_id === actorId);
+                return { actorId, zIndex: actionData?.spatial_transform?.z_index ?? 10 };
+            });
+
+        const nextOrder = actorEntries
+            .sort((left, right) => left.zIndex - right.zIndex)
+            .map((entry) => entry.actorId);
+        const nextOrderKey = nextOrder.join("|");
+        if (nextOrderKey === actorLayerOrderRef.current) return;
+
+        nextOrder.forEach((actorId) => {
+            const group = actorLayer.querySelector<SVGGElement>(`#actor_group_${actorId}`);
+            if (group) {
+                actorLayer.appendChild(group);
+            }
+        });
+        actorLayerOrderRef.current = nextOrderKey;
+    }, []);
+
     // ── Effect 1: SVG Assembly + Ambient + Build Timeline ────────────────────
     // Rebuilds the scene and starts ambient animations whenever beat/rigs change.
     useEffect(() => {
         if (!containerRef.current || !beat) return;
+        if (isDraggingRef.current) return; // Skip heavy DOM rebuilds during live dragging!
 
         // Kill any running animations from the previous scene
         if (gsapTimelineRef.current) { gsapTimelineRef.current.kill(); gsapTimelineRef.current = null; }
         if (ambientCtxRef.current)   { ambientCtxRef.current.revert(); ambientCtxRef.current  = null; }
+        actorLayerOrderRef.current = "";
 
         const parser = new DOMParser();
         let masterSvgElement: SVGSVGElement;
@@ -257,7 +330,6 @@ export default function Stage({
             masterSvgElement = fallbackDoc.querySelector("svg") as SVGSVGElement;
         }
 
-        // Actor layer appended LAST — characters always render above all background layers.
         const actorLayer = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "g");
         actorLayer.setAttribute("id", "stage_actors");
         masterSvgElement.appendChild(actorLayer);
@@ -274,7 +346,7 @@ export default function Stage({
             })
         ).sort((a, b) => a.zIndex - b.zIndex);
 
-        const targetTransforms: Record<string, { x: number; y: number; scale: number; facingSign: number }> = {};
+        const targetTransforms: Record<string, { x: number; y: number; scale: number; rotation?: number; facingSign: number }> = {};
         let actorIdx = 0;
 
         actorsInScene.forEach(({ actorId }) => {
@@ -299,6 +371,7 @@ export default function Stage({
                 x: tX,
                 y: tY,
                 scale: tScale,
+                rotation: initialTransform?.rotation ?? actionData?.spatial_transform?.rotation,
                 facingSign: initialFacingSignForTrack(track),
             };
 
@@ -421,6 +494,7 @@ export default function Stage({
                 gsap.set(group, {
                     x: t.x - naturalCX,
                     y: t.y - naturalBottom,
+                    rotation: t.rotation ?? 0,
                     scaleX: t.scale * t.facingSign,
                     scaleY: t.scale,
                     svgOrigin: `${naturalCX} ${naturalBottom}`,
@@ -447,6 +521,7 @@ export default function Stage({
         }) as TimelineWithIKSync;
         tl.eventCallback("onUpdate",   () => {
             syncTimelineIK(tl);
+            syncActorLayerOrder(tl.time());
             onPlayheadUpdateRef.current?.(tl.time());
         });
         tl.eventCallback("onComplete", () => {
@@ -454,12 +529,14 @@ export default function Stage({
           if (loopOnCompleteRef.current) {
             tl.pause(0);
             syncTimelineIK(tl);
+            syncActorLayerOrder(0);
             onPlayheadUpdateRef.current?.(0);
             requestAnimationFrame(() => tl.play(0));
             return;
           }
           tl.pause(tl.duration());
           syncTimelineIK(tl);
+          syncActorLayerOrder(tl.duration());
           onPlayCompleteRef.current?.();
         });
         gsapTimelineRef.current = tl;
@@ -472,9 +549,11 @@ export default function Stage({
             }
             tl.play(playheadTime);
             syncTimelineIK(tl);
+            syncActorLayerOrder(playheadTime);
         } else {
             tl.pause(playheadTime);
             syncTimelineIK(tl);
+            syncActorLayerOrder(playheadTime);
         }
 
         // Update selection overlay after assembly
@@ -484,6 +563,7 @@ export default function Stage({
             posCtx.revert();
             if (ambientCtxRef.current)   { ambientCtxRef.current.revert(); ambientCtxRef.current  = null; }
             if (gsapTimelineRef.current) { gsapTimelineRef.current.kill(); gsapTimelineRef.current = null; }
+            actorLayerOrderRef.current = "";
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [beat, compiledScene, availableRigs, showObstacleDebug, stageOrientation]);
@@ -519,14 +599,24 @@ export default function Stage({
         if (isPlayingRef.current) return;  // GSAP drives the playhead while playing
         const tl = gsapTimelineRef.current;
         if (!tl) return;
-        tl.seek(playheadTime, true);  // suppress callbacks to avoid feedback loop
+        
+        // Use regular seek. Suppressing events entirely sometimes skips rendering the frame.
+        tl.seek(playheadTime, false);
         syncTimelineIK(tl);
-    }, [playheadTime, syncTimelineIK]);
+        syncActorLayerOrder(playheadTime);
+        
+        // Force the selection overlay to align with the new playhead frame 
+        updateSelectionOverlay(selectedActorId);
+    }, [playheadTime, selectedActorId, syncActorLayerOrder, syncTimelineIK, updateSelectionOverlay]);
 
     // ── Effect 4: Selection overlay sync ─────────────────────────────────────
     useEffect(() => {
         updateSelectionOverlay(selectedActorId);
     }, [selectedActorId, updateSelectionOverlay]);
+
+    useEffect(() => () => {
+        detachWindowDragHandlers();
+    }, [detachWindowDragHandlers]);
 
     // ── Mouse event handlers ──────────────────────────────────────────────────
     const findActorGroup = (target: EventTarget | null): SVGGElement | null => {
@@ -586,6 +676,11 @@ export default function Stage({
                 offsetY: svgCoords.y - feetY,
                 initialDist: 0,
                 initialScale: 0,
+                initialFeetX: feetX,
+                initialFeetY: feetY,
+                lastFeetX: feetX,
+                lastFeetY: feetY,
+                lastDist: 0,
             };
         } else {
             const dx = svgCoords.x - feetX;
@@ -601,19 +696,34 @@ export default function Stage({
                 offsetY: 0,
                 initialDist,
                 initialScale: currentScaleY,
+                initialFeetX: feetX,
+                initialFeetY: feetY,
+                lastFeetX: feetX,
+                lastFeetY: feetY,
+                lastDist: initialDist,
             };
         }
 
         isDraggingRef.current = false;
+        detachWindowDragHandlers();
+        const move = (event: MouseEvent) => {
+            handleDragMove(event.clientX, event.clientY);
+        };
+        const up = () => {
+            finishDrag(true);
+        };
+        windowDragHandlersRef.current = { move, up };
+        window.addEventListener("mousemove", move);
+        window.addEventListener("mouseup", up);
         e.preventDefault();
-    }, [onActorSelect, toSvgCoords, selectedActorId]);
+    }, [detachWindowDragHandlers, onActorSelect, selectedActorId, toSvgCoords]);
 
-    const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const handleDragMove = useCallback((clientX: number, clientY: number) => {
         if (!dragRef.current) return;
 
         isDraggingRef.current = true;
         const { actorId, mode, naturalCX, naturalBottom, offsetX, offsetY, initialDist, initialScale } = dragRef.current;
-        const svgCoords = toSvgCoords(e.clientX, e.clientY);
+        const svgCoords = toSvgCoords(clientX, clientY);
 
         const domSvg = containerRef.current?.querySelector("svg");
         const group = domSvg?.querySelector<SVGGElement>(`#actor_group_${actorId}`);
@@ -622,6 +732,11 @@ export default function Stage({
         if (mode === 'move') {
             const newFeetX = svgCoords.x - offsetX;
             const newFeetY = svgCoords.y - offsetY;
+            const dx = newFeetX - dragRef.current.lastFeetX;
+            const dy = newFeetY - dragRef.current.lastFeetY;
+            dragRef.current.lastFeetX = newFeetX;
+            dragRef.current.lastFeetY = newFeetY;
+
             gsap.set(group, {
                 x: newFeetX - naturalCX,
                 y: newFeetY - naturalBottom,
@@ -634,10 +749,13 @@ export default function Stage({
             
             const dx = svgCoords.x - feetX;
             const dy = svgCoords.y - feetY;
-            const currentDist = Math.sqrt(dx*dx + dy*dy);
+            const currentDist = Math.max(1, Math.sqrt(dx*dx + dy*dy));
             
-            const scaleFactor = currentDist / initialDist;
-            const newScale = Math.max(0.1, Math.min(3.0, initialScale * scaleFactor));
+            const scaleFactorThisFrame = currentDist / dragRef.current.lastDist;
+            dragRef.current.lastDist = currentDist;
+
+            const totalScaleFactor = currentDist / initialDist;
+            const newScale = Math.max(0.1, Math.min(3.0, initialScale * totalScaleFactor));
             const facingSign = Math.sign(gsap.getProperty(group, "scaleX") as number) || 1;
             
             gsap.set(group, {
@@ -650,56 +768,44 @@ export default function Stage({
         updateSelectionOverlay(actorId);
     }, [toSvgCoords, updateSelectionOverlay]);
 
-    const handleMouseUp = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const finishDrag = useCallback((commitChanges: boolean) => {
         if (!dragRef.current) return;
+        const dragState = dragRef.current;
+        const domSvg = containerRef.current?.querySelector("svg");
+        const group = domSvg?.querySelector<SVGGElement>(`#actor_group_${dragState.actorId}`);
 
-        if (isDraggingRef.current) {
-            const { actorId, mode, offsetX, offsetY } = dragRef.current;
-            const svgCoords = toSvgCoords(e.clientX, e.clientY);
-            
-            if (mode === 'move') {
-                const newFeetX = svgCoords.x - offsetX;
-                const newFeetY = svgCoords.y - offsetY;
-                onActorPositionChange?.(actorId, newFeetX, newFeetY);
+        if (commitChanges && group) {
+            if (dragState.mode === 'move') {
+                const dx = dragState.lastFeetX - dragState.initialFeetX;
+                const dy = dragState.lastFeetY - dragState.initialFeetY;
+                if (dx !== 0 || dy !== 0) {
+                    onActorPositionChange?.(dragState.actorId, dx, dy);
+                }
             } else {
-                const domSvg = containerRef.current?.querySelector("svg");
-                const group = domSvg?.querySelector<SVGGElement>(`#actor_group_${actorId}`);
-                if (group && onActorScaleChange) {
-                    const finalScale = gsap.getProperty(group, "scaleY") as number;
-                    onActorScaleChange(actorId, finalScale);
+                const finalScale = Math.abs(gsap.getProperty(group, "scaleY") as number) || dragState.initialScale;
+                const scaleRatio = finalScale / Math.max(0.0001, dragState.initialScale);
+                if (Number.isFinite(scaleRatio) && Math.abs(scaleRatio - 1) > 0.0001) {
+                    onActorScaleChange?.(dragState.actorId, scaleRatio);
                 }
             }
         }
 
         dragRef.current = null;
         isDraggingRef.current = false;
-    }, [toSvgCoords, onActorPositionChange, onActorScaleChange]);
+        detachWindowDragHandlers();
+    }, [detachWindowDragHandlers, onActorPositionChange, onActorScaleChange]);
 
-    const handleMouseLeave = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-        if (!dragRef.current || !isDraggingRef.current) {
-            dragRef.current = null;
-            return;
-        }
-        
-        const { actorId, mode, offsetX, offsetY } = dragRef.current;
-        const svgCoords = toSvgCoords(e.clientX, e.clientY);
-        
-        if (mode === 'move') {
-            const newFeetX = svgCoords.x - offsetX;
-            const newFeetY = svgCoords.y - offsetY;
-            onActorPositionChange?.(actorId, newFeetX, newFeetY);
-        } else {
-            const domSvg = containerRef.current?.querySelector("svg");
-            const group = domSvg?.querySelector<SVGGElement>(`#actor_group_${actorId}`);
-            if (group && onActorScaleChange) {
-                const finalScale = gsap.getProperty(group, "scaleY") as number;
-                onActorScaleChange(actorId, finalScale);
-            }
-        }
-        
-        dragRef.current = null;
-        isDraggingRef.current = false;
-    }, [toSvgCoords, onActorPositionChange, onActorScaleChange]);
+    const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+        handleDragMove(e.clientX, e.clientY);
+    }, [handleDragMove]);
+
+    const handleMouseLeave = useCallback(() => {
+        // Window-level handlers keep the drag active after leaving the stage bounds.
+    }, []);
+
+    const handleMouseUp = useCallback(() => {
+        finishDrag(true);
+    }, [finishDrag]);
 
     if (!beat) {
         return (

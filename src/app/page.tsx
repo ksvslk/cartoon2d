@@ -161,7 +161,7 @@ function formatMotionDebugLines(report: MotionDebugReport): string[] {
   ];
 
   lines.push(
-    `[DEBUG] Quality grade: profile=${report.qualityGrade.profile}, score=${report.qualityGrade.score}/5, rootSamples=${report.qualityGrade.metrics.rootSampleCount}, meaningfulInterior=${report.qualityGrade.metrics.meaningfulInteriorRootSamples}, axes=${report.qualityGrade.metrics.activeRootAxes.join(", ") || "none"}, waves=${report.qualityGrade.metrics.waveCount}.`,
+    `[DEBUG] Quality grade: profile=${report.qualityGrade.profile}, score=${report.qualityGrade.score}/5, rootSamples=${report.qualityGrade.metrics.rootSampleCount}, wholeObjectAnchors=${report.qualityGrade.metrics.wholeObjectAnchorCount}, meaningfulInterior=${report.qualityGrade.metrics.meaningfulInteriorRootSamples}, axes=${report.qualityGrade.metrics.activeRootAxes.join(", ") || "none"}, waves=${report.qualityGrade.metrics.waveCount}.`,
   );
   if (report.qualityGrade.reasons.length > 0) {
     lines.push(`[DEBUG] Quality notes: ${report.qualityGrade.reasons.join(" | ")}.`);

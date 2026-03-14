@@ -189,7 +189,17 @@ function sampleTimesFromKeyframes(keyframes: AnimationKeyframe[], durationSecond
   return Array.from(times).sort((left, right) => left - right);
 }
 
-function valueAtTime(keyframes: AnimationKeyframe[], time: number, defaultValue = 0): number {
+function lerpDegrees(from: number, to: number, alpha: number): number {
+  let delta = (to - from) % 360;
+  if (delta > 180) delta -= 360;
+  if (delta < -180) delta += 360;
+  let next = from + (delta * alpha);
+  while (next > 180) next -= 360;
+  while (next < -180) next += 360;
+  return next;
+}
+
+function valueAtTime(keyframes: AnimationKeyframe[], time: number, defaultValue = 0, isRotation = false): number {
   const ordered = [...keyframes].sort((left, right) => (left.delay ?? 0) - (right.delay ?? 0));
   let current = defaultValue;
 
@@ -215,12 +225,12 @@ function valueAtTime(keyframes: AnimationKeyframe[], time: number, defaultValue 
     const cycleTime = cycleDuration > 0 ? elapsed % cycleDuration : 0;
     if (cycleTime <= tweenDuration) {
       const alpha = clamp(cycleTime / tweenDuration, 0, 1);
-      return round2(from + ((to - from) * alpha));
+      return isRotation ? round2(lerpDegrees(from, to, alpha)) : round2(from + ((to - from) * alpha));
     }
 
     if (keyframe.yoyo) {
       const alpha = clamp((cycleTime - tweenDuration) / tweenDuration, 0, 1);
-      return round2(to + ((from - to) * alpha));
+      return isRotation ? round2(lerpDegrees(to, from, alpha)) : round2(to + ((from - to) * alpha));
     }
 
     return round2(to);
@@ -286,7 +296,7 @@ function buildRotationTracksFromSourceClip(params: {
       const samples = sampleTimesFromKeyframes(keyframes, params.durationSeconds)
         .map((time) => ({
           t: params.durationSeconds > 0 ? round3(clamp(time / params.durationSeconds, 0, 1)) : 0,
-          rotation: valueAtTime(keyframes, time, 0),
+          rotation: valueAtTime(keyframes, time, 0, true),
         }))
         .filter((sample, index, all) => (
           index === 0 ||
@@ -426,6 +436,7 @@ export function motionClipToIKPlayback(
         phaseEnd: contact.t1,
       })),
       leadBones: motionClip.intent.leadNodes,
+      wholeObjectMotion: motionClip.intent.wholeObjectMotion,
       notes: motionClip.intent.notes,
     },
     motion_intent: motionClip.intent,

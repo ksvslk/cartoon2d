@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MotionDirectionSchema, MotionFamilySchema, MotionLocomotionModeSchema, RigMotionIntentAxialWaveSchema, RigMotionIntentRootSampleSchema } from "./motion_spec";
+import { MotionDirectionSchema, MotionFamilySchema, MotionLocomotionModeSchema, RigMotionIntentAxialWaveSchema, RigMotionIntentRootSampleSchema, WholeObjectMotionRecipeSchema } from "./motion_spec";
 
 export const PivotPointSchema = z.object({
     x: z.number().describe("The absolute X coordinate of the pivot point within the 1000x1000 viewBox."),
@@ -31,12 +31,14 @@ export const RigBoneSideSchema = z.enum(["left", "right", "center"]);
 export const RigBoneContactRoleSchema = z.enum(["none", "ground", "wall", "water", "grip"]);
 export const RigBoneMassClassSchema = z.enum(["light", "medium", "heavy"]);
 export const RigBoneIKRoleSchema = z.enum(["root", "joint", "effector", "decorative"]);
+export const RigProfileSchema = z.enum(["rigid_object", "limited_articulation", "articulated"]);
 
 export const RigBoneSchema = z.object({
     id: z.string().describe("The exact ID of the <g> tag in the SVG that this bone controls (e.g., 'side_leg_right')."),
     pivot: PivotPointSchema.optional().describe("The point this bone rotates around."),
     rotationLimit: z.array(z.number()).length(2).optional().describe("Min and max rotation bounds in degrees, e.g., [-45, 90]."),
     parent: z.string().optional().describe("The ID of the parent bone, for hierarchy."),
+    zIndex: z.number().optional().describe("Semantic draw order within the view. Lower renders behind higher when sibling parts overlap."),
     kind: RigBoneKindSchema.optional().describe("Semantic role of the bone for deterministic motion synthesis and IK."),
     side: RigBoneSideSchema.optional().describe("Lateral side of the bone where relevant."),
     length: z.number().positive().optional().describe("Approximate bone or segment length in SVG units."),
@@ -221,12 +223,14 @@ export const RigMotionIntentSchema = z.object({
         direction: MotionDirectionSchema.optional(),
     }).default({ mode: "none" }).describe("Root locomotion intent for the clip."),
     rootMotion: z.array(RigMotionIntentRootSampleSchema).default([]).describe("Optional normalized root-motion samples."),
+    wholeObjectMotion: WholeObjectMotionRecipeSchema.optional().describe("Optional whole-object motion recipe preserved for transform-only playback."),
     effectorGoals: z.array(RigMotionIntentEffectorGoalSchema).default([]).describe("Solver-native effector goals for this motion."),
     rotationTracks: z.array(RigMotionIntentRotationTrackSchema).default([]).describe("Optional sampled local rotations captured from compiled bone animation."),
     axialWaves: z.array(RigMotionIntentAxialWaveSchema).default([]).describe("Procedural axial motion applied before constraint solving."),
     contacts: z.array(RigMotionIntentContactSchema).default([]).describe("Contact windows used by the solver."),
     pins: z.array(RigMotionIntentPinSchema).default([]).describe("Temporary pins applied during the motion."),
     leadNodes: z.array(z.string()).default([]).describe("Canonical nodes that lead the motion."),
+    explicitChannelsOnly: z.boolean().default(false).describe("Whether deterministic sanitization must preserve empty motion channels instead of synthesizing defaults."),
     notes: z.string().optional().describe("Optional human-readable summary of the intent."),
 });
 
@@ -256,11 +260,32 @@ export const RigRepairReportSchema = z.object({
     confidence: z.number().min(0).max(1).default(1).describe("Confidence score for the repaired rig output."),
 });
 
+export const RigProfileReportSchema = z.object({
+    profile: RigProfileSchema.describe("Deterministic motion profile inferred from the canonical topology."),
+    reasons: z.array(z.string()).default([]).describe("Human-readable reasons why the rig was classified this way."),
+    metrics: z.object({
+        articulationScore: z.number(),
+        deformationBudget: z.number(),
+        nodeCount: z.number().int().nonnegative(),
+        movingNodeCount: z.number().int().nonnegative(),
+        chainCount: z.number().int().nonnegative(),
+        effectors: z.number().int().nonnegative(),
+        primaryChainLength: z.number().int().nonnegative(),
+        branchChainCount: z.number().int().nonnegative(),
+        leafNodeCount: z.number().int().nonnegative(),
+        branchNodeCount: z.number().int().nonnegative(),
+    }).describe("Topology metrics used to classify the rig."),
+});
+
 export const RigSchema = z.object({
     bones: z.array(RigBoneSchema),
     interactionNulls: z.array(z.string()),
     visemes: z.array(z.string()).optional(),
     emotions: z.array(z.string()).optional(),
+    profile: RigProfileSchema.optional()
+        .describe("Deterministic motion profile used to gate which kinds of animation the rig should attempt."),
+    profile_report: RigProfileReportSchema.optional()
+        .describe("Deterministic classification report used to explain and debug rig capability decisions."),
     ik: RigIKSchema.optional()
         .describe("Canonical view-independent IK graph used by the rig lab, runtime solver, and motion compiler."),
     animation_clips: z.record(z.string(), AnimationClipSchema).optional()
@@ -293,6 +318,8 @@ export type RigBoneSide = z.infer<typeof RigBoneSideSchema>;
 export type RigBoneContactRole = z.infer<typeof RigBoneContactRoleSchema>;
 export type RigBoneMassClass = z.infer<typeof RigBoneMassClassSchema>;
 export type RigBoneIKRole = z.infer<typeof RigBoneIKRoleSchema>;
+export type RigProfile = z.infer<typeof RigProfileSchema>;
+export type RigProfileReport = z.infer<typeof RigProfileReportSchema>;
 export type RigIKData = z.infer<typeof RigIKSchema>;
 export type RigIKNode = z.infer<typeof RigIKNodeSchema>;
 export type RigIKConstraint = z.infer<typeof RigIKConstraintSchema>;

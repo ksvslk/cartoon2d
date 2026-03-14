@@ -46,6 +46,9 @@ export const SpatialTransformSchema = z.object({
     x: z.number().default(960).describe("The X center coordinate on the 1920x1080 stage."),
     y: z.number().default(950).describe("The Y floor contact coordinate on the 1920x1080 stage."),
     scale: z.number().default(1.0).describe("The actor scale."),
+    rotation: z.number().optional().describe("Optional whole-object rotation in degrees."),
+    flip_x: z.boolean().optional().describe("Whether to explicitly flip the actor horizontally."),
+    flip_y: z.boolean().optional().describe("Whether to explicitly flip the actor vertically."),
     z_index: z.number().default(10).describe("The scene layer order. Higher values render in front.")
 });
 
@@ -142,6 +145,11 @@ export const ActionSchema = z.object({
         x: true,
         y: true,
         scale: true,
+        rotation: true,
+        flip_x: true,
+        flip_y: true,
+    }).extend({
+        z_index: SpatialTransformSchema.shape.z_index.optional(),
     }).optional(),
     animation_overrides: AnimationOverridesSchema.optional().describe("Optional explicit overrides for animation parameters. Takes priority over style-inferred values."),
 });

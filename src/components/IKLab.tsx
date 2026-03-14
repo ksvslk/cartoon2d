@@ -254,6 +254,17 @@ export function IKLab({
     onChange(nextData);
   };
 
+  const updateLimit = (nodeId: string, limit: [number, number] | undefined) => {
+    if (!onChange) return;
+    const nextData = updateIK(normalizedData, (ik) => {
+      const nextNodes = ik.nodes.map((node) =>
+        node.id === nodeId ? { ...node, rotationLimit: limit } : node
+      );
+      return { ...ik, nodes: nextNodes };
+    });
+    onChange(nextData);
+  };
+
   return (
     <div className="grid h-full min-h-[620px] grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="flex min-h-[620px] flex-col gap-4">
@@ -308,6 +319,7 @@ export function IKLab({
         invalidNodeIds={invalidNodeIds}
         onTogglePin={togglePin}
         onUpdatePin={updatePinToCurrentPose}
+        onUpdateLimit={updateLimit}
       />
     </div>
   );

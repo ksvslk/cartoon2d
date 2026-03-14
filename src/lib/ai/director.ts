@@ -93,6 +93,10 @@ CRITICAL: Your response MUST contain TWO things:
 - EXTREME 2D FLATNESS REQUIRED: The art style MUST be composed of highly abstract, minimal vector-like solid color shapes. NO shading, NO gradients, NO 3D rendering, NO photorealism.
 - CHARACTER ANGLES: Draw characters from the most cinematically appropriate angle for the scene — front view for dialogue, side profile for walking, 3/4 view for natural depth. Keep angles consistent within a scene.
 - SUBJECT/BACKGROUND CONTRAST IS CRITICAL: The active characters must remain clearly readable against the background at a glance. Use strong silhouette separation, opposing value bands, simplified backdrops behind the subject, or subtle rim separation so tails, fins, limbs, and body edges never disappear into dark scenery.
+- FULL-BODY RIG REFERENCE QUALITY IS CRITICAL: Any active subject that may later be rigged must be fully visible in frame from head to toe or tip to tip. Do NOT crop feet, hands, fins, tails, hats, props, wheels, or other silhouette-defining extremities unless the user explicitly asks for a close-up.
+- LEAVE CLEAN MARGINS AROUND THE SUBJECT: Keep a small amount of negative space around the full figure so later SVG extraction can clearly separate the outer silhouette.
+- KEEP OVERLAPS LEGIBLE: When one part clearly sits in front of another, stage the image so that front/back overlap reads unambiguously. Avoid tangents and messy pileups that make extraction or rig layering ambiguous.
+- KEEP THE DRAWING SIMPLE ENOUGH TO VECTORIZE: Prefer a limited number of large flat shapes and clear color regions over noisy texture, hatch marks, tiny fragments, or decorative micro-details.
 - ${compositionInstruction}
 - DO NOT include any text, speech bubbles, or onomatopoeia (e.g., "BANG!", "CRASH!") in the images. These are handled by the audio/narrative data.
 - Output each image immediately after the JSON.
@@ -314,6 +318,9 @@ You have been provided with an existing comic panel and a localized instruction 
 Your job is to redraw the image to satisfy the director's request.
 Maintain the exact same art style, color palette, and character likenesses as the original image unless explicitly instructed to change them.
 ${compositionInstruction}
+Keep any riggable subject fully visible head-to-toe or tip-to-tip unless the edit explicitly asks for a close-up.
+Do not crop silhouette-defining extremities such as feet, hands, fins, tails, hats, tools, or wheels.
+Preserve clear front/back overlap readability so later SVG extraction can recover internal layering.
 DO NOT include any text or speech bubbles.
 Output ONLY the new generated image.`;
 

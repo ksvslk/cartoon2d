@@ -94,7 +94,7 @@ function getActorNaturalOrigin(container: HTMLElement, actorId: string): {
 function timelineVarsForTransform(
   container: HTMLElement,
   actorId: string,
-  transform: { x: number; y: number; scale: number; flip_x?: boolean; flip_y?: boolean },
+  transform: { x: number; y: number; scale: number; rotation?: number; flip_x?: boolean; flip_y?: boolean },
   facingSign: number,
   verticalSign = transform.flip_y ? -1 : 1,
 ): gsap.TweenVars {
@@ -102,6 +102,7 @@ function timelineVarsForTransform(
   return {
     x: transform.x - naturalCX,
     y: transform.y - naturalBottom,
+    rotation: transform.rotation ?? 0,
     scaleX: facingSign * transform.scale,
     scaleY: verticalSign * transform.scale,
     svgOrigin: `${naturalCX} ${naturalBottom}`,
@@ -119,7 +120,7 @@ function addCompiledTransformTrack(
   tl: gsap.core.Timeline,
   container: HTMLElement,
   actorId: string,
-  transformTrack: Array<{ time: number; x: number; y: number; scale: number; flip_x?: boolean; flip_y?: boolean }>,
+  transformTrack: Array<{ time: number; x: number; y: number; scale: number; rotation?: number; flip_x?: boolean; flip_y?: boolean }>,
   initialFacingSign?: number,
   isBackwardMotion?: boolean,
 ) {

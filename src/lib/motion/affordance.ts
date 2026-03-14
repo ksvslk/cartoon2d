@@ -1,5 +1,6 @@
 import { ensureRigIK } from "../ik/graph";
 import { MotionSpec } from "../schema/motion_spec";
+import { RigProfile, RigProfileReport } from "../schema/rig";
 import { buildMotionTopology } from "./topology";
 
 export type RigMotionAffordance = {
@@ -13,6 +14,27 @@ export type RigMotionAffordance = {
   primaryChainSpan: number;
   notes: string[];
 };
+
+function classifyRigProfile(affordance: RigMotionAffordance, branchChainCount: number): RigProfile {
+  if (
+    affordance.deformationBudget <= 0.58 &&
+    affordance.primaryChainLength <= 2 &&
+    affordance.effectors <= 1
+  ) {
+    return "rigid_object";
+  }
+
+  if (
+    affordance.deformationBudget <= 0.82 ||
+    affordance.primaryChainLength <= 3 ||
+    affordance.effectors <= 2 ||
+    branchChainCount <= 1
+  ) {
+    return "limited_articulation";
+  }
+
+  return "articulated";
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -82,6 +104,43 @@ export function inferRigMotionAffordance(
     primaryChainLength,
     primaryChainSpan: round2(primaryChainSpan),
     notes,
+  };
+}
+
+export function inferRigProfile(
+  rigInput: ReturnType<typeof ensureRigIK> | Parameters<typeof ensureRigIK>[0],
+): RigProfileReport {
+  const rig = "svg_data" in rigInput ? ensureRigIK(rigInput) : rigInput;
+  const affordance = inferRigMotionAffordance(rig);
+  const topology = buildMotionTopology(rig);
+  const profile = classifyRigProfile(affordance, topology.branchChains.length);
+  const reasons: string[] = [];
+
+  if (profile === "rigid_object") {
+    reasons.push("No long continuous chain or usable effector set was found.");
+    reasons.push("Internal deformation budget is low, so whole-object motion should dominate.");
+  } else if (profile === "limited_articulation") {
+    reasons.push("The rig has some usable articulation, but not enough for aggressive distributed deformation.");
+    reasons.push("Motion should concentrate on the dominant chain and modest secondary overlap.");
+  } else {
+    reasons.push("The rig has enough chain length, effectors, and deformation budget for articulated motion.");
+  }
+
+  return {
+    profile,
+    reasons,
+    metrics: {
+      articulationScore: affordance.articulationScore,
+      deformationBudget: affordance.deformationBudget,
+      nodeCount: affordance.nodeCount,
+      movingNodeCount: affordance.movingNodeCount,
+      chainCount: affordance.chainCount,
+      effectors: affordance.effectors,
+      primaryChainLength: affordance.primaryChainLength,
+      branchChainCount: topology.branchChains.length,
+      leafNodeCount: topology.leafNodeIds.length,
+      branchNodeCount: topology.branchNodeIds.length,
+    },
   };
 }
 

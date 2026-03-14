@@ -57,7 +57,19 @@ export function clampLocalRotation(graph: PoseGraph, nodeId: string, value: numb
   const node = graph.nodeMap.get(nodeId);
   const normalized = normalizeDegrees(value);
   if (!node?.rotationLimit) return normalized;
-  return Math.max(node.rotationLimit[0], Math.min(node.rotationLimit[1], normalized));
+
+  const min = node.rotationLimit[0];
+  const max = node.rotationLimit[1];
+
+  if (min > max) {
+    if (normalized >= min || normalized <= max) return normalized;
+  } else {
+    if (normalized >= min && normalized <= max) return normalized;
+  }
+
+  const distToMin = Math.abs(normalizeDegrees(min - normalized));
+  const distToMax = Math.abs(normalizeDegrees(max - normalized));
+  return distToMin < distToMax ? min : max;
 }
 
 export function computePoseLayout(graph: PoseGraph, pose: PoseState): PoseLayout {

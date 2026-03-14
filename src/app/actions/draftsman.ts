@@ -119,6 +119,7 @@ export interface MotionQualityGrade {
         rootSampleCount: number;
         interiorRootSampleCount: number;
         meaningfulInteriorRootSamples: number;
+        wholeObjectAnchorCount: number;
         activeRootAxes: Array<"x" | "y" | "rotation">;
         rootShapeScore: number;
         loopClosed: boolean;
@@ -143,6 +144,7 @@ export interface MotionSpecDebugSummary {
         phaseEnd: number;
     }>;
     blockedReasons: string[];
+    wholeObjectAnchorCount: number;
     notes?: string;
 }
 
@@ -238,6 +240,7 @@ function gradeMotionQuality(params: {
     const { affordance, motionSpec } = params;
     const rigidProfile = isRigidRootMotionProfile(affordance);
     const rootSamples = dedupeRootMotionSamples(motionSpec.rootMotion || []);
+    const wholeObjectAnchorCount = motionSpec.wholeObjectMotion?.anchors?.length || 0;
     const interiorSamples = rootSamples.filter((sample) => sample.t > 0 && sample.t < 1);
     const axes: Array<"x" | "y" | "rotation"> = ["x", "y", "rotation"];
     const activeRootAxes = axes.filter((axis) => {
@@ -315,6 +318,13 @@ function gradeMotionQuality(params: {
                 score -= 1;
                 reasons.push("rootMotion stays too close to a flat linear path, so the motion will read synthetic.");
             }
+            if (requiresWholeObjectTiming && wholeObjectAnchorCount === 0) {
+                score -= 0.75;
+                reasons.push("Rigid motion is missing wholeObjectMotion anchors, so transform-only playback loses timing nuance.");
+            } else if (requiresWholeObjectTiming && wholeObjectAnchorCount < 4) {
+                score -= 0.4;
+                reasons.push("wholeObjectMotion is sparse; 4 or more anchors gives cleaner anticipation and settle.");
+            }
         }
 
         if (waveCount > 0 && affordance.primaryChainLength <= 2 && maxWaveAmplitudeDeg > 12) {
@@ -337,6 +347,7 @@ function gradeMotionQuality(params: {
             rootSampleCount: rootSamples.length,
             interiorRootSampleCount: interiorSamples.length,
             meaningfulInteriorRootSamples,
+            wholeObjectAnchorCount,
             activeRootAxes,
             rootShapeScore,
             loopClosed,
@@ -363,6 +374,7 @@ function summarizeMotionSpec(motionSpec: MotionSpec): MotionSpecDebugSummary {
             phaseEnd: round2(contact.phaseEnd),
         })),
         blockedReasons: [...(motionSpec.blockedReasons || [])],
+        wholeObjectAnchorCount: motionSpec.wholeObjectMotion?.anchors?.length || 0,
         notes: motionSpec.notes,
     };
 }
@@ -464,13 +476,15 @@ function enforceExplicitGeneratedMotionSpec(params: {
     const blockedReasons = [...(params.motionSpec.blockedReasons || [])];
     const hasRootMotion = (params.motionSpec.rootMotion || []).length > 0;
     const hasAxialWaves = (params.motionSpec.axialWaves || []).length > 0;
+    const hasRotationTracks = (params.motionSpec.rotationTracks || []).length > 0;
+    const hasEffectorGoals = (params.motionSpec.effectorGoals || []).length > 0;
 
     if (params.rigProfile === "rigid_object") {
         if (!hasRootMotion) {
             blockedReasons.push("Rigid-object motion spec must include explicit rootMotion. Generic fallback synthesis is disabled.");
         }
-    } else if (!hasRootMotion && !hasAxialWaves) {
-        blockedReasons.push("Motion spec must include explicit rootMotion or axialWaves. Generic fallback synthesis is disabled.");
+    } else if (!hasRootMotion && !hasAxialWaves && !hasRotationTracks && !hasEffectorGoals) {
+        blockedReasons.push("Motion spec must include explicit rootMotion, axialWaves, rotationTracks, or effectorGoals. Generic fallback synthesis is disabled.");
     }
 
     return {
@@ -1493,7 +1507,7 @@ export async function generateMotionSpecForRig(params: {
     const prefersRigidRootMotion = rigProfileReport.profile !== "articulated";
     const motionSpecModel = "gemini-3.1-pro-preview";
     const motionStrategyGuidance = rigProfileReport.profile === "rigid_object"
-        ? "This rig is effectively rigid. Realism must come from whole-object rootMotion with anticipation, acceleration, overshoot, and settle. Avoid internal deformation except for the smallest safe accents."
+        ? "This rig is effectively rigid. Realism must come from whole-object motion timing. Provide explicit rootMotion plus a wholeObjectMotion anchor recipe with anticipation, push, travel, impact, overshoot, or settle where appropriate. Avoid internal deformation except for the smallest safe accents."
         : rigProfileReport.profile === "limited_articulation"
             ? "This rig has limited articulation. Favor rootMotion and restrained primary-chain deformation. Avoid spreading large waves across secondary branches."
             : "This rig can support internal deformation. Use axialWaves for chain motion and rootMotion for believable weight shift and travel.";
@@ -1530,28 +1544,12 @@ Motion strategy guidance:
 ${motionStrategyGuidance}
 
 Rules:
-1. Output ONLY JSON.
-2. motionFamily is only a short reusable label for the requested motion. It is metadata, not a rigid built-in animation category.
-3. leadBones must reference exact bone IDs from the list.
-4. contacts must only reference exact bone IDs from the list.
-5. preferredView must be one of: ${availableViews.join(", ") || "view_default"}.
-6. locomotion.mode must be exactly one of: none, translate, arc, stop_at_contact, slide_on_contact, bounce_on_contact.
-7. locomotion.preferredDirection, when present, must be exactly one of: left, right, up, down, forward, backward.
-8. Keep the spec concise and physically plausible.
-9. Prefer lead bones that sit on the rig's dominant continuous chains, roots, or branch endpoints.
-10. leadBones and contacts must be drawable in preferredView.
-11. Stay comfortably inside usableRotationLimit where present. Treat rotationLimit as a hard stop, not a target.
-12. Restrict motion to the subject's identity and the rig motion affordance profile. Subjects with limited articulation should prefer whole-object translation, orientation shifts, or minimal internal deformation.
-13. Reusable actor actions are built for looping by default. The motion must close cleanly back onto frame 0 with no visible snap.
-14. If the requested action cannot be satisfied safely, return blockedReasons with concise human-readable reasons instead of forcing the motion.
-15. (CRITICAL) Provide explicit "axialWaves" when the rig can safely support internal deformation. You act as the core animator. Do NOT rely on fallback math.
-    - Set explicit phases (e.g., 0.0 for Leg A, 0.5 for Leg B to create alternating walking motion).
-    - Or sweeping generic waves (e.g. 0.0, 0.1, 0.2 down a spine for a fish tail or slithering snake).
-    - amplitudeDeg must be reasonable (e.g., 10-30 degrees for gentle motion, 40-70 for intense).
-    - frequency is cycles per clip and must be a whole number (1, 2, 3, ...) so the loop closes exactly on frame 0.
-16. (CRITICAL) Provide explicit "rootMotion" whenever realism depends on whole-object translation or weight shift. Use x, y, and rotation samples when useful for anticipation, drift, overshoot, recoil, or settle. Use flat 0 only if the subject should glide perfectly.
-17. For low-deformation or rigid subjects, realism must come primarily from rootMotion timing, spacing, and rotation, not from fake internal bending.
-18. There is no generic fallback synthesis for generated clips. If explicit rootMotion / axialWaves are missing where needed, the clip will be blocked.
+1. FORMATTING & SCHEMAS: Output ONLY JSON. Use exact bone/node IDs for 'leadBones' and 'contacts'. All enums (view, locomotion.mode, locomotion.preferredDirection) must strictly match the available values.
+2. PHYSICS & LIMITS: Stay comfortably inside 'usableRotationLimit'. Respect the 'motion affordance profile' (favor translation/root-motion for rigid/limited subjects). Make sure looping clips close cleanly onto frame 0.
+3. ANIMATION STRATEGY (CRITICAL):
+   - Use 'rotationTracks' to explicitly keyframe local rotation for semantic limbs (walking, running, kicking).
+   - Use 'axialWaves' ONLY for procedural, flowing, or breathing motions (tails, snakes).
+   - Provide explicit 'rootMotion' or 'wholeObjectMotion' anchors for weight-shifts, hopping, or travel realism, especially for rigid subjects.
 
 JSON shape:
 {
@@ -1562,16 +1560,39 @@ JSON shape:
   "preferredView": "view_side_right",
   "locomotion": { "mode": "translate", "preferredDirection": "right" },
   "contacts": [{ "boneId": "segment_03", "target": "wall", "phaseStart": 0, "phaseEnd": 1 }],
-  "leadBones": ["segment_00", "segment_03"],
-  "axialWaves": [
-    { "nodeIds": ["segment_00", "segment_01", "segment_02", "segment_03"], "amplitudeDeg": 25, "frequency": 1, "phase": 0, "falloff": "root_bias" },
-    { "nodeIds": ["fin_top"], "amplitudeDeg": 15, "frequency": 2, "phase": 0.5, "falloff": "uniform" }
+  "leadBones": ["hip_l", "hip_r"],
+  "rotationTracks": [
+    {
+      "nodeId": "hip_l",
+      "samples": [
+        { "t": 0.0, "rotation": 25 },
+        { "t": 0.5, "rotation": -25 },
+        { "t": 1.0, "rotation": 25 }
+      ]
+    },
+    {
+      "nodeId": "hip_r",
+      "samples": [
+        { "t": 0.0, "rotation": -25 },
+        { "t": 0.5, "rotation": 25 },
+        { "t": 1.0, "rotation": -25 }
+      ]
+    }
   ],
   "rootMotion": [
     { "t": 0.0, "y": 0 }, { "t": 0.25, "y": -4 }, { "t": 0.5, "y": 0 }, { "t": 0.75, "y": 4 }, { "t": 1.0, "y": 0 }
   ],
+  "wholeObjectMotion": {
+    "anchors": [
+      { "t": 0.0, "label": "anticipation", "x": 0, "y": 0, "rotation": 0, "scale": 1.0 },
+      { "t": 0.2, "label": "push", "x": -4, "y": 2, "rotation": -6, "scale": 0.98 },
+      { "t": 0.55, "label": "travel", "x": 10, "y": -3, "rotation": 4, "scale": 1.0 },
+      { "t": 0.82, "label": "overshoot", "x": 2, "y": 1, "rotation": -2, "scale": 1.01 },
+      { "t": 1.0, "label": "settle", "x": 0, "y": 0, "rotation": 0, "scale": 1.0 }
+    ]
+  },
   "blockedReasons": [],
-  "notes": "Continuous spine-led sweeping loop with fluid root bobbing."
+  "notes": "Semantic walk cycle loop with keyframed leg wings and root bobbing."
 }
 `;
 
@@ -1633,7 +1654,7 @@ Return a revised JSON motion spec only.`
             `The previous spec scored ${qualityGrade.score}/5 for the rigid_root_motion quality gate and was rejected.`,
             ...qualityGrade.reasons.map((reason) => `- ${reason}`),
             `Current metrics: rootSampleCount=${qualityGrade.metrics.rootSampleCount}, meaningfulInteriorRootSamples=${qualityGrade.metrics.meaningfulInteriorRootSamples}, activeRootAxes=${qualityGrade.metrics.activeRootAxes.join(", ") || "none"}, waveCount=${qualityGrade.metrics.waveCount}, maxWaveAmplitudeDeg=${qualityGrade.metrics.maxWaveAmplitudeDeg}.`,
-            "Revise toward richer whole-object rootMotion timing and less internal deformation unless the topology safely supports it.",
+            "Revise toward richer whole-object rootMotion timing, an explicit wholeObjectMotion anchor recipe, and less internal deformation unless the topology safely supports it.",
         ].join("\n");
     }
 

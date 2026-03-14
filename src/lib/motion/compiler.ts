@@ -1,4 +1,4 @@
-import { DraftsmanData } from "../schema/rig";
+import { DraftsmanData, RigMotionIntent } from "../schema/rig";
 import {
   BackgroundAmbientBinding,
   CompiledSceneData,
@@ -12,9 +12,8 @@ import {
   getStageDims,
 } from "../schema/story";
 import { ensureRigIK } from "../ik/graph";
-import { inferRigMotionAffordance } from "./affordance";
+import { inferRigMotionAffordance, inferRigProfile } from "./affordance";
 import { inferAutoTargetTransform, motionNeedsTarget, normalizeMotionKey, suggestMotionAliases } from "./semantics";
-import { detectAmbientIdsFromSvg } from "./ambient";
 import { clampTargetAgainstObstacles, detectSceneObstacles } from "./collision";
 import { motionClipToIKPlayback, resolvePlayableMotionClip } from "./compiled_ik";
 
@@ -47,9 +46,17 @@ export function inferTransformOnlyPlaybackPolicy(
 
   const normalizedRig = ensureRigIK(rig);
   const affordance = inferRigMotionAffordance(normalizedRig);
+  const rigProfileReport = normalizedRig.rig_data.profile_report ?? inferRigProfile(normalizedRig);
   const confidence = normalizedRig.rig_data.ik?.aiReport?.confidence ?? 1;
   const attachmentWarnings = countAttachmentWarnings(normalizedRig);
   const minimalTopology = affordance.primaryChainLength <= 2 && affordance.effectors <= 1;
+
+  if (rigProfileReport.profile === "rigid_object") {
+    return {
+      prefer: true,
+      reason: `rig profile ${rigProfileReport.profile}`,
+    };
+  }
 
   if (affordance.deformationBudget <= 0.28) {
     return {
@@ -62,6 +69,13 @@ export function inferTransformOnlyPlaybackPolicy(
     return {
       prefer: true,
       reason: `low IK confidence (${confidence.toFixed(2)}) with ${attachmentWarnings} attachment warnings`,
+    };
+  }
+
+  if (rigProfileReport.profile === "limited_articulation" && confidence < 0.5 && attachmentWarnings >= 1) {
+    return {
+      prefer: true,
+      reason: `limited articulation with soft IK confidence (${confidence.toFixed(2)})`,
     };
   }
 
@@ -84,8 +98,11 @@ function resolveTransformOnlyView(
   if (!rig) return clipView;
   const normalizedRig = ensureRigIK(rig);
   const availableViews = Object.keys(normalizedRig.rig_data.ik?.views || {}).sort();
+  
+  // Always respect explicit clip views if they exist
   if (clipView && availableViews.includes(clipView)) return clipView;
 
+  // Otherwise infer based on travel distance, falling back to default view
   const deltaX = (finalTarget?.x ?? startTransform.x) - startTransform.x;
   if (deltaX < -10 && availableViews.includes("view_side_left")) return "view_side_left";
   if (deltaX > 10 && availableViews.includes("view_side_right")) return "view_side_right";
@@ -108,10 +125,6 @@ function shouldClampTargetAgainstObstacles(action: StoryBeatData["actions"][numb
   return !action.target_spatial_transform;
 }
 
-function distance(a: SpatialTransform, b: SpatialTransform): number {
-  return Math.hypot(b.x - a.x, b.y - a.y);
-}
-
 function roundTime(value: number): number {
   return Number(value.toFixed(3));
 }
@@ -120,12 +133,170 @@ function round2(value: number): number {
   return Number(value.toFixed(2));
 }
 
-function clamp01(value: number): number {
-  return Math.max(0, Math.min(1, value));
+function normalizeDegrees(value: number): number {
+  let next = value;
+  while (next > 180) next -= 360;
+  while (next < -180) next += 360;
+  return round2(next);
+}
+
+type WholeObjectMotionSample = {
+  t: number;
+  x: number;
+  y: number;
+  rotation: number;
+  scale: number;
+};
+
+function lerp(from: number, to: number, alpha: number): number {
+  return round2(from + ((to - from) * alpha));
+}
+
+function lerpAngle(from: number, to: number, alpha: number): number {
+  const delta = normalizeDegrees(to - from);
+  return normalizeDegrees(from + (delta * alpha));
 }
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function unwrapDegreesSequence(values: number[]): number[] {
+  if (values.length === 0) return [];
+  const unwrapped = [values[0]];
+  for (let index = 1; index < values.length; index += 1) {
+    let next = values[index];
+    let delta = next - unwrapped[index - 1];
+    while (delta > 180) {
+      next -= 360;
+      delta = next - unwrapped[index - 1];
+    }
+    while (delta < -180) {
+      next += 360;
+      delta = next - unwrapped[index - 1];
+    }
+    unwrapped.push(next);
+  }
+  return unwrapped;
+}
+
+function catmullRomInterpolate(p0: number, p1: number, p2: number, p3: number, alpha: number): number {
+  const a0 = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+  const a1 = p0 - 2.5 * p1 + 2 * p2 - 0.5 * p3;
+  const a2 = -0.5 * p0 + 0.5 * p2;
+  const a3 = p1;
+  return (((a0 * alpha + a1) * alpha + a2) * alpha) + a3;
+}
+
+function findSampleSegment(samples: WholeObjectMotionSample[], normalizedTime: number): number {
+  for (let index = 0; index < samples.length - 1; index += 1) {
+    if (normalizedTime <= samples[index + 1].t) {
+      return index;
+    }
+  }
+  return samples.length - 2;
+}
+
+function sampleWholeObjectAxis(
+  samples: WholeObjectMotionSample[],
+  normalizedTime: number,
+  accessor: (sample: WholeObjectMotionSample) => number,
+): number {
+  if (samples.length === 0) return 0;
+  if (normalizedTime <= samples[0].t) return accessor(samples[0]);
+  if (normalizedTime >= samples[samples.length - 1].t) return accessor(samples[samples.length - 1]);
+
+  const segmentIndex = findSampleSegment(samples, normalizedTime);
+  const s0 = samples[Math.max(0, segmentIndex - 1)];
+  const s1 = samples[segmentIndex];
+  const s2 = samples[Math.min(samples.length - 1, segmentIndex + 1)];
+  const s3 = samples[Math.min(samples.length - 1, segmentIndex + 2)];
+  const span = Math.max(0.0001, s2.t - s1.t);
+  const alpha = clamp((normalizedTime - s1.t) / span, 0, 1);
+
+  return catmullRomInterpolate(accessor(s0), accessor(s1), accessor(s2), accessor(s3), alpha);
+}
+
+function normalizeWholeObjectMotionSamples(params: {
+  wholeObjectMotion?: RigMotionIntent["wholeObjectMotion"];
+  rootMotionSamples?: Array<{ t: number; x?: number; y?: number; rotation?: number }>;
+}): WholeObjectMotionSample[] {
+  const wholeObjectAnchors = params.wholeObjectMotion?.anchors || [];
+  const source = wholeObjectAnchors.length >= 2
+    ? wholeObjectAnchors.map((anchor) => ({
+        t: anchor.t,
+        x: anchor.x,
+        y: anchor.y,
+        rotation: anchor.rotation,
+        scale: anchor.scale,
+      }))
+    : (params.rootMotionSamples || []).map((sample) => ({
+        t: sample.t,
+        x: sample.x,
+        y: sample.y,
+        rotation: sample.rotation,
+        scale: 1,
+      }));
+
+  const byTime = new Map<number, WholeObjectMotionSample>();
+  source
+    .filter((sample) => Number.isFinite(sample.t))
+    .forEach((sample) => {
+      const t = clamp(sample.t, 0, 1);
+      byTime.set(t, {
+        t: roundTime(t),
+        x: typeof sample.x === "number" ? round2(sample.x) : 0,
+        y: typeof sample.y === "number" ? round2(sample.y) : 0,
+        rotation: typeof sample.rotation === "number" ? normalizeDegrees(sample.rotation) : 0,
+        scale: typeof sample.scale === "number" ? round2(sample.scale) : 1,
+      });
+    });
+
+  const ordered = Array.from(byTime.values()).sort((left, right) => left.t - right.t);
+  if (ordered.length < 2) return [];
+
+  const unwrappedRotations = unwrapDegreesSequence(ordered.map((sample) => sample.rotation));
+  return ordered.map((sample, index) => ({
+    ...sample,
+    rotation: unwrappedRotations[index],
+  }));
+}
+
+function buildNormalizedBakeTimes(samples: WholeObjectMotionSample[]): number[] {
+  const times = new Set<number>([0, 1]);
+  samples.forEach((sample) => times.add(roundTime(sample.t)));
+  const subdivisionCount = Math.max(16, Math.min(48, (samples.length - 1) * 8));
+  for (let index = 0; index <= subdivisionCount; index += 1) {
+    times.add(roundTime(index / subdivisionCount));
+  }
+  return Array.from(times).sort((left, right) => left - right);
+}
+
+function resolvePreferredTravelVector(
+  startTransform: SpatialTransform,
+  endTransform: SpatialTransform,
+  preferredDirection?: RigMotionIntent["locomotion"]["direction"],
+): { x: number; y: number } {
+  const deltaX = endTransform.x - startTransform.x;
+  const deltaY = endTransform.y - startTransform.y;
+  const length = Math.hypot(deltaX, deltaY);
+  if (length > 0.001) {
+    return { x: deltaX / length, y: deltaY / length };
+  }
+
+  switch (preferredDirection) {
+    case "left":
+    case "backward":
+      return { x: -1, y: 0 };
+    case "up":
+      return { x: 0, y: -1 };
+    case "down":
+      return { x: 0, y: 1 };
+    case "right":
+    case "forward":
+    default:
+      return { x: 1, y: 0 };
+  }
 }
 
 function clampSpatialTransformToStage(transform: SpatialTransform, stageW = 1920, stageH = 1080): SpatialTransform {
@@ -136,8 +307,117 @@ function clampSpatialTransformToStage(transform: SpatialTransform, stageW = 1920
     x: round2(clamp(transform.x, marginX, stageW - marginX)),
     y: round2(clamp(transform.y, marginY, stageH - marginY)),
     scale: safeScale,
+    rotation: typeof transform.rotation === "number" ? normalizeDegrees(transform.rotation) : undefined,
+    flip_x: transform.flip_x,
+    flip_y: transform.flip_y,
     z_index: Math.round(clamp(transform.z_index, 0, 100)),
   };
+}
+
+function interpolateTransformTrackAtTime(
+  track: TransformKeyframe[],
+  time: number,
+): TransformKeyframe | undefined {
+  if (track.length === 0) return undefined;
+  const ordered = [...track].sort((left, right) => left.time - right.time);
+  if (time <= ordered[0].time) return ordered[0];
+  if (time >= ordered[ordered.length - 1].time) return ordered[ordered.length - 1];
+
+  for (let index = 0; index < ordered.length - 1; index += 1) {
+    const current = ordered[index];
+    const next = ordered[index + 1];
+    if (time < current.time || time > next.time) continue;
+    const span = Math.max(0.0001, next.time - current.time);
+    const alpha = (time - current.time) / span;
+    return {
+      time: roundTime(time),
+      x: lerp(current.x, next.x, alpha),
+      y: lerp(current.y, next.y, alpha),
+      scale: lerp(current.scale, next.scale, alpha),
+      rotation: lerpAngle(current.rotation ?? 0, next.rotation ?? current.rotation ?? 0, alpha),
+      flip_x: alpha < 0.5 ? current.flip_x : next.flip_x,
+      flip_y: alpha < 0.5 ? current.flip_y : next.flip_y,
+      z_index: alpha < 0.5 ? current.z_index : next.z_index,
+    };
+  }
+
+  return ordered[ordered.length - 1];
+}
+
+function blendRootMotionIntoTransformTrack(params: {
+  transformTrack: TransformKeyframe[];
+  startTime: number;
+  duration: number;
+  rootMotionSamples?: Array<{ t: number; x?: number; y?: number; rotation?: number }>;
+  wholeObjectMotion?: RigMotionIntent["wholeObjectMotion"];
+  preferredDirection?: RigMotionIntent["locomotion"]["direction"];
+  stageW?: number;
+  stageH?: number;
+}): TransformKeyframe[] {
+  const {
+    transformTrack,
+    startTime,
+    duration,
+    rootMotionSamples,
+    wholeObjectMotion,
+    preferredDirection,
+    stageW = 1920,
+    stageH = 1080,
+  } = params;
+  const motionSamples = normalizeWholeObjectMotionSamples({
+    wholeObjectMotion,
+    rootMotionSamples,
+  });
+
+  if (motionSamples.length < 2 || transformTrack.length === 0) {
+    return transformTrack;
+  }
+
+  const orderedTrack = uniqueKeyframes(transformTrack);
+  const safeDuration = Math.max(0.0001, duration);
+  const endTime = roundTime(startTime + safeDuration);
+  const baseTrack = orderedTrack.length > 1
+    ? orderedTrack
+    : [
+        orderedTrack[0],
+        { ...orderedTrack[0], time: endTime },
+      ];
+  const reference = motionSamples[0];
+  const start = baseTrack[0];
+  const end = baseTrack[baseTrack.length - 1];
+  const forward = resolvePreferredTravelVector(start, end, preferredDirection);
+  const bakeTimes = buildNormalizedBakeTimes(motionSamples);
+
+  const rootMotionKeyframes = bakeTimes.map((normalizedTime) => {
+    const time = roundTime(startTime + (safeDuration * normalizedTime));
+    const base = interpolateTransformTrackAtTime(baseTrack, time);
+    if (!base) return undefined;
+
+    const sample = {
+      x: sampleWholeObjectAxis(motionSamples, normalizedTime, (motion) => motion.x),
+      y: sampleWholeObjectAxis(motionSamples, normalizedTime, (motion) => motion.y),
+      rotation: sampleWholeObjectAxis(motionSamples, normalizedTime, (motion) => motion.rotation),
+      scale: sampleWholeObjectAxis(motionSamples, normalizedTime, (motion) => motion.scale),
+    };
+    const scale = Math.max(0.18, base.scale);
+    const localX = sample.x - reference.x;
+    const localY = sample.y - reference.y;
+    const localRotation = sample.rotation - reference.rotation;
+    const scaleMultiplier = Math.max(0.6, sample.scale / Math.max(0.01, reference.scale));
+
+    return {
+      ...clampSpatialTransformToStage({
+        ...base,
+        x: round2(base.x + (localX * scale * forward.x)),
+        y: round2(base.y + (localX * scale * forward.y) + (localY * scale)),
+        scale: round2(base.scale * scaleMultiplier),
+        rotation: normalizeDegrees((base.rotation ?? 0) + localRotation),
+      }, stageW, stageH),
+      time,
+    };
+  }).filter((sample): sample is TransformKeyframe => Boolean(sample));
+
+  return uniqueKeyframes([...baseTrack, ...rootMotionKeyframes]);
 }
 
 function buildTransformTrackForBinding(params: {
@@ -149,6 +429,9 @@ function buildTransformTrackForBinding(params: {
   finalTarget?: SpatialTransform;
   collisionObstacle?: SceneObstacle | null;
   collisionBehavior: "halt" | "slide" | "bounce";
+  rootMotionSamples?: Array<{ t: number; x?: number; y?: number; rotation?: number }>;
+  wholeObjectMotion?: RigMotionIntent["wholeObjectMotion"];
+  preferredDirection?: RigMotionIntent["locomotion"]["direction"];
   stageW?: number;
   stageH?: number;
 }): { transformTrack: TransformKeyframe[]; endTransform?: SpatialTransform; stopTime?: number } {
@@ -161,6 +444,9 @@ function buildTransformTrackForBinding(params: {
     finalTarget,
     collisionObstacle,
     collisionBehavior,
+    rootMotionSamples,
+    wholeObjectMotion,
+    preferredDirection,
     stageW = 1920,
     stageH = 1080,
   } = params;
@@ -171,8 +457,18 @@ function buildTransformTrackForBinding(params: {
   ];
 
   if (!finalTarget || !motionNeedsTarget(motionKey)) {
-    return {
+    const enrichedTrack = blendRootMotionIntoTransformTrack({
       transformTrack,
+      startTime,
+      duration,
+      rootMotionSamples,
+      wholeObjectMotion,
+      preferredDirection,
+      stageW,
+      stageH,
+    });
+    return {
+      transformTrack: enrichedTrack,
       endTransform: undefined,
     };
   }
@@ -182,8 +478,18 @@ function buildTransformTrackForBinding(params: {
       ...clampSpatialTransformToStage(finalTarget, stageW, stageH),
       time: endTime,
     });
-    return {
+    const enrichedTrack = blendRootMotionIntoTransformTrack({
       transformTrack,
+      startTime,
+      duration,
+      rootMotionSamples,
+      wholeObjectMotion,
+      preferredDirection,
+      stageW,
+      stageH,
+    });
+    return {
+      transformTrack: enrichedTrack,
       endTransform: clampSpatialTransformToStage(finalTarget, stageW, stageH),
     };
   }
@@ -192,6 +498,7 @@ function buildTransformTrackForBinding(params: {
     x: finalTarget.x,
     y: finalTarget.y,
     scale: finalTarget.scale,
+    rotation: finalTarget.rotation,
     z_index: finalTarget.z_index,
   }, stageW, stageH);
 
@@ -200,8 +507,18 @@ function buildTransformTrackForBinding(params: {
       ...stopTransform,
       time: endTime,
     });
-    return {
+    const enrichedTrack = blendRootMotionIntoTransformTrack({
       transformTrack,
+      startTime,
+      duration,
+      rootMotionSamples,
+      wholeObjectMotion,
+      preferredDirection,
+      stageW,
+      stageH,
+    });
+    return {
+      transformTrack: enrichedTrack,
       endTransform: stopTransform,
       stopTime: endTime,
     };
@@ -224,8 +541,18 @@ function buildTransformTrackForBinding(params: {
       ...slideTransform,
       time: endTime,
     });
-    return {
+    const enrichedTrack = blendRootMotionIntoTransformTrack({
       transformTrack,
+      startTime,
+      duration,
+      rootMotionSamples,
+      wholeObjectMotion,
+      preferredDirection,
+      stageW,
+      stageH,
+    });
+    return {
+      transformTrack: enrichedTrack,
       endTransform: slideTransform,
       stopTime: endTime,
     };
@@ -250,8 +577,18 @@ function buildTransformTrackForBinding(params: {
     ...bounceTransform,
     time: endTime,
   });
-  return {
+  const enrichedTrack = blendRootMotionIntoTransformTrack({
     transformTrack,
+    startTime,
+    duration,
+    rootMotionSamples,
+    wholeObjectMotion,
+    preferredDirection,
+    stageW,
+    stageH,
+  });
+  return {
+    transformTrack: enrichedTrack,
     endTransform: bounceTransform,
     stopTime: endTime,
   };
@@ -261,7 +598,7 @@ function uniqueKeyframes(track: TransformKeyframe[]): TransformKeyframe[] {
   const byKey = new Map<string, TransformKeyframe>();
   for (const keyframe of track) {
     byKey.set(
-      `${keyframe.time}:${keyframe.x}:${keyframe.y}:${keyframe.scale}:${keyframe.z_index}`,
+      `${keyframe.time}:${keyframe.x}:${keyframe.y}:${keyframe.scale}:${keyframe.rotation ?? 0}:${keyframe.flip_x ?? ""}:${keyframe.flip_y ?? ""}:${keyframe.z_index}`,
       keyframe,
     );
   }
@@ -286,6 +623,9 @@ function resolvePreviousTransform(
       x: latestBinding.end_transform.x,
       y: latestBinding.end_transform.y,
       scale: latestBinding.end_transform.scale,
+      rotation: latestBinding.end_transform.rotation,
+      flip_x: latestBinding.end_transform.flip_x,
+      flip_y: latestBinding.end_transform.flip_y,
       z_index: latestBinding.end_transform.z_index,
     };
   }
@@ -295,6 +635,9 @@ function resolvePreviousTransform(
       x: latestTransform.x,
       y: latestTransform.y,
       scale: latestTransform.scale,
+      rotation: latestTransform.rotation,
+      flip_x: latestTransform.flip_x,
+      flip_y: latestTransform.flip_y,
       z_index: latestTransform.z_index,
     };
   }
@@ -325,6 +668,9 @@ export function compileBeatToScene(
       x: action.spatial_transform?.x ?? previousTransform?.x ?? stageW / 2,
       y: action.spatial_transform?.y ?? previousTransform?.y ?? Math.round(stageH * 0.88),
       scale: action.spatial_transform?.scale ?? previousTransform?.scale ?? 0.5,
+      rotation: action.spatial_transform?.rotation ?? previousTransform?.rotation,
+      flip_x: action.spatial_transform?.flip_x ?? previousTransform?.flip_x,
+      flip_y: action.spatial_transform?.flip_y ?? previousTransform?.flip_y,
       z_index: action.spatial_transform?.z_index ?? previousTransform?.z_index ?? 10,
     }, stageW, stageH);
     const inferredTarget = !action.target_spatial_transform
@@ -335,7 +681,10 @@ export function compileBeatToScene(
           x: action.target_spatial_transform.x,
           y: action.target_spatial_transform.y,
           scale: action.target_spatial_transform.scale,
-          z_index: startTransform.z_index,
+          rotation: action.target_spatial_transform.rotation ?? startTransform.rotation,
+          flip_x: action.target_spatial_transform.flip_x,
+          flip_y: action.target_spatial_transform.flip_y,
+          z_index: action.target_spatial_transform.z_index ?? startTransform.z_index,
         }
       : inferredTarget
         ? {
@@ -355,6 +704,8 @@ export function compileBeatToScene(
                 x: clampedResolvedTarget.x,
                 y: clampedResolvedTarget.y,
                 scale: clampedResolvedTarget.scale,
+                flip_x: clampedResolvedTarget.flip_x,
+                flip_y: clampedResolvedTarget.flip_y,
                 z_index: clampedResolvedTarget.z_index,
               }
             : undefined,
@@ -369,22 +720,13 @@ export function compileBeatToScene(
           x: collisionAdjusted.target.x,
           y: collisionAdjusted.target.y,
           scale: collisionAdjusted.target.scale,
+          rotation: collisionAdjusted.target.rotation,
+          flip_x: collisionAdjusted.target.flip_x,
+          flip_y: collisionAdjusted.target.flip_y,
           z_index: collisionAdjusted.target.z_index,
         }, stageW, stageH)
         : undefined;
     const collisionBehavior = inferCollisionBehavior(action, beat.narrative);
-    const bakedMotion = buildTransformTrackForBinding({
-      motionKey,
-      startTime,
-      duration,
-      startTransform,
-      resolvedTarget: clampedResolvedTarget,
-      finalTarget,
-      collisionObstacle: collisionAdjusted.collision,
-      collisionBehavior,
-      stageW,
-      stageH,
-    });
     const resolvedClipId = resolveClipId(rig, motionKey);
     const clipView = resolvedClipId ? resolveClipView(rig, resolvedClipId) : undefined;
     const motionClip = resolvedClipId ? rig?.rig_data.motion_clips?.[resolvedClipId] : undefined;
@@ -405,6 +747,21 @@ export function compileBeatToScene(
         (!resolvedClipId && (motionNeedsTarget(motionKey) || Boolean(finalTarget)))
       ),
     );
+    const bakedMotion = buildTransformTrackForBinding({
+      motionKey,
+      startTime,
+      duration,
+      startTransform,
+      resolvedTarget: clampedResolvedTarget,
+      finalTarget,
+      collisionObstacle: collisionAdjusted.collision,
+      collisionBehavior,
+      rootMotionSamples: useBaseObjectBinding ? playableClip?.intent.rootMotion : undefined,
+      wholeObjectMotion: useBaseObjectBinding ? playableClip?.intent.wholeObjectMotion : undefined,
+      preferredDirection: playableClip?.intent.locomotion.direction,
+      stageW,
+      stageH,
+    });
     const binding = useBaseObjectBinding
       ? ({
           id: `${actorId}:${actionIndex}:${BASE_OBJECT_CLIP_ID}`,
@@ -421,6 +778,7 @@ export function compileBeatToScene(
           collision_behavior: collisionBehavior,
           start_transform: startTransform,
           end_transform: bakedMotion.endTransform,
+          ik_playback: ikPlayback,
           collision: collisionAdjusted.collision
             ? {
                 obstacle_id: collisionAdjusted.collision.id,

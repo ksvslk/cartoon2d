@@ -15,6 +15,7 @@ export function IKInspector({
   invalidNodeIds,
   onTogglePin,
   onUpdatePin,
+  onUpdateLimit,
 }: {
   graph: PoseGraph;
   layout: PoseLayout;
@@ -23,6 +24,7 @@ export function IKInspector({
   invalidNodeIds: Set<string>;
   onTogglePin: (nodeId: string) => void;
   onUpdatePin: (nodeId: string) => void;
+  onUpdateLimit?: (nodeId: string, limit: [number, number] | undefined) => void;
 }) {
   const node = selectedNodeId ? graph.nodeMap.get(selectedNodeId) : undefined;
   const world = node ? layout.positions[node.id] : undefined;
@@ -75,10 +77,44 @@ export function IKInspector({
           </div>
 
           <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-3 dark:border-neutral-800 dark:bg-neutral-900/70">
-            <div className="mb-2 text-[10px] uppercase tracking-[0.14em] text-neutral-500">Angle Limit</div>
-            <div className="font-medium text-neutral-900 dark:text-neutral-100">
-              {node.rotationLimit ? `${fmt(node.rotationLimit[0])}° to ${fmt(node.rotationLimit[1])}°` : "None"}
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">Angle Limit</span>
+              {onUpdateLimit && (
+                <button
+                  type="button"
+                  onClick={() => onUpdateLimit(node.id, undefined)}
+                  className="text-[9px] uppercase tracking-wider text-cyan-600 hover:text-cyan-700 dark:text-cyan-500 dark:hover:text-cyan-400"
+                >
+                  Clear
+                </button>
+              )}
             </div>
+            {onUpdateLimit ? (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[9px] font-semibold text-neutral-500">Min (°)</label>
+                  <input
+                    type="number"
+                    className="w-full rounded bg-white px-2 py-1.5 text-xs text-neutral-900 border border-neutral-200 mt-0.5 focus:border-cyan-500 focus:outline-none dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-100"
+                    value={node.rotationLimit?.[0] ?? -180}
+                    onChange={(e) => onUpdateLimit(node.id, [Number(e.target.value), node.rotationLimit?.[1] ?? 180])}
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-semibold text-neutral-500">Max (°)</label>
+                  <input
+                    type="number"
+                    className="w-full rounded bg-white px-2 py-1.5 text-xs text-neutral-900 border border-neutral-200 mt-0.5 focus:border-cyan-500 focus:outline-none dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-100"
+                    value={node.rotationLimit?.[1] ?? 180}
+                    onChange={(e) => onUpdateLimit(node.id, [node.rotationLimit?.[0] ?? -180, Number(e.target.value)])}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="font-medium text-neutral-900 dark:text-neutral-100">
+                {node.rotationLimit ? `${fmt(node.rotationLimit[0])}° to ${fmt(node.rotationLimit[1])}°` : "None"}
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap gap-2">
