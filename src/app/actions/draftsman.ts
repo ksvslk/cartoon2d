@@ -865,7 +865,11 @@ ${requestedViewGuide}
 ${requestedViewPrefixGuide}
    Example bone IDs: \`front__core\`, \`side_left__segment_a\`, \`3q_right__branch_outer\`, \`rear_left_low__root\`.
 4. **Target Views (strict)**: The \`requiredViews\` list defines exactly which view containers you should output. Do NOT generate extra view groups.
-5. **Sensible Grouping Minimal Over-rigging**: Group articulating limbs logicially. Details like hair, clothing, or held items can be kept as separate groups if they need to move independently, or merged if not.
+5. **Logical 2D Puppet Assembly (CRITICAL)**: You are building a 2D cutout animation puppet, NOT doing a 1:1 trace of the pixels.
+   - Limbs and body parts MUST physically overlap at the joints like paper-craft cutouts.
+   - Do NOT cut off an arm or a leg just because clothing or another body part is blocking it in the reference image. The hidden part of the limb must still be drawn so it can rotate around its pivot point without exposing a gap!
+   - Draw full, rounded overlapping joints (shoulders, hips, elbows, knees) so parts can rotate smoothly.
+   - Prioritize logical, functional anatomy over perfectly cloning the exact silhouette of the reference image. A logically assembled rig that looks 90% like the subject is infinitely better than a disjointed 100% clone pixel-trace.
 6. **No Flat JPEGs**: Do not embed raster images using <image>. You must draw the subject purely in vector paths (<path>, <circle>, <rect>, etc).
 7. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
    - Furthest background limbs (like \`rear_leg\`) MUST appear mathematically first in the \`<g>\` block.
