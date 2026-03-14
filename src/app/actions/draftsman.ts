@@ -866,7 +866,8 @@ ${requestedViewGuide}
 ${requestedViewPrefixGuide}
 3. **Skeleton-First IK Ragdoll (CRITICAL)**: You are building a functional, unbroken IK skeletal ragdoll. The art is just skin over that skeleton.
    - You MUST guarantee a continuous, unbroken skeletal chain for the main body and all four limbs (even if visually obscured by clothing, hair, or armor).
-   - NEVER fuse joints together. NEVER cut off hidden limbs. Draw the full limb so it can rotate around its pivot continuously.
+   - NEVER fuse joints together. NEVER cut off hidden limbs. 
+   - **PERFECT CIRCULAR JOINTS & DEEP OVERLAPS**: The ends of every limb segment (shoulders, elbows, hips, knees) MUST be drawn with perfectly rounded, circular caps. Do NOT draw flat lines at the top of an arm or leg. The limb geometry MUST extend deeply inside the parent body so that when it rotates 90 degrees around its pivot, no sharp corners or gaps are exposed!
    - Any external masses (dresses, cloaks, long hair, large props) MUST be drawn as secondary, overlapping panels anchored to the skeleton (e.g. pinned at the waist or neck) so they can swing freely without breaking the underlying ragdoll.
    - Group related parts logically (e.g. \`arm_lower\` inside \`arm_upper\`).
 4. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
