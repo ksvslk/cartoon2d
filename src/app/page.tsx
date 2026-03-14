@@ -8,6 +8,7 @@ import { processScenePromptStream, processSceneImageEdit } from "@/app/actions/s
 import { ClipBinding, CompiledSceneData, SpatialTransform, StoryBeatData, StoryGenerationData, getStageDims, StageOrientation } from "@/lib/schema/story";
 import { loadStoryFromStorage, saveStoryToStorage, clearStoryStorage, getProjectsList, createProject, deleteProject, updateProjectTitle, ProjectMetadata, loadActorIdentities, saveActorIdentity, updateProjectOrientation } from "@/lib/storage/db";
 import { generateMotionClipForRig, processDraftsmanPrompt, suggestRigViewsFromRaster, type DraftQualityMode, type DraftQualityReview, type MotionDebugReport } from "@/app/actions/draftsman";
+import { generateSpeechTTS } from "@/app/actions/tts";
 import { processSetDesignerPrompt } from "@/app/actions/set_designer";
 import { DraftsmanData } from "@/lib/schema/rig";
 import { RigViewer } from "@/components/RigViewer";
@@ -92,7 +93,7 @@ function buildClipPreviewScene(actorId: string, clipName: string, rig: Draftsman
   const beat: StoryBeatData = {
     scene_number: 1,
     narrative: `${actorId} previewing ${clipName}`,
-    camera: { zoom: 1, pan: "static" },
+    camera: { zoom: 1, x: cx, y: cy, rotation: 0 },
     audio: [],
     actions: [
       {
@@ -715,6 +716,8 @@ export default function Home() {
   const [draftingBackgroundSceneIndex, setDraftingBackgroundSceneIndex] = useState<number | null>(null);
   const [isDraftingBackground, setIsDraftingBackground] = useState(false);
   const [draftBackgroundError, setDraftBackgroundError] = useState<string | null>(null);
+  
+  const [generatingAudioIndex, setGeneratingAudioIndex] = useState<number | null>(null);
 
   // Auto-Animate Macro State
   const [animatingSceneIndex, setAnimatingSceneIndex] = useState<number | null>(null);
@@ -751,6 +754,7 @@ export default function Home() {
   const [selectedActionIndex, setSelectedActionIndex] = useState<number | null>(null);
   const [selectedKeyframe, setSelectedKeyframe] = useState<'start' | 'end' | null>(null);
   const [selectedActorId, setSelectedActorId] = useState<string | null>(null);
+  const [isCameraSelected, setIsCameraSelected] = useState<boolean>(false);
   const [scenePreviewIndex, setScenePreviewIndex] = useState<number | null>(null);
   const [loopPlayback, setLoopPlayback] = useState(false);
   const [clipPreviewState, setClipPreviewState] = useState<{ actorId: string; clipName: string } | null>(null);
@@ -763,6 +767,7 @@ export default function Home() {
   const [playheadPos, setPlayheadPos] = useState<number>(0);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const [fps, setFps] = useState<12 | 24 | 30 | 60>(60);
+  const [timelineZoom, setTimelineZoom] = useState<number>(1);
   const isPlayingRef = useRef(isPlaying);
   const livePlayheadPosRef = useRef(0);
   const lastPlayheadUiSyncAtRef = useRef(0);
@@ -848,6 +853,12 @@ export default function Home() {
       acc.tokens += imageCost?.tokens || 0;
       acc.cost += beat.compile_report?.scene_cost_estimate || 0;
       acc.tokens += beat.compile_report?.total_tokens || 0;
+      
+      const audioCost = beat.audio?.reduce((sum, a) => sum + (a.generation_cost?.cost || 0), 0) || 0;
+      const audioChars = beat.audio?.reduce((sum, a) => sum + (a.generation_cost?.characters || 0), 0) || 0;
+      acc.cost += audioCost;
+      acc.tokens += audioChars;
+
       if (beat.compiled_scene) acc.compiledScenes += 1;
       return acc;
     }, { cost: 0, tokens: 0, compiledScenes: 0 });
@@ -1039,6 +1050,62 @@ export default function Home() {
       window.removeEventListener("mouseup", handleMouseUp);
     };
   }, [isDraggingPlayhead]);
+
+
+  // Audio Generation
+  const handleGenerateVoices = async (sceneIndex: number) => {
+    if (!storyData || !storyData.beats[sceneIndex]) return;
+    try {
+      setGeneratingAudioIndex(sceneIndex);
+      const beat = storyData.beats[sceneIndex];
+      const prevAudio = beat.audio || [];
+      
+      const audioToGenerate = prevAudio.filter(a => a.type === 'dialogue' && a.text && !a.audio_data_url);
+      if (audioToGenerate.length === 0) {
+        setGeneratingAudioIndex(null);
+        return;
+      }
+
+      console.log(`[TTS] Requesting ${audioToGenerate.length} voice tracks in parallel...`);
+
+      // Run parallel GCP TTS generation
+      const voicePromises = audioToGenerate.map(async (audio) => {
+          const ttsResult = await generateSpeechTTS(audio.text!, "en-US-Journey-F", audio.delivery_style);
+          return { audio, ttsResult };
+      });
+
+      const results = await Promise.all(voicePromises);
+      
+      // Merge results back into the beat's audio array
+      const newAudio = prevAudio.map(audio => {
+         const matchingResult = results.find(r => r.audio === audio);
+         if (matchingResult) {
+            return {
+               ...audio,
+               audio_data_url: matchingResult.ttsResult.audioDataUrl,
+               visemes: matchingResult.ttsResult.visemes,
+               generation_cost: {
+                   cost: matchingResult.ttsResult.costEstimate,
+                   characters: matchingResult.ttsResult.billedCharacters
+               }
+            };
+         }
+         return audio;
+      });
+
+      setStoryData(prev => {
+        if (!prev) return prev;
+        const newBeats = [...prev.beats];
+        newBeats[sceneIndex] = { ...beat, audio: newAudio };
+        return { ...prev, beats: newBeats };
+      });
+      
+    } catch (err: any) {
+      console.error("[TTS ERROR]", err);
+    } finally {
+      setGeneratingAudioIndex(null);
+    }
+  };
 
   const generateRigDraft = async ({
     generationReference,
@@ -2292,6 +2359,35 @@ export default function Home() {
     });
   };
 
+  const handleCameraChange = useCallback((cameraUpdate: { zoom: number; x: number; y: number; rotation: number; isEndKeyframe?: boolean }) => {
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const beat = newBeats[selectedSceneIndex];
+      if (!beat) return prev;
+      
+      const currentCamera = beat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 };
+      let newCamera = { ...currentCamera };
+      
+      if (cameraUpdate.isEndKeyframe) {
+          newCamera.target_x = cameraUpdate.x;
+          newCamera.target_y = cameraUpdate.y;
+          newCamera.target_zoom = cameraUpdate.zoom;
+      } else {
+          newCamera.x = cameraUpdate.x;
+          newCamera.y = cameraUpdate.y;
+          newCamera.zoom = cameraUpdate.zoom;
+          newCamera.rotation = cameraUpdate.rotation;
+      }
+      
+      const updatedBeat = { ...beat, camera: newCamera };
+      const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+      const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
+      return { ...prev, beats: newBeats };
+    });
+  }, [selectedSceneIndex]);
+
   const handleActorPositionChange = (actorId: string, dx: number, dy: number) => {
     setStoryData(prev => {
       if (!prev) return prev;
@@ -3032,6 +3128,15 @@ export default function Home() {
                                   >
                                     <Copy size={12} />
                                   </button>
+                                  {/* Generate Audio */}
+                                  <button
+                                    className={`p-1 rounded transition-all ${generatingAudioIndex === index ? "text-amber-500 animate-pulse" : (beat.audio.some(a => a.type === 'dialogue' && a.audio_data_url) ? "text-amber-500 hover:text-amber-600 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700/50" : "text-neutral-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-neutral-200 dark:hover:bg-neutral-800")}`}
+                                    title="Generate Dialogue Audio (TTS)"
+                                    onClick={() => handleGenerateVoices(index)}
+                                    disabled={generatingAudioIndex !== null}
+                                  >
+                                    <Volume2 size={12} />
+                                  </button>
                                   {/* Draft Background */}
                                   <button
                                     className={`p-1 rounded transition-colors ${beat.drafted_background ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700/50" : "text-neutral-400 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-neutral-200 dark:hover:bg-neutral-800"}`}
@@ -3150,6 +3255,22 @@ export default function Home() {
                                   <span className="text-neutral-400 dark:text-neutral-600">{imageGenCost.tokens.toLocaleString()} tokens</span>
                                 </div>
                               )}
+
+                              {/* Audio generation cost badge */}
+                              {(() => {
+                                  const audioCost = beat.audio?.reduce((sum, a) => sum + (a.generation_cost?.cost || 0), 0) || 0;
+                                  const audioChars = beat.audio?.reduce((sum, a) => sum + (a.generation_cost?.characters || 0), 0) || 0;
+                                  if (audioCost > 0) {
+                                      return (
+                                        <div className="px-3 py-1 bg-neutral-50 dark:bg-[#0a0a0a] border-t border-neutral-100 dark:border-neutral-800/50 flex items-center gap-2 text-[9px] font-mono text-neutral-400 dark:text-neutral-600">
+                                          <span className="text-neutral-500 dark:text-neutral-500">Cloud TTS gen:</span>
+                                          <span className="text-emerald-600 dark:text-emerald-500 font-semibold">~${audioCost.toFixed(5)}</span>
+                                          <span className="text-neutral-400 dark:text-neutral-600">{audioChars.toLocaleString()} characters</span>
+                                        </div>
+                                      );
+                                  }
+                                  return null;
+                              })()}
 
                               {/* Narrative + metadata */}
                               <div className="p-3 pt-2">
@@ -3483,7 +3604,9 @@ export default function Home() {
                           onActorSelect={handleActorSelect}
                           onActorPositionChange={handleActorPositionChange}
                           onActorScaleChange={handleActorScaleChange}
+                          onCameraChange={handleCameraChange}
                           stageOrientation={stageOrientation}
+                          selectedKeyframe={selectedKeyframe}
                         />
                       </div>
 
@@ -3539,6 +3662,11 @@ export default function Home() {
                                 className={`px-1.5 py-1 text-[9px] font-bold transition-colors ${fps === f ? 'bg-cyan-500 text-white' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}`}
                               >{f}</button>
                             ))}
+                          </div>
+
+                          <div className="flex items-center gap-2 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded px-2 py-1 shadow-sm h-6">
+                            <span className="text-[8px] font-bold text-neutral-400">ZOOM</span>
+                            <input type="range" min="0.5" max="4" step="0.1" value={timelineZoom} onChange={(e) => setTimelineZoom(parseFloat(e.target.value))} className="w-16 h-1 scale-75 transform origin-left bg-neutral-200 dark:bg-neutral-700 rounded appearance-none" />
                           </div>
                           <button
                             type="button"
@@ -3637,7 +3765,7 @@ export default function Home() {
                           tracksRef.current.scrollLeft = e.currentTarget.scrollLeft;
                         }
                       }}>
-                        <div className="flex h-full" style={{ minWidth: `${Math.max(100, (totalDuration / 15) * 100)}%` }}>
+                        <div className="flex h-full" style={{ minWidth: `${Math.max(100, (totalDuration / 15) * 100 * timelineZoom)}%` }}>
                           <div className="w-48 border-r border-neutral-200 dark:border-neutral-800/60 h-full flex items-center px-4 bg-neutral-50 dark:bg-[#0a0a0a] shrink-0 transition-colors z-40 sticky left-0">
                             <span className="text-[10px] text-neutral-500 dark:text-neutral-600 font-bold uppercase tracking-wider">Layers</span>
                           </div>
@@ -3688,7 +3816,7 @@ export default function Home() {
                           timelineRef.current.scrollLeft = e.currentTarget.scrollLeft;
                         }
                       }}>
-                        <div className="flex flex-col relative" style={{ minWidth: `${Math.max(100, (totalDuration / 15) * 100)}%` }}>
+                        <div className="flex flex-col relative" style={{ minWidth: `${Math.max(100, (totalDuration / 15) * 100 * timelineZoom)}%` }}>
                           
                           {/* Playhead line extension correctly overlaying all tracks */}
                           <div className="absolute inset-0 flex pointer-events-none z-[100]">
@@ -3722,6 +3850,7 @@ export default function Home() {
                                         <div
                                           key={binding.id}
                                           className="absolute inset-y-1.5 rounded bg-repeating-gradient opacity-50 dark:opacity-30 pointer-events-auto cursor-pointer"
+                                          onClick={() => { setSelectedActionIndex(null); setSelectedActorId(null); setIsCameraSelected(false); }}
                                           style={{
                                             left,
                                             width,
@@ -3743,6 +3872,65 @@ export default function Home() {
                                       <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[9px] font-mono text-indigo-300 dark:text-indigo-700 select-none">no bg motion</span>
                                     </div>
                                   )}
+                                </div>
+                              </div>
+
+                              {/* Camera Layer */}
+                              <div 
+                                className={`h-9 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track transition-colors cursor-pointer ${isCameraSelected ? 'bg-amber-50 dark:bg-amber-900/10' : 'hover:bg-neutral-50 dark:hover:bg-neutral-900/50'}`}
+                                onClick={() => {
+                                  setIsCameraSelected(true);
+                                  setSelectedActionIndex(null);
+                                  setSelectedActorId(null);
+                                  setSelectedKeyframe(null);
+                                }}
+                              >
+                                <div className={`w-48 h-full flex items-center gap-2 px-4 border-r border-neutral-200 dark:border-neutral-800/60 shrink-0 transition-colors z-30 sticky left-0 ${isCameraSelected ? 'bg-amber-100 dark:bg-amber-900/20' : 'bg-white dark:bg-[#0f0f0f]'}`}>
+                                  <svg viewBox="0 0 24 24" className="w-3 h-3 text-neutral-400 dark:text-neutral-500 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+                                  <span className={`text-[10px] font-medium truncate ${isCameraSelected ? 'text-amber-700 dark:text-amber-500' : 'text-neutral-500 dark:text-neutral-500'}`}>Camera</span>
+                                </div>
+                                <div className="flex-1 h-full relative overflow-visible pointer-events-none">
+                                  <div
+                                    className={`absolute inset-y-2 left-0 right-0 rounded flex items-center px-2 transition-all z-10 pointer-events-auto border ${isCameraSelected ? 'bg-amber-100/80 dark:bg-amber-900/40 border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 shadow-sm' : 'bg-neutral-100 dark:bg-neutral-800/60 border-neutral-200 dark:border-neutral-700 text-neutral-500 dark:text-neutral-400'}`}
+                                  >
+                                    <div 
+                                      className="absolute left-1 top-1/2 -translate-y-1/2 flex items-center justify-center transition-transform z-20 cursor-pointer shadow-sm hover:scale-105" 
+                                      title="Jump to Start"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setIsPlaying(false);
+                                        const newPos = 0;
+                                        setPlayheadPos(newPos);
+                                        handlePlayheadUpdate(0);
+                                        setSelectedKeyframe('start');
+                                      }}
+                                    >
+                                      <div className={`flex items-center justify-center px-1.5 py-0.5 rounded-[4px] outline outline-2 ${isCameraSelected && selectedKeyframe === 'start' ? 'outline-amber-500 bg-amber-100 dark:bg-amber-900 shadow-[0_0_8px_rgba(245,158,11,0.8)] text-amber-700 dark:text-amber-300' : isCameraSelected ? 'outline-amber-400 bg-white dark:bg-neutral-900 text-amber-600 dark:text-amber-500' : 'outline-neutral-400 dark:outline-neutral-500 bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400'} text-[8px] font-bold uppercase tracking-widest pointer-events-none`}>
+                                        Start
+                                      </div>
+                                    </div>
+
+                                    <span className="text-[10px] font-mono font-medium truncate pl-2 mx-auto select-none opacity-80 pointer-events-none">
+                                      {beat.camera && (beat.camera.target_x !== undefined || beat.camera.target_actor_id) ? "Cinematic Pan / Follow" : "Static Camera"}
+                                    </span>
+
+                                    <div 
+                                      className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center transition-transform z-20 cursor-pointer shadow-sm hover:scale-105" 
+                                      title="Jump to End"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setIsPlaying(false);
+                                        const newTime = totalDuration > 0 ? totalDuration : Math.max(beat.compiled_scene?.duration_seconds || 1, 1);
+                                        setPlayheadPos(100);
+                                        handlePlayheadUpdate(newTime);
+                                        setSelectedKeyframe('end');
+                                      }}
+                                    >
+                                      <div className={`flex items-center justify-center px-1.5 py-0.5 rounded-[4px] outline outline-2 ${isCameraSelected && selectedKeyframe === 'end' ? 'outline-amber-500 bg-amber-100 dark:bg-amber-900 shadow-[0_0_8px_rgba(245,158,11,0.8)] text-amber-700 dark:text-amber-300' : isCameraSelected ? 'outline-amber-400 bg-white dark:bg-neutral-900 text-amber-600 dark:text-amber-500' : 'outline-neutral-400 dark:outline-neutral-500 bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400'} text-[8px] font-bold uppercase tracking-widest pointer-events-none`}>
+                                        End
+                                      </div>
+                                    </div>
+                                  </div>
                                 </div>
                               </div>
 
@@ -3851,6 +4039,7 @@ export default function Home() {
                                               handlePillMouseDown(e, binding.source_action_index, actorId, binding.start_time, binding.duration_seconds, 'move');
                                             }}
                                             onClick={() => {
+                                              setIsCameraSelected(false);
                                               setSelectedActionIndex(binding.source_action_index);
                                               setSelectedActorId(actorId);
                                               setSelectedKeyframe(null);
@@ -3863,6 +4052,7 @@ export default function Home() {
                                               onClick={(e) => e.stopPropagation()}
                                               onMouseDown={(e) => {
                                                 e.stopPropagation();
+                                                setIsCameraSelected(false);
                                                 setIsPlaying(false);
                                                 setSelectedActionIndex(binding.source_action_index);
                                                 setSelectedActorId(actorId);
@@ -3886,6 +4076,7 @@ export default function Home() {
                                               onClick={(e) => e.stopPropagation()}
                                               onMouseDown={(e) => {
                                                 e.stopPropagation();
+                                                setIsCameraSelected(false);
                                                 setIsPlaying(false);
                                                 setSelectedActionIndex(binding.source_action_index);
                                                 setSelectedActorId(actorId);
@@ -3978,6 +4169,140 @@ export default function Home() {
                     return <div className="mt-8 text-center text-[10px] text-neutral-400 dark:text-neutral-600 font-mono transition-colors">Awaiting story data...</div>;
                   }
                   const selectedBindingRef = findCompiledBinding(beat.compiled_scene, selectedActionIndex);
+
+                  // ── Camera Overview (shown when camera track selected) ──────
+                  if (isCameraSelected) {
+                    const cam = beat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 };
+                    
+                    const updateCamera = (key: string, value: any) => {
+                      setStoryData(prev => {
+                        if (!prev) return prev;
+                        const newBeats = [...prev.beats];
+                        const currentBeat = newBeats[selectedSceneIndex];
+                        const updatedBeat = {
+                          ...currentBeat,
+                          camera: { ...(currentBeat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 }), [key]: value }
+                        };
+                        const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+                        const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
+                        newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
+                        return { ...prev, beats: newBeats };
+                      });
+                    };
+
+                    const clearTarget = () => {
+                      setStoryData(prev => {
+                        if (!prev) return prev;
+                        const newBeats = [...prev.beats];
+                        const currentBeat = newBeats[selectedSceneIndex];
+                        const currentCam = currentBeat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 };
+                        const { target_x, target_y, target_zoom, target_actor_id, ...rest } = currentCam;
+                        const updatedBeat = {
+                          ...currentBeat,
+                          camera: rest
+                        };
+                        const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+                        const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
+                        newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
+                        return { ...prev, beats: newBeats };
+                      });
+                    };
+
+                    return (
+                      <div className="flex flex-col gap-5 transition-opacity">
+                        <div>
+                          <div className="text-[10px] text-amber-500 dark:text-amber-500 font-bold mb-1 uppercase tracking-wider flex justify-between">
+                            <span>Camera Lens</span>
+                          </div>
+                          <div className="w-full h-8 bg-amber-50 dark:bg-amber-900/20 rounded border border-amber-200 dark:border-amber-700/50 flex items-center px-3 text-xs text-amber-700 dark:text-amber-300 font-mono shadow-sm dark:shadow-none transition-colors">
+                            {cam.target_x !== undefined || cam.target_actor_id ? "Cinematic Pan / Follow" : "Static Camera"}
+                          </div>
+                        </div>
+
+                        {/* Start Transforms */}
+                        <div 
+                          className={`p-2 rounded-lg transition-all cursor-pointer ${selectedKeyframe === 'start' ? 'bg-cyan-50 dark:bg-cyan-900/40 ring-2 ring-cyan-400 dark:ring-cyan-500 shadow-md' : 'bg-transparent hover:bg-neutral-50 dark:hover:bg-neutral-800/50 opacity-50 grayscale border border-dashed border-neutral-300 dark:border-neutral-700'}`}
+                          onClick={() => selectedKeyframe !== 'start' && setSelectedKeyframe('start')}
+                        >
+                          <div className="text-[10px] text-cyan-600 dark:text-cyan-400 font-bold mb-3 uppercase tracking-wider flex justify-between items-center">
+                            <span>Start Keyframe</span>
+                            {selectedKeyframe === 'start' && (
+                              <button onClick={(e) => {
+                                 e.stopPropagation();
+                                 updateCamera('x', 960);
+                                 updateCamera('y', 540);
+                                 updateCamera('zoom', 1.0);
+                                 updateCamera('rotation', 0);
+                              }} className="px-1.5 py-0.5 border border-cyan-200 bg-white text-cyan-600 rounded text-[9px] hover:bg-cyan-100 dark:bg-transparent dark:hover:bg-cyan-900 transition-colors">Reset</button>
+                            )}
+                          </div>
+                          <div className={`grid grid-cols-2 gap-2 mb-2 ${selectedKeyframe !== 'start' ? 'pointer-events-none' : ''}`}>
+                             {[
+                                { label: 'X', prop: 'x', val: cam.x ?? 960, step: 10 },
+                                { label: 'Y', prop: 'y', val: cam.y ?? 540, step: 10 },
+                                { label: 'Zoom', prop: 'zoom', val: cam.zoom ?? 1, step: 0.05 },
+                                { label: 'Rot', prop: 'rotation', val: cam.rotation ?? 0, step: 1 }
+                             ].map((field) => (
+                               <div key={`cam-start-${field.prop}`} className="flex flex-col gap-1">
+                                 <label className="text-[9px] text-neutral-400 font-mono tracking-widest">{field.label}</label>
+                                 <input
+                                   type="number"
+                                   step={field.step || 1}
+                                   value={typeof field.val === 'number' ? Number((field.val).toFixed(2)) : field.val}
+                                   onChange={(e) => {
+                                      const p = parseFloat(e.target.value);
+                                      let val = isNaN(p) ? 0 : p;
+                                      if (field.prop === 'zoom') val = Math.max(0.01, val);
+                                      updateCamera(field.prop, val);
+                                   }}
+                                   className="w-full h-7 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700 px-2 text-xs text-neutral-700 dark:text-neutral-300 font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
+                                 />
+                               </div>
+                             ))}
+                          </div>
+                        </div>
+
+                        {/* End Transforms */}
+                        <div 
+                          className={`p-2 rounded-lg transition-all cursor-pointer ${selectedKeyframe === 'end' ? 'bg-blue-50 dark:bg-blue-900/40 ring-2 ring-blue-400 dark:ring-blue-500 shadow-md' : 'bg-transparent hover:bg-neutral-50 dark:hover:bg-neutral-800/50 opacity-50 grayscale border border-dashed border-neutral-300 dark:border-neutral-700'}`}
+                          onClick={() => selectedKeyframe !== 'end' && setSelectedKeyframe('end')}
+                        >
+                          <div className="text-[10px] text-blue-600 dark:text-blue-400 font-bold mb-3 uppercase tracking-wider flex justify-between items-center">
+                            <span>End Keyframe</span>
+                            {selectedKeyframe === 'end' && (
+                              <button onClick={(e) => {
+                                e.stopPropagation();
+                                clearTarget();
+                              }} className="px-1.5 py-0.5 border border-blue-200 bg-white text-blue-600 rounded text-[9px] hover:bg-blue-100 dark:bg-transparent dark:hover:bg-blue-900 transition-colors">Clear</button>
+                            )}
+                          </div>
+                          <div className={`grid grid-cols-2 gap-2 mb-2 ${selectedKeyframe !== 'end' ? 'pointer-events-none' : ''}`}>
+                             {[
+                                { label: 'Target X', prop: 'target_x', val: cam.target_x ?? cam.x ?? 960, step: 10 },
+                                { label: 'Target Y', prop: 'target_y', val: cam.target_y ?? cam.y ?? 540, step: 10 },
+                                { label: 'Target Zoom', prop: 'target_zoom', val: cam.target_zoom ?? cam.zoom ?? 1.0, step: 0.05 }
+                             ].map((field) => (
+                               <div key={`cam-end-${field.prop}`} className="flex flex-col gap-1">
+                                 <label className="text-[9px] text-neutral-400 font-mono tracking-widest">{field.label}</label>
+                                 <input
+                                   type="number"
+                                   step={field.step || 1}
+                                   value={typeof field.val === 'number' ? Number((field.val).toFixed(2)) : field.val}
+                                   onChange={(e) => {
+                                      const p = parseFloat(e.target.value);
+                                      let val = isNaN(p) ? 0 : p;
+                                      if (field.prop === 'target_zoom') val = Math.max(0.01, val);
+                                      updateCamera(field.prop, val);
+                                   }}
+                                   className="w-full h-7 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700 px-2 text-xs text-neutral-700 dark:text-neutral-300 font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
+                                 />
+                               </div>
+                             ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
 
                   // ── Animation Overview (shown when nothing selected) ──────
                   if (selectedActionIndex === null || !beat.actions[selectedActionIndex]) {

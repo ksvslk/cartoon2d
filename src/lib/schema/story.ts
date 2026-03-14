@@ -27,12 +27,30 @@ export const AudioSchema = z.object({
     type: z.enum(["sfx", "dialogue", "music"]),
     actor_id: z.string().optional().describe("If type is dialogue, the ID of the speaking actor."),
     text: z.string().optional().describe("If type is dialogue, the exact words spoken."),
-    description: z.string().optional().describe("If type is sfx or music, a description of the sound (e.g., 'birds chirping in park')")
+    description: z.string().optional().describe("If type is sfx or music, a description of the sound (e.g., 'birds chirping in park')"),
+    delivery_style: z.string().optional().describe("If type is dialogue, the emotional delivery or acting style (e.g. 'shouting angrily', 'whispering softly', 'cheerful')."),
+    // The following fields are populated by the TTS generator, not the initial AI director
+    audio_data_url: z.string().optional().describe("Base64 string of the generated audio."),
+    visemes: z.array(z.object({
+        viseme: z.string(), // e.g. "A", "E", "I", "O", "U", "M", "idle"
+        time: z.number(),   // Start time in seconds relative to the clip
+        duration: z.number(), // Duration in seconds
+    })).optional().describe("Timing data for mouth shapes."),
+    generation_cost: z.object({
+        cost: z.number(),
+        characters: z.number()
+    }).optional().describe("Cloud TTS generation cost tracking.")
 });
 
 export const CameraSchema = z.object({
     zoom: z.number().default(1.0).describe("Camera zoom level. 1.0 is default, >1.0 is zooming in."),
-    pan: z.enum(["static", "pan_right", "pan_left", "pan_up", "pan_down", "tracking"]).default("static")
+    x: z.number().default(960).describe("Camera focal point X in stage coordinates. Default 960 (center)."),
+    y: z.number().default(540).describe("Camera focal point Y in stage coordinates. Default 540 (center)."),
+    rotation: z.number().default(0).describe("Camera rotation in degrees."),
+    target_actor_id: z.string().optional().describe("If provided, the camera will track this actor's movement over the course of the scene."),
+    target_x: z.number().optional().describe("If provided, the camera will pan to this X coordinate by the end of the scene."),
+    target_y: z.number().optional().describe("If provided, the camera will pan to this Y coordinate by the end of the scene."),
+    target_zoom: z.number().optional().describe("If provided, the camera will smoothly zoom to this level by the end of the scene.")
 });
 
 export const AnimationOverridesSchema = z.object({

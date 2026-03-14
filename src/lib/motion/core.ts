@@ -1,5 +1,5 @@
 import gsap from "gsap";
-import { ClipBindingIKPlayback, CompiledSceneData, StoryBeatData } from "../schema/story";
+import { ClipBindingIKPlayback, CompiledSceneData, StoryBeatData, getStageDims } from "../schema/story";
 import { DraftsmanData, RigMotionClip } from "../schema/rig";
 import { normalizeMotionKey, suggestMotionAliases } from "./semantics";
 import {
@@ -470,6 +470,29 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
 
       addCompiledTransformTrack(tl, container, id, track.transform_track, initialFacingSign, isBackwardMotion);
 
+      // Actor visibility: Only show the actor when they have an active keyframe binding.
+      const sortedBindings = [...track.clip_bindings].sort((a, b) => (a.start_time || 0) - (b.start_time || 0));
+      if (sortedBindings.length === 0) {
+        tl.set(`#actor_group_${id}`, { autoAlpha: 0 }, 0);
+      } else {
+        const firstStart = Math.max(0, sortedBindings[0].start_time || 0);
+        if (firstStart > 0) {
+          tl.set(`#actor_group_${id}`, { autoAlpha: 0 }, 0);
+          tl.set(`#actor_group_${id}`, { autoAlpha: 1 }, firstStart);
+        } else {
+          tl.set(`#actor_group_${id}`, { autoAlpha: 1 }, 0);
+        }
+        let currentEnd = firstStart + (sortedBindings[0].duration_seconds || 0);
+        for (let i = 1; i < sortedBindings.length; i++) {
+          const nextStart = sortedBindings[i].start_time || 0;
+          if (nextStart > currentEnd + 0.05) {
+             tl.set(`#actor_group_${id}`, { autoAlpha: 0 }, currentEnd);
+             tl.set(`#actor_group_${id}`, { autoAlpha: 1 }, nextStart);
+          }
+          currentEnd = Math.max(currentEnd, nextStart + (sortedBindings[i].duration_seconds || 0));
+        }
+      }
+
       track.clip_bindings.forEach(binding => {
         const m = normalizeMotionKey(binding.motion);
         const actionDuration = binding.duration_seconds || 2;
@@ -548,6 +571,90 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
     tl.__ikSync = () => {
       syncPlaybackActors(Array.from(ikActors.values()));
     };
+
+    // Audio / Lipsync Visemes
+    if (beat.audio && beat.audio.length > 0) {
+      beat.audio.forEach((audioItem, idx) => {
+        if (audioItem.type === 'dialogue' && audioItem.actor_id && audioItem.audio_data_url && audioItem.visemes && audioItem.visemes.length > 0) {
+          const actorId = audioItem.actor_id;
+          
+          const audioElId = `__audio_${actorId}_${idx}`;
+          let audioEl = container.querySelector<HTMLAudioElement>(`#${audioElId}`);
+          if (!audioEl) {
+            audioEl = document.createElement("audio");
+            audioEl.id = audioElId;
+            audioEl.src = audioItem.audio_data_url;
+            audioEl.style.display = "none";
+            audioEl.crossOrigin = "anonymous"; // Safety for cross-domain TTS if needed
+            container.appendChild(audioEl);
+          }
+
+          const lastViseme = audioItem.visemes[audioItem.visemes.length - 1];
+          const audioEnd = lastViseme.time + lastViseme.duration;
+          
+          // Sync HTMLAudioElement play/pause with GSAP Timeline 
+          tl.to(audioEl, {
+            currentTime: audioEnd,
+            duration: audioEnd,
+            ease: "none",
+            onStart: () => { if (!tl.paused()) audioEl?.play().catch(() => {}) },
+            onInterrupt: () => { audioEl?.pause() },
+          }, 0);
+
+          // Build SVG Mouth Visibility Keyframes based on phoneme timings
+          const mouthGroups = ["A", "E", "I", "O", "U", "M", "idle"].map(v => `#mouth_${v}`);
+          const actorSelector = `#actor_group_${actorId}`;
+          
+          audioItem.visemes.forEach(vKeyframe => {
+             const targetMouth = `#mouth_${vKeyframe.viseme}`;
+             mouthGroups.forEach(m => {
+                 tl.set(`${actorSelector} ${m}`, { autoAlpha: m === targetMouth ? 1 : 0 }, vKeyframe.time);
+             });
+          });
+          
+          // Reset mouth to idle when finished speaking
+          mouthGroups.forEach(m => {
+             tl.set(`${actorSelector} ${m}`, { autoAlpha: m === `#mouth_idle` ? 1 : 0 }, audioEnd);
+          });
+        }
+      });
+    }
+
+    if (beat.camera && (beat.camera.x !== undefined || beat.camera.y !== undefined || beat.camera.zoom !== undefined || beat.camera.target_x !== undefined || beat.camera.target_y !== undefined || beat.camera.target_zoom !== undefined)) {
+      const cameraGroup = container.querySelector<SVGGElement>("#__camera_layer");
+      if (cameraGroup) {
+        // Assume landscape for compiled scene resolution playback logic internally inside builder
+        const { width: stageW, height: stageH } = getStageDims("landscape");
+        
+        const startX = beat.camera.x ?? (stageW / 2);
+        const startY = beat.camera.y ?? (stageH / 2);
+        const startZoom = beat.camera.zoom ?? 1;
+        const startRotation = beat.camera.rotation ?? 0;
+
+        const tgtX = beat.camera.target_x ?? startX;
+        const tgtY = beat.camera.target_y ?? startY;
+        const tgtZoom = beat.camera.target_zoom ?? startZoom;
+        const tgtRotation = beat.camera.rotation ?? startRotation; // Assuming no target rotation for now
+
+        tl.fromTo(cameraGroup, {
+            x: (stageW / 2) - startX,
+            y: (stageH / 2) - startY,
+            scaleX: startZoom,
+            scaleY: startZoom,
+            rotation: startRotation,
+            transformOrigin: `${startX}px ${startY}px`
+        }, {
+            x: (stageW / 2) - tgtX,
+            y: (stageH / 2) - tgtY,
+            scaleX: tgtZoom,
+            scaleY: tgtZoom,
+            rotation: tgtRotation,
+            transformOrigin: `${tgtX}px ${tgtY}px`,
+            duration: tl.duration(),
+            ease: "power1.inOut"
+        }, 0);
+      }
+    }
 
     console.log(`[timeline] Built — duration: ${tl.duration().toFixed(2)}s, tweens: ${tl.getChildren().length}`);
     return tl;
@@ -636,25 +743,27 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
   tl.__ikSync = () => {
     const actorsList = Array.from(ikActors.values());
     syncPlaybackActors(actorsList);
-    
-    // Jump detection debugging
-    if (actorsList[0]) {
-      const viewState = actorsList[0].viewStates.values().next().value;
-      if (viewState && viewState.currentPose) {
-        // Let's just monitor localRotations for a jump instead since layout isn't directly exposed here easily
-        const currentRots = viewState.currentPose.localRotations;
-        if (lastRotations) {
-          for (const [nodeId, rot] of Object.entries(currentRots)) {
-            const prev = lastRotations[nodeId];
-            if (prev !== undefined && Math.abs(rot - prev) > 40 && Math.abs(rot - prev) < 320) {
-              console.error(`[JUMP DETECTED] Actor ${actorsList[0].actorId} node ${nodeId} jumped from ${prev.toFixed(2)} to ${rot.toFixed(2)} (delta: ${(rot - prev).toFixed(2)}) at t=${tl.time().toFixed(3)}s`);
-            }
-          }
-        }
-        lastRotations = { ...currentRots };
-      }
-    }
   };
+
+  if (beat.camera && (beat.camera.target_x !== undefined || beat.camera.target_y !== undefined || beat.camera.target_zoom !== undefined)) {
+    const cameraGroup = container.querySelector<SVGGElement>("#__camera_layer");
+    if (cameraGroup) {
+      const { width: stageW, height: stageH } = getStageDims("landscape");
+      const tgtX = beat.camera.target_x ?? beat.camera.x ?? (stageW / 2);
+      const tgtY = beat.camera.target_y ?? beat.camera.y ?? (stageH / 2);
+      const tgtZoom = beat.camera.target_zoom ?? beat.camera.zoom ?? 1;
+
+      tl.to(cameraGroup, {
+          x: (stageW / 2) - tgtX,
+          y: (stageH / 2) - tgtY,
+          scaleX: tgtZoom,
+          scaleY: tgtZoom,
+          transformOrigin: `${tgtX}px ${tgtY}px`,
+          duration: tl.duration(),
+          ease: "power1.inOut"
+      }, 0);
+    }
+  }
 
   console.log(`[timeline] Built — duration: ${tl.duration().toFixed(2)}s, tweens: ${tl.getChildren().length}`);
   return tl;

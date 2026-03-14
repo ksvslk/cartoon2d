@@ -31,12 +31,13 @@ interface StageProps {
     onActorSelect?: (actorId: string | null) => void;
     onActorPositionChange?: (actorId: string, dx: number, dy: number) => void;
     onActorScaleChange?: (actorId: string, scaleRatio: number) => void;
+    onCameraChange?: (camera: { zoom: number; x: number; y: number; rotation: number; isEndKeyframe?: boolean }) => void;
     stageOrientation?: StageOrientation;
 }
 
 interface DragState {
     actorId: string;
-    mode: 'move' | 'scale';
+    mode: 'move' | 'scale' | 'camera_pan' | 'camera_rotate';
     naturalCX: number;
     naturalBottom: number;
     offsetX: number;
@@ -118,8 +119,10 @@ export default function Stage({
     onActorSelect,
     onActorPositionChange,
     onActorScaleChange,
+    onCameraChange,
     stageOrientation = "landscape",
-}: StageProps) {
+    selectedKeyframe = null,
+}: StageProps & { selectedKeyframe?: 'start' | 'end' | null }) {
     const { width: stageW, height: stageH } = getStageDims(stageOrientation);
     const stageFrameClass = `shadow-2xl bg-black rounded-lg overflow-hidden border border-neutral-800 ${
         stageOrientation === "portrait"
@@ -142,11 +145,21 @@ export default function Stage({
     const onTimelineReadyRef  = useRef(onTimelineReady);
     const loopOnCompleteRef   = useRef(loopOnComplete);
     const playheadTimeRef     = useRef(playheadTime);
+    const selectedKeyframeRef = useRef(selectedKeyframe);
+    const stagePropsOnCameraChange = useRef(onCameraChange);
+    const wheelAccumulatorRef = useRef<{ zoom: number, timer: NodeJS.Timeout | null }>({ zoom: 1, timer: null });
+
     useEffect(() => { onPlayheadUpdateRef.current = onPlayheadUpdate; }, [onPlayheadUpdate]);
     useEffect(() => { onPlayCompleteRef.current   = onPlayComplete;   }, [onPlayComplete]);
     useEffect(() => { onTimelineReadyRef.current  = onTimelineReady;  }, [onTimelineReady]);
     useEffect(() => { loopOnCompleteRef.current   = loopOnComplete;   }, [loopOnComplete]);
     useEffect(() => { playheadTimeRef.current     = playheadTime;     }, [playheadTime]);
+    useEffect(() => { selectedKeyframeRef.current = selectedKeyframe; }, [selectedKeyframe]);
+    useEffect(() => { stagePropsOnCameraChange.current = onCameraChange; }, [onCameraChange]);
+    useEffect(() => { onTimelineReadyRef.current  = onTimelineReady;  }, [onTimelineReady]);
+    useEffect(() => { loopOnCompleteRef.current   = loopOnComplete;   }, [loopOnComplete]);
+    useEffect(() => { playheadTimeRef.current     = playheadTime;     }, [playheadTime]);
+    useEffect(() => { stagePropsOnCameraChange.current = onCameraChange; }, [onCameraChange]);
 
     // Tracks whether we are currently playing (for seek guard)
     const isPlayingRef = useRef(isPlaying);
@@ -181,6 +194,20 @@ export default function Stage({
     // ── SVG coordinate conversion ──────────────────────────────────────────────
     const toSvgCoords = useCallback((clientX: number, clientY: number) => {
         if (!containerRef.current) return { x: stageW / 2, y: stageH / 2 };
+        const domSvg = containerRef.current.querySelector("svg");
+        const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
+
+        if (domSvg && cameraGroup) {
+            const pt = domSvg.createSVGPoint();
+            pt.x = clientX;
+            pt.y = clientY;
+            const ctm = cameraGroup.getScreenCTM();
+            if (ctm) {
+                const transformed = pt.matrixTransform(ctm.inverse());
+                return { x: transformed.x, y: transformed.y };
+            }
+        }
+
         const rect = containerRef.current.getBoundingClientRect();
         return {
             x: ((clientX - rect.left) / rect.width) * stageW,
@@ -455,6 +482,13 @@ export default function Stage({
             masterSvgElement.appendChild(obstacleGroup);
         }
 
+        const cameraLayer = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "g");
+        cameraLayer.setAttribute("id", "__camera_layer");
+        while (masterSvgElement.firstChild) {
+            cameraLayer.appendChild(masterSvgElement.firstChild);
+        }
+        masterSvgElement.appendChild(cameraLayer);
+
         masterSvgElement.setAttribute("class", "w-full h-full max-w-none max-h-none");
 
         const cleanSvg = DOMPurify.sanitize(masterSvgElement.outerHTML, { USE_PROFILES: { svg: true } });
@@ -500,6 +534,23 @@ export default function Stage({
                     svgOrigin: `${naturalCX} ${naturalBottom}`,
                 });
             });
+
+            const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
+            if (cameraGroup && beat.camera) {
+                const cx = beat.camera.x ?? (stageW / 2);
+                const cy = beat.camera.y ?? (stageH / 2);
+                const zoom = beat.camera.zoom ?? 1;
+                const rot = beat.camera.rotation ?? 0;
+                gsap.set(cameraGroup, {
+                    x: (stageW / 2) - cx,
+                    y: (stageH / 2) - cy,
+                    scaleX: zoom,
+                    scaleY: zoom,
+                    rotation: rot,
+                    transformOrigin: `${cx}px ${cy}px`
+                });
+            }
+
         }, containerRef);
 
         // Start ambient animations immediately after positioning
@@ -523,6 +574,32 @@ export default function Stage({
             syncTimelineIK(tl);
             syncActorLayerOrder(tl.time());
             onPlayheadUpdateRef.current?.(tl.time());
+
+            // ── Camera Tracking Update ──
+            if (beat.camera?.target_actor_id && containerRef.current) {
+                const domSvg = containerRef.current.querySelector("svg");
+                const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
+                const targetActorGroup = domSvg?.querySelector<SVGGElement>(`#actor_group_${beat.camera.target_actor_id}`);
+                
+                if (cameraGroup && targetActorGroup) {
+                    const actorX = gsap.getProperty(targetActorGroup, "x") as number;
+                    const actorY = gsap.getProperty(targetActorGroup, "y") as number;
+                    const naturalCX = parseFloat(targetActorGroup.dataset.naturalCx || "0");
+                    const naturalBottom = parseFloat(targetActorGroup.dataset.naturalBottom || "0");
+                    
+                    // We want the viewport center to equal the actor's current world position
+                    const worldActorX = naturalCX + actorX;
+                    const worldActorY = naturalBottom + actorY - 150; // offset slightly up so feet aren't centered
+                    
+                    const zoom = gsap.getProperty(cameraGroup, "scaleX") as number || 1;
+                    
+                    gsap.set(cameraGroup, {
+                        x: (stageW / 2) - worldActorX,
+                        y: (stageH / 2) - worldActorY,
+                        transformOrigin: `${worldActorX}px ${worldActorY}px`
+                    });
+                }
+            }
         });
         tl.eventCallback("onComplete", () => {
           console.log("[stage] Timeline complete");
@@ -597,6 +674,7 @@ export default function Stage({
     // ── Effect 3: Seek timeline when playhead is dragged (not playing) ────────
     useEffect(() => {
         if (isPlayingRef.current) return;  // GSAP drives the playhead while playing
+        if (isDraggingRef.current) return; // Wait until drag is finished to not overwrite local overrides
         const tl = gsapTimelineRef.current;
         if (!tl) return;
         
@@ -613,6 +691,7 @@ export default function Stage({
     useEffect(() => {
         updateSelectionOverlay(selectedActorId);
     }, [selectedActorId, updateSelectionOverlay]);
+
 
     useEffect(() => () => {
         detachWindowDragHandlers();
@@ -633,75 +712,122 @@ export default function Stage({
     const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
         const target = e.target as Element;
         
-        let actorIdToDrag = null;
-        let mode: 'move' | 'scale' = 'move';
+        let actorIdToDrag: string | null = null;
+        let mode: DragState['mode'] = 'move';
         let actorGroup: SVGGElement | null = null;
         
-        if (target.id && target.id.startsWith("__sel_handle_")) {
+        if (e.button === 1) { // Middle click always pans camera
+            e.preventDefault();
+            actorIdToDrag = 'camera';
+            mode = 'camera_pan';
+            onActorSelect?.(null);
+        } else if (target.id && target.id.startsWith("__sel_handle_")) {
             if (!selectedActorId) return;
             actorIdToDrag = selectedActorId;
             mode = 'scale';
-            actorGroup = containerRef.current?.querySelector(`#actor_group_${selectedActorId}`) as SVGGElement;
+            actorGroup = containerRef.current?.querySelector(`#actor_group_${selectedActorId}`) as SVGGElement | null;
         } else {
             actorGroup = findActorGroup(e.target);
             if (!actorGroup) {
                 onActorSelect?.(null);
-                return;
+                if (stagePropsOnCameraChange.current) {
+                    actorIdToDrag = 'camera';
+                    mode = e.altKey ? 'camera_rotate' : 'camera_pan';
+                } else {
+                    return;
+                }
+            } else {
+                actorIdToDrag = actorGroup.id.replace("actor_group_", "");
+                mode = 'move';
+                onActorSelect?.(actorIdToDrag);
             }
-            actorIdToDrag = actorGroup.id.replace("actor_group_", "");
-            mode = 'move';
-            onActorSelect?.(actorIdToDrag);
         }
 
-        if (!actorIdToDrag || !actorGroup) return;
+        if (!actorIdToDrag) return;
 
-        // Set up drag
-        const naturalCX = parseFloat(actorGroup.dataset.naturalCx || "960");
-        const naturalBottom = parseFloat(actorGroup.dataset.naturalBottom || "1050");
-        const svgCoords = toSvgCoords(e.clientX, e.clientY);
-
-        const currentX = gsap.getProperty(actorGroup, "x") as number;
-        const currentY = gsap.getProperty(actorGroup, "y") as number;
-        const feetX = naturalCX + currentX;
-        const feetY = naturalBottom + currentY;
-        const currentScaleY = gsap.getProperty(actorGroup, "scaleY") as number;
-
-        if (mode === 'move') {
-            dragRef.current = {
-                actorId: actorIdToDrag,
-                mode,
-                naturalCX,
-                naturalBottom,
-                offsetX: svgCoords.x - feetX,
-                offsetY: svgCoords.y - feetY,
-                initialDist: 0,
-                initialScale: 0,
-                initialFeetX: feetX,
-                initialFeetY: feetY,
-                lastFeetX: feetX,
-                lastFeetY: feetY,
-                lastDist: 0,
-            };
-        } else {
-            const dx = svgCoords.x - feetX;
-            const dy = svgCoords.y - feetY;
-            const initialDist = Math.max(1, Math.sqrt(dx*dx + dy*dy));
+        if (actorIdToDrag === 'camera') {
+            const currentCamera = beatRef.current?.camera ?? { zoom: 1, x: stageW/2, y: stageH/2, rotation: 0 };
+            
+            // Snap playhead to start or end for accurate interpolation preview
+            const isEditingEnd = selectedKeyframeRef.current === 'end' || (selectedKeyframeRef.current !== 'start' && playheadTimeRef.current > 0.1);
+            if (gsapTimelineRef.current) {
+                const duration = gsapTimelineRef.current.duration() || 2;
+                const snapTime = isEditingEnd ? duration : 0;
+                gsapTimelineRef.current.seek(snapTime, false);
+                onPlayheadUpdateRef.current?.(snapTime);
+            }
+            
+            const startX = isEditingEnd ? (currentCamera.target_x ?? currentCamera.x ?? (stageW/2)) : (currentCamera.x ?? (stageW/2));
+            const startY = isEditingEnd ? (currentCamera.target_y ?? currentCamera.y ?? (stageH/2)) : (currentCamera.y ?? (stageH/2));
+            const startZoom = isEditingEnd ? (currentCamera.target_zoom ?? currentCamera.zoom ?? 1) : (currentCamera.zoom ?? 1);
+            const startRot = currentCamera.rotation ?? 0;
+            
+            const svgCoords = toSvgCoords(e.clientX, e.clientY);
             
             dragRef.current = {
-                actorId: actorIdToDrag,
+                actorId: 'camera',
                 mode,
-                naturalCX,
-                naturalBottom,
-                offsetX: 0,
-                offsetY: 0,
-                initialDist,
-                initialScale: currentScaleY,
-                initialFeetX: feetX,
-                initialFeetY: feetY,
-                lastFeetX: feetX,
-                lastFeetY: feetY,
-                lastDist: initialDist,
+                naturalCX: stageW / 2,
+                naturalBottom: stageH / 2,
+                offsetX: svgCoords.x,
+                offsetY: svgCoords.y,
+                initialDist: 0,
+                initialScale: startZoom,
+                initialFeetX: startX,
+                initialFeetY: startY,
+                lastFeetX: startX,
+                lastFeetY: startY,
+                lastDist: startRot,
             };
+        } else if (actorGroup) {
+            // Set up drag
+            const naturalCX = parseFloat(actorGroup.dataset.naturalCx || "960");
+            const naturalBottom = parseFloat(actorGroup.dataset.naturalBottom || "1050");
+            const svgCoords = toSvgCoords(e.clientX, e.clientY);
+    
+            const currentX = gsap.getProperty(actorGroup, "x") as number;
+            const currentY = gsap.getProperty(actorGroup, "y") as number;
+            const feetX = naturalCX + currentX;
+            const feetY = naturalBottom + currentY;
+            const currentScaleY = gsap.getProperty(actorGroup, "scaleY") as number;
+    
+            if (mode === 'move') {
+                dragRef.current = {
+                    actorId: actorIdToDrag,
+                    mode,
+                    naturalCX,
+                    naturalBottom,
+                    offsetX: svgCoords.x - feetX,
+                    offsetY: svgCoords.y - feetY,
+                    initialDist: 0,
+                    initialScale: 0,
+                    initialFeetX: feetX,
+                    initialFeetY: feetY,
+                    lastFeetX: feetX,
+                    lastFeetY: feetY,
+                    lastDist: 0,
+                };
+            } else {
+                const dx = svgCoords.x - feetX;
+                const dy = svgCoords.y - feetY;
+                const initialDist = Math.max(1, Math.sqrt(dx*dx + dy*dy));
+                
+                dragRef.current = {
+                    actorId: actorIdToDrag,
+                    mode,
+                    naturalCX,
+                    naturalBottom,
+                    offsetX: 0,
+                    offsetY: 0,
+                    initialDist,
+                    initialScale: currentScaleY,
+                    initialFeetX: feetX,
+                    initialFeetY: feetY,
+                    lastFeetX: feetX,
+                    lastFeetY: feetY,
+                    lastDist: initialDist,
+                };
+            }
         }
 
         isDraggingRef.current = false;
@@ -722,10 +848,59 @@ export default function Stage({
         if (!dragRef.current) return;
 
         isDraggingRef.current = true;
-        const { actorId, mode, naturalCX, naturalBottom, offsetX, offsetY, initialDist, initialScale } = dragRef.current;
+        const dragState = dragRef.current;
+        const { actorId, mode, naturalCX, naturalBottom, offsetX, offsetY, initialDist, initialScale } = dragState;
+        
+        const domSvg = containerRef.current?.querySelector("svg");
+        
+        if (actorId === 'camera') {
+            const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
+            if (!cameraGroup) return;
+
+            const currentSvgCoords = toSvgCoords(clientX, clientY);
+
+            if (mode === 'camera_pan') {
+                // Determine raw 1:1 SVG delta, inverted since we are moving the "world" under the camera.
+                // We divide by initialScale so that if we are zoomed in 5x, the camera only shifts 1/5th as fast 
+                // native SVG coordinates, ensuring the world pixels stay 1:1 glued to the mouse cursor!
+                const dx = (currentSvgCoords.x - offsetX) / (initialScale || 1);
+                const dy = (currentSvgCoords.y - offsetY) / (initialScale || 1);
+                const newX = dragState.initialFeetX - dx;
+                const newY = dragState.initialFeetY - dy;
+                
+                // Use gsap.to with overwrite to kill conflicting timeline tweens
+                gsap.to(cameraGroup, {
+                    x: (stageW / 2) - newX,
+                    y: (stageH / 2) - newY,
+                    transformOrigin: `${newX}px ${newY}px`,
+                    duration: 0.1,
+                    overwrite: "auto"
+                });
+                
+                dragState.lastFeetX = newX;
+                dragState.lastFeetY = newY;
+            } else if (mode === 'camera_rotate' && domSvg) {
+                const rect = domSvg.getBoundingClientRect();
+                const centerXPx = rect.left + rect.width / 2;
+                const centerYPx = rect.top + rect.height / 2;
+                const initAngle = Math.atan2(offsetY - centerYPx, offsetX - centerXPx);
+                const currentAngle = Math.atan2(clientY - centerYPx, clientX - centerXPx);
+                let diff = (currentAngle - initAngle) * (180 / Math.PI);
+                const newRot = dragState.lastDist + diff; // lastDist holds initial rotation
+                
+                gsap.to(cameraGroup, {
+                    rotation: newRot,
+                    duration: 0.1,
+                    overwrite: "auto"
+                });
+                
+                // Note: we're only displaying the rotation, committing it later on up
+            }
+            return;
+        }
+
         const svgCoords = toSvgCoords(clientX, clientY);
 
-        const domSvg = containerRef.current?.querySelector("svg");
         const group = domSvg?.querySelector<SVGGElement>(`#actor_group_${actorId}`);
         if (!group) return;
 
@@ -772,20 +947,43 @@ export default function Stage({
         if (!dragRef.current) return;
         const dragState = dragRef.current;
         const domSvg = containerRef.current?.querySelector("svg");
-        const group = domSvg?.querySelector<SVGGElement>(`#actor_group_${dragState.actorId}`);
 
-        if (commitChanges && group) {
-            if (dragState.mode === 'move') {
-                const dx = dragState.lastFeetX - dragState.initialFeetX;
-                const dy = dragState.lastFeetY - dragState.initialFeetY;
-                if (dx !== 0 || dy !== 0) {
-                    onActorPositionChange?.(dragState.actorId, dx, dy);
+        if (commitChanges) {
+            if (dragState.actorId === 'camera') {
+                const currentCamera = beatRef.current?.camera ?? { zoom: 1, x: stageW/2, y: stageH/2, rotation: 0 };
+                const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
+                let finalRotation = currentCamera.rotation ?? 0;
+                
+                if (dragState.mode === 'camera_rotate' && cameraGroup) {
+                     finalRotation = gsap.getProperty(cameraGroup, "rotation") as number;
                 }
+                
+                const isEditingEnd = selectedKeyframeRef.current === 'end' || (selectedKeyframeRef.current !== 'start' && playheadTimeRef.current > 0.1);
+                const zoomToUse = isEditingEnd ? (currentCamera.target_zoom ?? currentCamera.zoom ?? 1) : (currentCamera.zoom ?? 1);
+
+                stagePropsOnCameraChange.current?.({
+                    x: Math.round(dragState.lastFeetX),
+                    y: Math.round(dragState.lastFeetY),
+                    rotation: Math.round(finalRotation),
+                    zoom: zoomToUse,
+                    isEndKeyframe: isEditingEnd
+                });
             } else {
-                const finalScale = Math.abs(gsap.getProperty(group, "scaleY") as number) || dragState.initialScale;
-                const scaleRatio = finalScale / Math.max(0.0001, dragState.initialScale);
-                if (Number.isFinite(scaleRatio) && Math.abs(scaleRatio - 1) > 0.0001) {
-                    onActorScaleChange?.(dragState.actorId, scaleRatio);
+                const group = domSvg?.querySelector<SVGGElement>(`#actor_group_${dragState.actorId}`);
+                if (group) {
+                    if (dragState.mode === 'move') {
+                        const dx = dragState.lastFeetX - dragState.initialFeetX;
+                        const dy = dragState.lastFeetY - dragState.initialFeetY;
+                        if (dx !== 0 || dy !== 0) {
+                            onActorPositionChange?.(dragState.actorId, dx, dy);
+                        }
+                    } else {
+                        const finalScale = Math.abs(gsap.getProperty(group, "scaleY") as number) || dragState.initialScale;
+                        const scaleRatio = finalScale / Math.max(0.0001, dragState.initialScale);
+                        if (Number.isFinite(scaleRatio) && Math.abs(scaleRatio - 1) > 0.0001) {
+                            onActorScaleChange?.(dragState.actorId, scaleRatio);
+                        }
+                    }
                 }
             }
         }
@@ -798,6 +996,65 @@ export default function Stage({
     const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
         handleDragMove(e.clientX, e.clientY);
     }, [handleDragMove]);
+
+    // Instead of using React onWheel, we bind a non-passive wheel event directly to dom to prevent browser scaling/panning
+    useEffect(() => {
+        const stageDom = containerRef.current;
+        if (!stageDom) return;
+        
+        const handleNativeWheel = (e: WheelEvent) => {
+            if (!beatRef.current || !stagePropsOnCameraChange.current) return;
+            
+            // Unconditionally prevent browser default (swiping back/forward or scrolling page)
+            e.preventDefault(); 
+            
+            const domSvg = stageDom.querySelector("svg");
+            const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
+            const isEditingEnd = selectedKeyframeRef.current === 'end' || (selectedKeyframeRef.current !== 'start' && playheadTimeRef.current > 0.1);
+
+            // Read active zoom from local accumulator if active to prevent React tearing
+            let currentZoom = wheelAccumulatorRef.current.timer 
+                ? wheelAccumulatorRef.current.zoom 
+                : (isEditingEnd ? (beatRef.current.camera?.target_zoom ?? beatRef.current.camera?.zoom ?? 1) : (beatRef.current.camera?.zoom ?? 1));
+
+            // Hybrid sizing for Trackpad vs Physical Wheel. Trackpad deltaY is small (2-10). Wheel is large (100).
+            const isTrackpad = Math.abs(e.deltaY) < 50; 
+            const zoomDelta = isTrackpad 
+                ? e.deltaY * -0.01          // Smooth continuous trackpad ratio
+                : Math.sign(e.deltaY) * -0.1; // Solid 0.1 click interval for wheel
+
+            if (zoomDelta === 0) return;
+            
+            // Widen bounds so users can aggressively zoom if needed
+            const newZoom = Math.max(0.01, Math.min(100.0, currentZoom + zoomDelta));
+            wheelAccumulatorRef.current.zoom = newZoom;
+            
+            // Immediate visual GSAP update (kill tweens to avoid overlapping scaling anomalies)
+            if (cameraGroup) {
+                gsap.killTweensOf(cameraGroup, "scaleX,scaleY");
+                gsap.set(cameraGroup, {
+                    scaleX: newZoom,
+                    scaleY: newZoom,
+                });
+            }
+
+            // Debounce expensive React state update logic
+            if (wheelAccumulatorRef.current.timer) clearTimeout(wheelAccumulatorRef.current.timer);
+            wheelAccumulatorRef.current.timer = setTimeout(() => {
+                wheelAccumulatorRef.current.timer = null;
+                stagePropsOnCameraChange.current?.({
+                    x: isEditingEnd ? (beatRef.current?.camera?.target_x ?? beatRef.current?.camera?.x ?? stageW / 2) : (beatRef.current?.camera?.x ?? stageW / 2),
+                    y: isEditingEnd ? (beatRef.current?.camera?.target_y ?? beatRef.current?.camera?.y ?? stageH / 2) : (beatRef.current?.camera?.y ?? stageH / 2),
+                    rotation: beatRef.current?.camera?.rotation ?? 0,
+                    zoom: Number(newZoom.toFixed(2)),
+                    isEndKeyframe: isEditingEnd
+                });
+            }, 100);
+        };
+
+        stageDom.addEventListener('wheel', handleNativeWheel, { passive: false });
+        return () => stageDom.removeEventListener('wheel', handleNativeWheel);
+    }, [stageW, stageH]);
 
     const handleMouseLeave = useCallback(() => {
         // Window-level handlers keep the drag active after leaving the stage bounds.
@@ -834,6 +1091,7 @@ export default function Stage({
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseLeave}
+                // Native wheel effect manages zooming instead of react passive wheel to block page scrolls
             />
         </div>
     );

@@ -301,16 +301,14 @@ function resolvePreferredTravelVector(
 
 function clampSpatialTransformToStage(transform: SpatialTransform, stageW = 1920, stageH = 1080): SpatialTransform {
   const safeScale = round2(clamp(transform.scale, 0.18, 2.5));
-  const marginX = Math.max(110, 140 * safeScale);
-  const marginY = Math.max(90, 120 * safeScale);
   return {
-    x: round2(clamp(transform.x, marginX, stageW - marginX)),
-    y: round2(clamp(transform.y, marginY, stageH - marginY)),
+    x: round2(transform.x),
+    y: round2(transform.y),
     scale: safeScale,
     rotation: typeof transform.rotation === "number" ? normalizeDegrees(transform.rotation) : undefined,
     flip_x: transform.flip_x,
     flip_y: transform.flip_y,
-    z_index: Math.round(clamp(transform.z_index, 0, 100)),
+    z_index: Math.round(clamp(transform.z_index ?? 10, 0, 100)),
   };
 }
 

@@ -47,13 +47,20 @@ CRITICAL: Your response MUST contain TWO things:
       "narrative": "string - what happens in this scene",
       "camera": {
         "zoom": 1.0,
-        "pan": "static | pan_right | pan_left | pan_up | pan_down | tracking"
+        "x": 960,
+        "y": 540,
+        "rotation": 0,
+        "target_actor_id": "optional string - actor to track",
+        "target_x": "optional number - pan to x",
+        "target_y": "optional number - pan to y",
+        "target_zoom": "optional number - zoom to"
       },
       "audio": [
         {
           "type": "sfx | dialogue | music",
           "actor_id": "string (optional, for dialogue)",
           "text": "string (optional, exact words if dialogue)",
+          "delivery_style": "string (optional, e.g. 'shouting angrily', 'whispering', 'cheerful')",
           "description": "string (optional, sound description if sfx/music)"
         }
       ],
@@ -90,7 +97,7 @@ CRITICAL: Your response MUST contain TWO things:
 ## Rules
 - Output the JSON object first as a text block.
 - Then, for EACH beat, generate a vivid, colorful flat 2D style illustration based on the comic_panel_prompt.
-- EXTREME 2D FLATNESS REQUIRED: The art style MUST be composed of highly abstract, minimal vector-like solid color shapes. NO shading, NO gradients, NO 3D rendering, NO photorealism.
+- EXTREME 2D FLATNESS REQUIRED: The art style MUST be composed of highly abstract, minimal vector-like solid color shapes. NO shading, NO gradients, NO 3D rendering, NO photorealism, NO drop shadows, NO floor shadows, NO cast shadows, NO lighting effects.
 - CHARACTER ANGLES: Draw characters from the most cinematically appropriate angle for the scene — front view for dialogue, side profile for walking, 3/4 view for natural depth. Keep angles consistent within a scene.
 - SUBJECT/BACKGROUND CONTRAST IS CRITICAL: The active characters must remain clearly readable against the background at a glance. Use strong silhouette separation, opposing value bands, simplified backdrops behind the subject, or subtle rim separation so tails, fins, limbs, and body edges never disappear into dark scenery.
 - FULL-BODY RIG REFERENCE QUALITY IS CRITICAL: Any active subject that may later be rigged must be fully visible in frame from head to toe or tip to tip. Do NOT crop feet, hands, fins, tails, hats, props, wheels, or other silhouette-defining extremities unless the user explicitly asks for a close-up.
@@ -100,12 +107,14 @@ CRITICAL: Your response MUST contain TWO things:
 - KEEP THE DRAWING SIMPLE ENOUGH TO VECTORIZE: Prefer a limited number of large flat shapes and clear color regions over noisy texture, hatch marks, tiny fragments, or decorative micro-details.
 - ${compositionInstruction}
 - DO NOT include any text, speech bubbles, or onomatopoeia (e.g., "BANG!", "CRASH!") in the images. These are handled by the audio/narrative data.
+- DIALOGUE REQUIREMENT (CRITICAL): If the user's prompt includes characters speaking, talking, or having a conversation, you MUST explicitly create an entry in the \`audio\` array for EVERY spoken line with \`"type": "dialogue"\`, their exact spoken \`"text"\`, their emotional \`"delivery_style"\`, and the correct \`"actor_id"\`. If you omit the audio array, they will have no voice! Do not skip this!
 - Output each image immediately after the JSON.
 - Keep actions as simple semantic verbs.
 - actors_detected must list ALL characters.
 - Motion choice must respect what each subject is. Infer physical affordances from the actor's name, species, attributes, and visual description before assigning actions.
 - If a subject appears only lightly articulated or structurally simple, prefer transform-dominant actions, orientation changes, or restrained in-place motion instead of rich internal body mechanics.
 - Do not assign gestures, locomotion patterns, or expressive deformations that require anatomy or articulation not supported by the actor description.
+- THE CAMERA IS STATIC BY DEFAULT. Do NOT use target_actor_id, target_x, target_y, target_zoom or rotate unless the user's prompt explicitly requests a camera move, pan, zoom, or tracking shot.
 
 ## Spatial Transform Rules (CRITICAL — always include these in every action)
 - The stage is ${stageW}x${stageH} pixels. x=${stageW / 2} is center, x=${Math.round(stageW * 0.16)} is far-left, x=${Math.round(stageW * 0.83)} is far-right.
