@@ -841,7 +841,7 @@ export async function processDraftsmanPrompt(
             const prefix = genericViewPrefixForId(viewId);
             return [
                 `      { "id": "${prefix}root", "pivot": { "x": 500, "y": 520 }, "zIndex": 10, "kind": "root", "side": "center", "massClass": "heavy" }`,
-                `      { "id": "${prefix}core", "pivot": { "x": 500, "y": 520 }, "socket": { "x": 500, "y": 520 }, "parent": "${prefix}root", "zIndex": 20, "kind": "body", "side": "center", "massClass": "medium" }`,
+                `      { "id": "${prefix}core", "pivot": { "x": 500, "y": 520 }, "socket": { "x": 500, "y": 520 }, "parent": "${prefix}root", "rotationLimit": [-45, 45], "zIndex": 20, "kind": "body", "side": "center", "massClass": "medium" }`,
             ];
         })
         .join(",\n");
@@ -875,6 +875,7 @@ ${requestedViewPrefixGuide}
 5. **Visemes and Emotions**: If expressive, include \`<g id="mouth_visemes">\` (\`#mouth_idle\`, \`A, E, I, O, U, M\`) and \`<g id="emotions">\` (\`#emotion_neutral\`, \`happy, sad, angry, surprised\`). Leave idle/neutral visible, others hidden.
 6. **The JSON Rig Metadata (CRITICAL)**: Define explicit {x, y} coordinates for EVERY \`pivot\` point allowing smooth rotation.
    - \`socket\`: EXPLICITLY specify the preferred attachment point {x,y} within the parent. Missing sockets break animation! Every bone with a parent MUST have a \`socket\`.
+   - \`rotationLimit\`: EXPLICITLY provide \`[minDegrees, maxDegrees]\` bounds for biological joints to prevent them from bending backwards. e.g., knees bend backward \`[0, 130]\`, elbows bend forward \`[-130, 0]\`, heads usually \`[-45, 45]\`.
    - \`kind\`: Prefer \`root\`, \`body\`, or \`other\`.
    - \`side\`: \`left\`, \`right\`, or \`center\`.
    - \`length\`: segment length in SVG units.
