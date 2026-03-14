@@ -301,6 +301,18 @@ function buildRotationTracksFromSourceClip(params: {
   const nodeIdByBoneId = buildNodeIdByBoneId(params.rig, params.sourceClip.view);
   const keyframesByNodeId = new Map<string, AnimationKeyframe[]>();
 
+  const ikNodes = ensureRigIK(params.rig).rig_data.ik?.nodes || [];
+  const ikNodeMap = new Map(ikNodes.map(n => [n.id, n]));
+  const getDepthOffset = (nodeId: string): number => {
+    let depth = 0;
+    let curr = ikNodeMap.get(nodeId);
+    while (curr?.parent) {
+      depth++;
+      curr = ikNodeMap.get(curr.parent);
+    }
+    return depth * 0.04; // 40ms follow-through delay per hierarchy level
+  };
+
   params.sourceClip.keyframes
     .filter((keyframe) => keyframe.prop === "rotation")
     .forEach((keyframe) => {
@@ -313,16 +325,25 @@ function buildRotationTracksFromSourceClip(params: {
 
   return Array.from(keyframesByNodeId.entries())
     .map(([nodeId, keyframes]) => {
+      const timeOffset = getDepthOffset(nodeId);
+
       const samples = sampleTimesFromKeyframes(keyframes, params.durationSeconds)
-        .map((time) => ({
-          t: params.durationSeconds > 0 ? round3(clamp(time / params.durationSeconds, 0, 1)) : 0,
-          rotation: valueAtTime(keyframes, time, 0, true),
-        }))
+        .map((time) => {
+          let evalTime = time - timeOffset;
+          if (evalTime < 0) {
+             evalTime = (evalTime % params.durationSeconds) + params.durationSeconds;
+          }
+
+          return {
+            t: params.durationSeconds > 0 ? round3(clamp(time / params.durationSeconds, 0, 1)) : 0,
+            rotation: valueAtTime(keyframes, evalTime, 0, true),
+          };
+        })
         .filter((sample, index, all) => (
           index === 0 ||
           index === all.length - 1 ||
           sample.t !== all[index - 1].t ||
-          sample.rotation !== all[index - 1].rotation
+          Math.abs(sample.rotation - all[index - 1].rotation) > 0.01
         ));
 
       // Force cyclic looping continuity by ensuring the last frame perfectly
