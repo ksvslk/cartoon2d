@@ -874,7 +874,11 @@ ${requestedViewPrefixGuide}
 4. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
    - Furthest background limbs MUST appear first in the \`<g>\` block. Foreground limbs MUST appear last.
    - Mirror that exact overlap ordering in the JSON rig using the \`zIndex\` field (Lower \`zIndex\` = back, higher \`zIndex\` = front).
-5. **Visemes and Emotions**: If expressive, include \`<g id="mouth_visemes">\` (\`#mouth_idle\`, \`A, E, I, O, U, M\`) and \`<g id="emotions">\` (\`#emotion_neutral\`, \`happy, sad, angry, surprised\`). Leave idle/neutral visible, others hidden.
+5. **MANDATORY FACIAL RIGGING FOR TTS (CRITICAL)**: You are rigging this character for automated Cloud TTS lip-sync.
+   - Pay extreme attention to the face and head area. It must be highly detailed and expressive.
+   - You MUST include a \`<g id="mouth_visemes">\` container with these EXACT distinct mouth shapes: \`mouth_idle\`, \`A\`, \`E\`, \`I\`, \`O\`, \`U\`, \`M\` (closed lips for consonants). 
+   - You MUST include \`<g id="emotions">\` with distinct facial expressions: \`emotion_neutral\`, \`happy\`, \`sad\`, \`angry\`, \`surprised\`. 
+   - Leave \`mouth_idle\` and \`emotion_neutral\` visible (\`display="inline"\`), and hide all others (\`display="none"\`).
 6. **The JSON Rig Metadata (CRITICAL)**: Define explicit {x, y} coordinates for EVERY \`pivot\` point allowing smooth rotation.
    - \`socket\`: EXPLICITLY specify the preferred attachment point {x,y} within the parent. Missing sockets break animation! Every bone with a parent MUST have a \`socket\`.
    - \`rotationLimit\`: EXPLICITLY provide \`[minDegrees, maxDegrees]\` bounds for biological joints to prevent them from bending backwards. e.g., knees bend backward \`[0, 130]\`, elbows bend forward \`[-130, 0]\`, heads usually \`[-45, 45]\`.
