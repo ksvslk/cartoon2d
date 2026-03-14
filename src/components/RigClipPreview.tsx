@@ -47,13 +47,17 @@ export function RigClipPreview({
   const lastPoseRef = useRef<PoseState | null>(null);
 
   const motionClip = rig.rig_data.motion_clips?.[clipId];
-  const durationSeconds = useMemo(() => estimateMotionClipDuration(motionClip), [motionClip]);
+  const estimatedDuration = useMemo(() => estimateMotionClipDuration(motionClip), [motionClip]);
   const playableClip = useMemo(() => resolvePlayableMotionClip({
     rig,
     clipId,
     motionClip,
-    durationSeconds,
-  }), [clipId, durationSeconds, motionClip, rig]);
+    durationSeconds: estimatedDuration,
+  }), [clipId, estimatedDuration, motionClip, rig]);
+
+  // Use the TRUE duration bound from the evaluator for absolute cycle matching
+  const durationSeconds = playableClip?.intent?.duration || estimatedDuration || 2.0;
+
   const validation = useMemo(() => validateRigForMotion({
     rig,
     motion: clipId,
