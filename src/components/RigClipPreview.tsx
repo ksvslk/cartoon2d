@@ -41,10 +41,11 @@ export function RigClipPreview({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const rafRef = useRef<number | null>(null);
+  const rafRef = useRef<gsap.core.Timeline | number | null>(null);
   const lastFrameRef = useRef<number | null>(null);
   const currentTimeRef = useRef(playheadTime);
   const lastPoseRef = useRef<PoseState | null>(null);
+  const lastDebugRotationsRef = useRef<Record<string, number> | null>(null);
 
   const motionClip = rig.rig_data.motion_clips?.[clipId];
   const estimatedDuration = useMemo(() => estimateMotionClipDuration(motionClip), [motionClip]);
@@ -83,6 +84,18 @@ export function RigClipPreview({
       : EMPTY_GOALS;
     const solved = solvePoseFromGoals(graph, goals, lastPoseRef.current ?? restPose);
     applyPoseToSvg(svgRef.current, graph, solved.layout, activeView);
+    
+    // Debug jumps in Modal
+    if (lastDebugRotationsRef.current) {
+      for (const [nodeId, rot] of Object.entries(solved.pose.localRotations)) {
+        const prev = lastDebugRotationsRef.current[nodeId];
+        if (prev !== undefined && Math.abs(rot - prev) > 20 && Math.abs(rot - prev) < 340) {
+          console.error(`[MODAL JUMP] Node ${nodeId} jumped from ${prev.toFixed(2)} to ${rot.toFixed(2)} (delta: ${(rot - prev).toFixed(2)}) at t=${timeSeconds.toFixed(3)}s`);
+        }
+      }
+    }
+    lastDebugRotationsRef.current = { ...solved.pose.localRotations };
+    
     lastPoseRef.current = solved.pose;
   }, [activeView, graph, playableClip, restPose]);
 
@@ -93,7 +106,11 @@ export function RigClipPreview({
     lastPoseRef.current = null;
     return () => {
       if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
+        if (typeof rafRef.current === "number") {
+          cancelAnimationFrame(rafRef.current);
+        } else {
+          (rafRef.current as gsap.core.Timeline).kill();
+        }
         rafRef.current = null;
       }
       lastFrameRef.current = null;
@@ -112,7 +129,7 @@ export function RigClipPreview({
 
   useEffect(() => {
     if (rafRef.current !== null) {
-      gsap.ticker.remove(rafRef.current as any);
+      (rafRef.current as gsap.core.Timeline).kill();
       rafRef.current = null;
     }
     lastFrameRef.current = null;
@@ -122,31 +139,31 @@ export function RigClipPreview({
 
     if (!isPlaying) return;
 
-    // Use GSAP's native ticker for absolute frame-perfect sync with the physics timeline
-    const step = (time: number, deltaTimeMs: number) => {
-      // Delta time from GSAP gives us exact elapsed ms
-      const exactElapsedSeconds = (deltaTimeMs / 1000) * (playbackSpeed ?? 1.0);
-      let nextTime = currentTimeRef.current + exactElapsedSeconds;
+    // To prevent float accumulation frame jitter from desyncing loop boundaries
+    // use a true GSAP Timeline exactly as the Stage uses.
+    const tlDuration = durationSeconds;
+    const tl = gsap.timeline({
+      repeat: loop ? -1 : 0,
+      onUpdate: function () {
+        const nextTime = this.time();
+        currentTimeRef.current = nextTime;
+        renderAtTime(nextTime);
+        onPlayheadUpdate?.(nextTime);
+      },
+    });
 
-      if (durationSeconds > 0) {
-        if (loop) {
-          nextTime = nextTime % durationSeconds;
-        } else {
-          nextTime = Math.min(durationSeconds, nextTime);
-        }
-      }
+    const clock = { time: 0 };
+    tl.to(clock, {
+      time: tlDuration,
+      duration: tlDuration / (playbackSpeed || 1.0),
+      ease: "none",
+    });
 
-      currentTimeRef.current = nextTime;
-      renderAtTime(nextTime);
-      onPlayheadUpdate?.(nextTime);
-    };
-
-    gsap.ticker.add(step);
-    rafRef.current = step as any;
+    rafRef.current = tl as any;
 
     return () => {
       if (rafRef.current !== null) {
-        gsap.ticker.remove(rafRef.current as any);
+        (rafRef.current as gsap.core.Timeline).kill();
         rafRef.current = null;
       }
       lastFrameRef.current = null;

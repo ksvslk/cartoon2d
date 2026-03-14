@@ -1633,9 +1633,23 @@ Return a revised JSON motion spec only.`
             "Gemini returned an empty motion spec response.",
             "No JSON motion spec found in Gemini response.",
         );
+        let rawJson: any;
+        try {
+            rawJson = JSON.parse(text);
+        } catch (e: any) {
+            rejectionFeedback = `Invalid JSON format: ${e.message}`;
+            continue;
+        }
+
+        const safeParsed = MotionSpecSchema.safeParse(normalizeGeneratedMotionSpecPayload(rawJson));
+        if (!safeParsed.success) {
+            rejectionFeedback = `JSON Schema violation:\n${safeParsed.error.message}`;
+            continue;
+        }
+
         parsed = constrainMotionSpecToRig(
             normalizedRig,
-            MotionSpecSchema.parse(normalizeGeneratedMotionSpecPayload(JSON.parse(text))),
+            safeParsed.data,
         );
 
         if (!prefersRigidRootMotion) {

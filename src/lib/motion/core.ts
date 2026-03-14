@@ -632,8 +632,28 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
     tl.set(`#actor_group_${id}`, {}, startDelay + actionDuration);
   });
 
+  let lastRotations: Record<string, number> | null = null;
   tl.__ikSync = () => {
-    syncPlaybackActors(Array.from(ikActors.values()));
+    const actorsList = Array.from(ikActors.values());
+    syncPlaybackActors(actorsList);
+    
+    // Jump detection debugging
+    if (actorsList[0]) {
+      const viewState = actorsList[0].viewStates.values().next().value;
+      if (viewState && viewState.currentPose) {
+        // Let's just monitor localRotations for a jump instead since layout isn't directly exposed here easily
+        const currentRots = viewState.currentPose.localRotations;
+        if (lastRotations) {
+          for (const [nodeId, rot] of Object.entries(currentRots)) {
+            const prev = lastRotations[nodeId];
+            if (prev !== undefined && Math.abs(rot - prev) > 40 && Math.abs(rot - prev) < 320) {
+              console.error(`[JUMP DETECTED] Actor ${actorsList[0].actorId} node ${nodeId} jumped from ${prev.toFixed(2)} to ${rot.toFixed(2)} (delta: ${(rot - prev).toFixed(2)}) at t=${tl.time().toFixed(3)}s`);
+            }
+          }
+        }
+        lastRotations = { ...currentRots };
+      }
+    }
   };
 
   console.log(`[timeline] Built — duration: ${tl.duration().toFixed(2)}s, tweens: ${tl.getChildren().length}`);

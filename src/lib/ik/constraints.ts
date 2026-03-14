@@ -197,7 +197,11 @@ export function projectConstraintPositions(
       positions,
       absoluteRotations: baseLayout.absoluteRotations,
       localRotations: baseLayout.localRotations,
-    }, { rootRotationBlend: 0.15 / iterations });
+    }, { 
+      preserveNodeIds,
+      rootRotationBlend: 0.15 / iterations,
+      nodeRotationBlend: 0.5,
+    });
 
     // 3. Update spatial layout to adhere to clipped angles
     positions = clonePositions(computePoseLayout(graph, candidatePose).positions);

@@ -150,7 +150,7 @@ export function derivePoseStateFromLayout(
   graph: PoseGraph, 
   currentPose: PoseState, 
   layout: PoseLayout,
-  options: { preserveRootRotation?: boolean; rootRotationBlend?: number } = {}
+  options: { preserveRootRotation?: boolean; preserveNodeIds?: Set<string>; rootRotationBlend?: number; nodeRotationBlend?: number } = {}
 ): PoseState {
   const next = clonePoseState(currentPose);
 
@@ -186,7 +186,17 @@ export function derivePoseStateFromLayout(
       if (currentPos && parentPos) {
         const currentAngle = (Math.atan2(currentPos.y - parentPos.y, currentPos.x - parentPos.x) * 180) / Math.PI;
         const restAngle = restAngleOf(graph, nodeId);
-        next.localRotations[nodeId] = clampLocalRotation(graph, nodeId, currentAngle - restAngle - parentAbsolute);
+        const derived = currentAngle - restAngle - parentAbsolute;
+
+        if (options.preserveNodeIds?.has(nodeId)) {
+          next.localRotations[nodeId] = currentPose.localRotations[nodeId] ?? 0;
+        } else if (typeof options.nodeRotationBlend === "number") {
+          const prev = currentPose.localRotations[nodeId] ?? 0;
+          const diff = normalizeDegrees(derived - prev);
+          next.localRotations[nodeId] = clampLocalRotation(graph, nodeId, prev + diff * options.nodeRotationBlend);
+        } else {
+          next.localRotations[nodeId] = clampLocalRotation(graph, nodeId, derived);
+        }
       }
     }
 

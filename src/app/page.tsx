@@ -4366,7 +4366,7 @@ export default function Home() {
                         <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider">
                           Timeline Properties
                         </div>
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-3 gap-3">
                           <div className="flex flex-col gap-1">
                             <label className="text-[9px] text-neutral-400 font-mono tracking-widest">Delay (s)</label>
                             <input
@@ -4424,6 +4424,37 @@ export default function Home() {
                                 });
                               }}
                               className="w-full h-7 bg-white dark:bg-neutral-900 rounded border border-neutral-200 dark:border-neutral-700/50 px-1.5 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-inner focus:outline-none focus:ring-1 focus:ring-cyan-500/30 transition-colors"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[9px] text-amber-500 font-mono tracking-widest font-bold">Loop Speed (x)</label>
+                            <input
+                              type="number"
+                              step={0.1}
+                              min={0.1}
+                              value={Number((action.animation_overrides?.speed ?? 1.0).toFixed(2))}
+                              onChange={(e) => {
+                                const val = Math.max(0.1, parseFloat(e.target.value) || 1.0);
+                                setStoryData(prev => {
+                                  if (!prev) return prev;
+                                  const newBeats = [...prev.beats];
+                                  const currentBeat = newBeats[selectedSceneIndex];
+                                  const newActions = [...currentBeat.actions];
+                                  newActions[selectedActionIndex] = {
+                                    ...newActions[selectedActionIndex],
+                                    animation_overrides: {
+                                      ...(newActions[selectedActionIndex].animation_overrides || {}),
+                                      speed: val
+                                    }
+                                  };
+                                  const nextBeat = { ...currentBeat, actions: newActions };
+                                  const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+                                  const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+                                  newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                  return { ...prev, beats: newBeats };
+                                });
+                              }}
+                              className="w-full h-7 bg-white dark:bg-neutral-900 rounded border border-neutral-200 dark:border-neutral-700/50 px-1.5 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-inner focus:outline-none focus:ring-1 focus:ring-amber-500/30 transition-colors"
                             />
                           </div>
                         </div>
