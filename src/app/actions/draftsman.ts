@@ -861,11 +861,11 @@ ${requestedViewGuide}
    Make the first requested view visible (\`display="inline"\`), all others \`display="none"\`.
    Each view's bones MUST use this prefix exact format:
 ${requestedViewPrefixGuide}
-3. **Logical 2D Puppet Assembly (CRITICAL)**: Build a functional 2D cutout paper-craft puppet.
-   - Limbs MUST physically overlap at the joints. Do NOT cut off a limb where it goes behind clothing. Draw full, rounded joints (shoulders, hips) so parts rotate smoothly without gaps!
-   - **Overlapping Clothing/Props**: If the character wears a dress, robe, cape, coat, or has long hair, you MUST still draw the fully articulated body/legs underneath it! Break the covering into overlapping panels (e.g. \`cape_left\`, \`skirt_back\`, \`hair_front\`) pivoted near the root so they can swing out of the way of the underlying limbs.
-   - Prioritize logical overlapping anatomy over perfectly cloning the 1:1 reference image silhouette.
-   - Group related parts together (e.g. \`arm_lower\` visually grouped inside \`arm_upper\`).
+3. **Skeleton-First IK Ragdoll (CRITICAL)**: You are building a functional, unbroken IK skeletal ragdoll. The art is just skin over that skeleton.
+   - You MUST guarantee a continuous, unbroken skeletal chain for the main body and all four limbs (even if visually obscured by clothing, hair, or armor).
+   - NEVER fuse joints together. NEVER cut off hidden limbs. Draw the full limb so it can rotate around its pivot continuously.
+   - Any external masses (dresses, cloaks, long hair, large props) MUST be drawn as secondary, overlapping panels anchored to the skeleton (e.g. pinned at the waist or neck) so they can swing freely without breaking the underlying ragdoll.
+   - Group related parts logically (e.g. \`arm_lower\` inside \`arm_upper\`).
 4. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
    - Furthest background limbs MUST appear first in the \`<g>\` block. Foreground limbs MUST appear last.
    - Mirror that exact overlap ordering in the JSON rig using the \`zIndex\` field (Lower \`zIndex\` = back, higher \`zIndex\` = front).
