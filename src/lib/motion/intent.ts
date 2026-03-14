@@ -466,20 +466,39 @@ export function sanitizeMotionIntentForRig(
         ...(topology.primaryChain ? topology.primaryChain.nodeIds.slice(0, 2) : []),
       ]));
 
-  const axialWaves = normalizedIntent.rotationTracks.length > 0 || normalizedIntent.axialWaves.length > 0
-    ? normalizedIntent.axialWaves
-    : normalizedIntent.explicitChannelsOnly
-      ? []
-      : defaultWavesForTopology(rig, topology, {
-          motionFamily: normalizedIntent.family,
-          tempo: 1,
-          amplitude: 1,
-          intensity: 0.5,
-          locomotion: {
-            mode: normalizedIntent.locomotion.mode,
-            preferredDirection: normalizedIntent.locomotion.direction,
-          },
-        });
+  const explicitlyAnimatedNodes = new Set<string>();
+  normalizedIntent.rotationTracks.forEach((track) => {
+    explicitlyAnimatedNodes.add(track.nodeId);
+  });
+  normalizedIntent.axialWaves.forEach((wave) => {
+    wave.nodeIds.forEach((nodeId) => explicitlyAnimatedNodes.add(nodeId));
+  });
+
+  const baseProceduralWaves = normalizedIntent.explicitChannelsOnly
+    ? []
+    : defaultWavesForTopology(rig, topology, {
+        motionFamily: normalizedIntent.family,
+        tempo: 1,
+        amplitude: 1,
+        intensity: 0.5,
+        locomotion: {
+          mode: normalizedIntent.locomotion.mode,
+          preferredDirection: normalizedIntent.locomotion.direction,
+        },
+      });
+
+  // Filter out any nodes from procedural waves that the LLM explicitly keyframed
+  const mergedProceduralWaves = baseProceduralWaves
+    .map((wave) => ({
+      ...wave,
+      nodeIds: wave.nodeIds.filter((nodeId) => !explicitlyAnimatedNodes.has(nodeId)),
+    }))
+    .filter((wave) => wave.nodeIds.length > 0);
+
+  const axialWaves = [
+    ...normalizedIntent.axialWaves,
+    ...mergedProceduralWaves,
+  ];
 
   return {
     ...normalizedIntent,
