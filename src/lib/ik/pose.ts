@@ -56,20 +56,19 @@ export function clonePoseState(state: PoseState): PoseState {
 export function clampLocalRotation(graph: PoseGraph, nodeId: string, value: number): number {
   const node = graph.nodeMap.get(nodeId);
   const normalized = normalizeDegrees(value);
-  if (!node?.rotationLimit) return normalized;
+  if (!node?.rotationLimit || node.rotationLimit.length !== 2) return normalized;
 
   const min = node.rotationLimit[0];
   const max = node.rotationLimit[1];
 
+  // Assuming limits are defined strictly as [min, max] where min <= max, e.g. [-130, 0] or [0, 130] or [-45, 45]
   if (min > max) {
-    if (normalized >= min || normalized <= max) return normalized;
-  } else {
-    if (normalized >= min && normalized <= max) return normalized;
+    // Malformed limit (e.g. [130, 0]), just return normalized to avoid catastrophic solver failure
+    console.warn(`Malformed rotation limit on node ${nodeId}: [${min}, ${max}]`);
+    return normalized;
   }
 
-  const distToMin = Math.abs(normalizeDegrees(min - normalized));
-  const distToMax = Math.abs(normalizeDegrees(max - normalized));
-  return distToMin < distToMax ? min : max;
+  return Math.min(Math.max(normalized, min), max);
 }
 
 export function computePoseLayout(graph: PoseGraph, pose: PoseState): PoseLayout {
