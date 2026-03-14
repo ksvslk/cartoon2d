@@ -90,7 +90,7 @@ CRITICAL: Your response MUST contain TWO things:
 ## Rules
 - Output the JSON object first as a text block.
 - Then, for EACH beat, generate a vivid, colorful flat 2D style illustration based on the comic_panel_prompt.
-- EXTREME 2D FLATNESS REQUIRED: The art style MUST be composed of highly abstract, minimal vector-like solid color shapes. NO shading, NO gradients, NO 3D rendering, NO photorealism.
+- EXTREME 2D FLATNESS REQUIRED: The art style MUST be hyper-minimalist preschool 2D cutout animation. Think thick clean outlines, bold primary colors, and childlike geometric simplicity. Use large solid blocks of color with zero internal texture. Make it look like a vector logo or a paper cutout puppet. Limbs should be simple thick strokes or abstract rectangles. NO shading, NO gradients, NO 3D rendering, NO photorealism.
 - CHARACTER ANGLES: Draw characters from the most cinematically appropriate angle for the scene — front view for dialogue, side profile for walking, 3/4 view for natural depth. Keep angles consistent within a scene.
 - SUBJECT/BACKGROUND CONTRAST IS CRITICAL: The active characters must remain clearly readable against the background at a glance. Use strong silhouette separation, opposing value bands, simplified backdrops behind the subject, or subtle rim separation so tails, fins, limbs, and body edges never disappear into dark scenery.
 - FULL-BODY RIG REFERENCE QUALITY IS CRITICAL: Any active subject that may later be rigged must be fully visible in frame from head to toe or tip to tip. Do NOT crop feet, hands, fins, tails, hats, props, wheels, or other silhouette-defining extremities unless the user explicitly asks for a close-up.
