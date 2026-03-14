@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Stage from "@/components/Stage";
 import TimelinePanel from "@/components/TimelinePanel";
+import PropertiesPanel, { type ActionUpdate } from "@/components/PropertiesPanel";
 import { Send, Play, Image as ImageIcon, ImageOff, Volume2, Sparkles, LayoutList, SlidersHorizontal, ChevronDown, ChevronUp, Loader2, Film, Trash2, Pencil, Plus, Copy, Mountain, Bug } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { processScenePromptStream, processSceneImageEdit } from "@/app/actions/scene";
@@ -1800,6 +1801,132 @@ export default function Home() {
     });
   };
 
+  const handleUpdateCamera = (key: string, value: unknown) => {
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const currentBeat = newBeats[selectedSceneIndex];
+      const updatedBeat = {
+        ...currentBeat,
+        camera: { ...(currentBeat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 }), [key]: value }
+      };
+      const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+      const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
+      return { ...prev, beats: newBeats };
+    });
+  };
+
+  const handleClearCameraTarget = () => {
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const currentBeat = newBeats[selectedSceneIndex];
+      const currentCam = currentBeat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 };
+      const { target_x, target_y, target_zoom, target_actor_id, ...rest } = currentCam;
+      const updatedBeat = { ...currentBeat, camera: rest };
+      const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+      const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
+      return { ...prev, beats: newBeats };
+    });
+  };
+
+  const handleUpdateAction = (update: ActionUpdate) => {
+    if (selectedActionIndex === null) return;
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const currentBeat = newBeats[selectedSceneIndex];
+      const newActions = [...currentBeat.actions];
+      const currentAction = newActions[selectedActionIndex];
+
+      // Merge spatial_transform
+      let newSpatialTransform = currentAction.spatial_transform;
+      if (update.spatial_transform) {
+        const oldTransform = currentAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
+        newSpatialTransform = { ...oldTransform, ...update.spatial_transform };
+      }
+
+      // Merge target_spatial_transform
+      let newTargetSpatialTransform = currentAction.target_spatial_transform;
+      if (update.target_spatial_transform !== undefined) {
+        if (update.target_spatial_transform === null) {
+          newTargetSpatialTransform = undefined;
+        } else {
+          const fallbackTarget = currentAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
+          newTargetSpatialTransform = {
+            ...fallbackTarget,
+            ...(currentAction.target_spatial_transform || {}),
+            ...update.target_spatial_transform,
+          };
+        }
+      }
+
+      // Merge animation_overrides
+      let newAnimOverrides = currentAction.animation_overrides;
+      if (update.animation_overrides) {
+        newAnimOverrides = { ...(currentAction.animation_overrides || {}), ...update.animation_overrides };
+      }
+
+      newActions[selectedActionIndex] = {
+        ...currentAction,
+        ...(update.motion !== undefined ? { motion: update.motion } : {}),
+        ...(update.style !== undefined ? { style: update.style } : {}),
+        ...(update.duration_seconds !== undefined ? { duration_seconds: update.duration_seconds } : {}),
+        spatial_transform: newSpatialTransform,
+        target_spatial_transform: newTargetSpatialTransform,
+        animation_overrides: newAnimOverrides,
+      };
+
+      const nextBeat = { ...currentBeat, actions: newActions };
+      const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+      return { ...prev, beats: newBeats };
+    });
+  };
+
+  const handleDeleteAction = () => {
+    if (selectedActionIndex === null) return;
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const currentBeat = newBeats[selectedSceneIndex];
+      const newActions = [...currentBeat.actions];
+      newActions.splice(selectedActionIndex, 1);
+      const nextBeat = { ...currentBeat, actions: newActions };
+      const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+      return { ...prev, beats: newBeats };
+    });
+    setSelectedActionIndex(null);
+  };
+
+  const handleUpdateCollisionBehavior = (value: "halt" | "slide" | "bounce") => {
+    if (selectedActionIndex === null) return;
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const currentBeat = newBeats[selectedSceneIndex];
+      const newActions = [...currentBeat.actions];
+      const currentAction = newActions[selectedActionIndex];
+      newActions[selectedActionIndex] = {
+        ...currentAction,
+        animation_overrides: {
+          ...(currentAction.animation_overrides || {}),
+          collision_behavior: value,
+        },
+      };
+      const nextBeat = { ...currentBeat, actions: newActions };
+      const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+      return { ...prev, beats: newBeats };
+    });
+  };
+
   const handleActorScaleChange = (actorId: string, scaleRatio: number) => {
     setStoryData(prev => {
       if (!prev) return prev;
@@ -3366,735 +3493,23 @@ export default function Home() {
 
           {/* Right Panel: Properties Panel (for Timeline Editing) */}
           <Panel defaultSize={20} minSize={15} maxSize={30}>
-            <div className="w-full h-full flex flex-col bg-white/60 dark:bg-[#070707]/80 backdrop-blur-md border-l border-neutral-200/50 dark:border-neutral-800/50 z-20 transition-colors duration-300">
-              <div className="h-10 border-b border-neutral-200/60 dark:border-neutral-800/60 flex items-center px-4 bg-white dark:bg-[#0a0a0a] shrink-0 transition-colors">
-                <span className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest flex items-center gap-2"><SlidersHorizontal size={14} className="text-cyan-600 dark:text-cyan-500" /> Properties</span>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
-                {(() => {
-                  if (!storyData || storyData.beats.length === 0) {
-                    return <div className="mt-8 text-center text-[10px] text-neutral-400 dark:text-neutral-600 font-mono transition-colors">Awaiting story data...</div>;
-                  }
-
-                  const beat = storyData.beats[selectedSceneIndex];
-                  if (!beat) {
-                    return <div className="mt-8 text-center text-[10px] text-neutral-400 dark:text-neutral-600 font-mono transition-colors">Awaiting story data...</div>;
-                  }
-                  const selectedBindingRef = findCompiledBinding(beat.compiled_scene, selectedActionIndex);
-
-                  // ── Camera Overview (shown when camera track selected) ──────
-                  if (isCameraSelected) {
-                    const cam = beat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 };
-                    
-                    const updateCamera = (key: string, value: any) => {
-                      setStoryData(prev => {
-                        if (!prev) return prev;
-                        const newBeats = [...prev.beats];
-                        const currentBeat = newBeats[selectedSceneIndex];
-                        const updatedBeat = {
-                          ...currentBeat,
-                          camera: { ...(currentBeat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 }), [key]: value }
-                        };
-                        const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
-                        const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
-                        newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
-                        return { ...prev, beats: newBeats };
-                      });
-                    };
-
-                    const clearTarget = () => {
-                      setStoryData(prev => {
-                        if (!prev) return prev;
-                        const newBeats = [...prev.beats];
-                        const currentBeat = newBeats[selectedSceneIndex];
-                        const currentCam = currentBeat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 };
-                        const { target_x, target_y, target_zoom, target_actor_id, ...rest } = currentCam;
-                        const updatedBeat = {
-                          ...currentBeat,
-                          camera: rest
-                        };
-                        const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
-                        const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
-                        newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
-                        return { ...prev, beats: newBeats };
-                      });
-                    };
-
-                    return (
-                      <div className="flex flex-col gap-5 transition-opacity">
-                        <div>
-                          <div className="text-[10px] text-amber-500 dark:text-amber-500 font-bold mb-1 uppercase tracking-wider flex justify-between">
-                            <span>Camera Lens</span>
-                          </div>
-                          <div className="w-full h-8 bg-amber-50 dark:bg-amber-900/20 rounded border border-amber-200 dark:border-amber-700/50 flex items-center px-3 text-xs text-amber-700 dark:text-amber-300 font-mono shadow-sm dark:shadow-none transition-colors">
-                            {cam.target_x !== undefined || cam.target_actor_id ? "Cinematic Pan / Follow" : "Static Camera"}
-                          </div>
-                        </div>
-
-                        {/* Start Transforms */}
-                        <div 
-                          className={`p-2 rounded-lg transition-all cursor-pointer ${selectedKeyframe === 'start' ? 'bg-cyan-50 dark:bg-cyan-900/40 ring-2 ring-cyan-400 dark:ring-cyan-500 shadow-md' : 'bg-transparent hover:bg-neutral-50 dark:hover:bg-neutral-800/50 opacity-50 grayscale border border-dashed border-neutral-300 dark:border-neutral-700'}`}
-                          onClick={() => selectedKeyframe !== 'start' && setSelectedKeyframe('start')}
-                        >
-                          <div className="text-[10px] text-cyan-600 dark:text-cyan-400 font-bold mb-3 uppercase tracking-wider flex justify-between items-center">
-                            <span>Start Keyframe</span>
-                            {selectedKeyframe === 'start' && (
-                              <button onClick={(e) => {
-                                 e.stopPropagation();
-                                 updateCamera('x', 960);
-                                 updateCamera('y', 540);
-                                 updateCamera('zoom', 1.0);
-                                 updateCamera('rotation', 0);
-                              }} className="px-1.5 py-0.5 border border-cyan-200 bg-white text-cyan-600 rounded text-[9px] hover:bg-cyan-100 dark:bg-transparent dark:hover:bg-cyan-900 transition-colors">Reset</button>
-                            )}
-                          </div>
-                          <div className={`grid grid-cols-2 gap-2 mb-2 ${selectedKeyframe !== 'start' ? 'pointer-events-none' : ''}`}>
-                             {[
-                                { label: 'X', prop: 'x', val: cam.x ?? 960, step: 10 },
-                                { label: 'Y', prop: 'y', val: cam.y ?? 540, step: 10 },
-                                { label: 'Zoom', prop: 'zoom', val: cam.zoom ?? 1, step: 0.05 },
-                                { label: 'Rot', prop: 'rotation', val: cam.rotation ?? 0, step: 1 }
-                             ].map((field) => (
-                               <div key={`cam-start-${field.prop}`} className="flex flex-col gap-1">
-                                 <label className="text-[9px] text-neutral-400 font-mono tracking-widest">{field.label}</label>
-                                 <input
-                                   type="number"
-                                   step={field.step || 1}
-                                   value={typeof field.val === 'number' ? Number((field.val).toFixed(2)) : field.val}
-                                   onChange={(e) => {
-                                      const p = parseFloat(e.target.value);
-                                      let val = isNaN(p) ? 0 : p;
-                                      if (field.prop === 'zoom') val = Math.max(0.01, val);
-                                      updateCamera(field.prop, val);
-                                   }}
-                                   className="w-full h-7 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700 px-2 text-xs text-neutral-700 dark:text-neutral-300 font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
-                                 />
-                               </div>
-                             ))}
-                          </div>
-                        </div>
-
-                        {/* End Transforms */}
-                        <div 
-                          className={`p-2 rounded-lg transition-all cursor-pointer ${selectedKeyframe === 'end' ? 'bg-blue-50 dark:bg-blue-900/40 ring-2 ring-blue-400 dark:ring-blue-500 shadow-md' : 'bg-transparent hover:bg-neutral-50 dark:hover:bg-neutral-800/50 opacity-50 grayscale border border-dashed border-neutral-300 dark:border-neutral-700'}`}
-                          onClick={() => selectedKeyframe !== 'end' && setSelectedKeyframe('end')}
-                        >
-                          <div className="text-[10px] text-blue-600 dark:text-blue-400 font-bold mb-3 uppercase tracking-wider flex justify-between items-center">
-                            <span>End Keyframe</span>
-                            {selectedKeyframe === 'end' && (
-                              <button onClick={(e) => {
-                                e.stopPropagation();
-                                clearTarget();
-                              }} className="px-1.5 py-0.5 border border-blue-200 bg-white text-blue-600 rounded text-[9px] hover:bg-blue-100 dark:bg-transparent dark:hover:bg-blue-900 transition-colors">Clear</button>
-                            )}
-                          </div>
-                          <div className={`grid grid-cols-2 gap-2 mb-2 ${selectedKeyframe !== 'end' ? 'pointer-events-none' : ''}`}>
-                             {[
-                                { label: 'Target X', prop: 'target_x', val: cam.target_x ?? cam.x ?? 960, step: 10 },
-                                { label: 'Target Y', prop: 'target_y', val: cam.target_y ?? cam.y ?? 540, step: 10 },
-                                { label: 'Target Zoom', prop: 'target_zoom', val: cam.target_zoom ?? cam.zoom ?? 1.0, step: 0.05 }
-                             ].map((field) => (
-                               <div key={`cam-end-${field.prop}`} className="flex flex-col gap-1">
-                                 <label className="text-[9px] text-neutral-400 font-mono tracking-widest">{field.label}</label>
-                                 <input
-                                   type="number"
-                                   step={field.step || 1}
-                                   value={typeof field.val === 'number' ? Number((field.val).toFixed(2)) : field.val}
-                                   onChange={(e) => {
-                                      const p = parseFloat(e.target.value);
-                                      let val = isNaN(p) ? 0 : p;
-                                      if (field.prop === 'target_zoom') val = Math.max(0.01, val);
-                                      updateCamera(field.prop, val);
-                                   }}
-                                   className="w-full h-7 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700 px-2 text-xs text-neutral-700 dark:text-neutral-300 font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
-                                 />
-                               </div>
-                             ))}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  // ── Animation Overview (shown when nothing selected) ──────
-                  if (selectedActionIndex === null || !beat.actions[selectedActionIndex]) {
-                    return (
-                      <div className="space-y-5">
-                        <div>
-                          <h3 className="text-[9px] font-bold uppercase tracking-widest text-neutral-400 dark:text-neutral-600 mb-2">Compiled Scene Timeline</h3>
-                          <div className="space-y-1.5">
-                            <div className="rounded border border-indigo-100 dark:border-indigo-800/20 overflow-hidden">
-                              <div className="flex items-center gap-2 px-2 py-1.5 bg-indigo-50 dark:bg-indigo-900/10">
-                                <span className="text-indigo-400 text-[9px] font-mono">↻</span>
-                                <span className="text-[10px] text-neutral-600 dark:text-neutral-400 flex-1">Background ambient</span>
-                                <span className="text-[9px] text-indigo-400 font-mono">
-                                  {beat.compiled_scene?.background_ambient?.length || 0} bind
-                                </span>
-                              </div>
-                              {beat.compiled_scene?.background_ambient?.length ? (
-                                beat.compiled_scene.background_ambient.map(binding => (
-                                  <div
-                                    key={binding.id}
-                                    className="flex items-center gap-2 px-2 py-1 border-t border-indigo-100/60 dark:border-indigo-800/20 bg-indigo-50/40 dark:bg-indigo-900/5"
-                                  >
-                                    <span className="text-indigo-400 text-[9px] font-mono">≈</span>
-                                    <span className="text-[9px] text-neutral-600 dark:text-neutral-400 flex-1">
-                                      {binding.target_id}
-                                      <span className="ml-1 text-indigo-400 font-mono">({binding.label})</span>
-                                    </span>
-                                    <span className="text-[8px] text-indigo-400 font-mono">
-                                      {binding.start_time.toFixed(1)}s + {binding.duration_seconds.toFixed(1)}s
-                                    </span>
-                                  </div>
-                                ))
-                              ) : (
-                                <div className="px-2 py-1.5 border-t border-indigo-100/60 dark:border-indigo-800/20 bg-indigo-50/20 dark:bg-indigo-900/5 text-[9px] text-neutral-500 dark:text-neutral-400">
-                                  No compiled background motion.
-                                </div>
-                              )}
-                            </div>
-                            {beat.compiled_scene?.instance_tracks.length ? (
-                              beat.compiled_scene.instance_tracks.map(track => {
-                                const actorData = storyData.actors_detected.find(a => a.id === track.actor_id);
-                                return (
-                                  <div key={track.actor_id} className="rounded border border-neutral-100 dark:border-neutral-800/40 overflow-hidden">
-                                    <div className="px-2 py-1 bg-neutral-50 dark:bg-neutral-900/50 flex items-center gap-1.5">
-                                      <div className="w-3 h-3 rounded-sm bg-neutral-200 dark:bg-neutral-800 overflow-hidden shrink-0">
-                                        {actorReferences[track.actor_id] && <img src={actorReferences[track.actor_id]} alt="" className="w-full h-full object-cover" />}
-                                      </div>
-                                      <span className="text-[10px] font-semibold text-neutral-600 dark:text-neutral-300 flex-1 truncate">{actorData?.name || track.actor_id}</span>
-                                    </div>
-                                    {track.clip_bindings.map(binding => (
-                                      <div
-                                        key={binding.id}
-                                        className="flex items-center gap-2 px-2 py-1 border-t border-neutral-100 dark:border-neutral-800/30 bg-blue-50/50 dark:bg-blue-900/10 cursor-pointer hover:bg-blue-100/60 dark:hover:bg-blue-900/20 transition-colors"
-                                        onClick={() => { setSelectedActionIndex(binding.source_action_index); setSelectedActorId(track.actor_id); }}
-                                      >
-                                        <span className="text-blue-400 text-[9px] font-mono">▶</span>
-                                        <span className="text-[9px] text-neutral-600 dark:text-neutral-400 flex-1">
-                                          {binding.motion} <span className="text-neutral-400">({binding.style})</span>
-                                          <span className="ml-1 text-cyan-500 font-mono">→ {binding.clip_id === "base_object" ? "object" : binding.clip_id}</span>
-                                        </span>
-                                        <span className="text-[8px] text-blue-400 font-mono">{binding.start_time.toFixed(1)}s + {binding.duration_seconds.toFixed(1)}s</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                );
-                              })
-                            ) : (
-                              beat.actions.map((action, idx) => (
-                                <div
-                                  key={idx}
-                                  className="flex items-center gap-2 px-2 py-1 border border-neutral-100 dark:border-neutral-800/40 bg-blue-50/50 dark:bg-blue-900/10 cursor-pointer hover:bg-blue-100/60 dark:hover:bg-blue-900/20 transition-colors rounded"
-                                  onClick={() => { setSelectedActionIndex(idx); setSelectedActorId(action.actor_id); }}
-                                >
-                                  <span className="text-blue-400 text-[9px] font-mono">▶</span>
-                                  <span className="text-[9px] text-neutral-600 dark:text-neutral-400 flex-1">{action.motion} <span className="text-neutral-400">({action.style})</span></span>
-                                  <span className="text-[8px] text-blue-400 font-mono">{action.duration_seconds}s</span>
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  const action = beat.actions[selectedActionIndex];
-                  const binding = selectedBindingRef?.binding;
-
-                  const updateCollisionBehavior = (value: "halt" | "slide" | "bounce") => {
-                    setStoryData(prev => {
-                      if (!prev) return prev;
-                      const newBeats = [...prev.beats];
-                      const currentBeat = newBeats[selectedSceneIndex];
-                      const newActions = [...currentBeat.actions];
-                      const currentAction = newActions[selectedActionIndex];
-                      newActions[selectedActionIndex] = {
-                        ...currentAction,
-                        animation_overrides: {
-                          ...(currentAction.animation_overrides || {}),
-                          collision_behavior: value,
-                        },
-                      };
-                      const nextBeat = {
-                        ...currentBeat,
-                        actions: newActions,
-                      };
-                      const previousCompiledScene = selectedSceneIndex > 0
-                        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
-                        : null;
-                      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-                      newBeats[selectedSceneIndex] = {
-                        ...nextBeat,
-                        compiled_scene: recompiled,
-                      };
-                      return { ...prev, beats: newBeats };
-                    });
-                  };
-
-                  return (
-                    <div className="flex flex-col gap-5 transition-opacity">
-                      <div>
-                        <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-1 uppercase tracking-wider flex justify-between">
-                          <span>{binding ? "Selected Binding" : "Selected Action"}</span>
-                          <span className="text-cyan-500">{action.actor_id}</span>
-                        </div>
-                        <div className="w-full h-8 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 flex items-center px-3 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-sm dark:shadow-none transition-colors">
-                          {action.motion}({action.style}){binding ? ` -> ${binding.clip_id === "base_object" ? "object" : binding.clip_id}` : ""}
-                        </div>
-                        {binding?.collision && (
-                          <div className="mt-2 text-[11px] text-amber-600 dark:text-amber-300">
-                            Collision stop: {binding.collision.obstacle_id} at x={Math.round(binding.collision.stop_x)}
-                            {binding.collision.stop_time !== undefined ? ` @ ${binding.collision.stop_time.toFixed(2)}s` : ""}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Motion Editor */}
-                      <div>
-                        <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-2 uppercase tracking-wider flex items-center gap-2">
-                          <Play size={12} /> Motion
-                        </div>
-                        <select
-                          value={action.motion}
-                          onChange={e => {
-                            const newMotion = e.target.value;
-                            setStoryData(prev => {
-                              if (!prev) return prev;
-                              const newBeats = [...prev.beats];
-                              const currentBeat = newBeats[selectedSceneIndex];
-                              const newActions = [...currentBeat.actions];
-                              newActions[selectedActionIndex] = {
-                                ...newActions[selectedActionIndex],
-                                motion: newMotion,
-                                // Clear target transform for non-movement motions
-                                target_spatial_transform: motionNeedsTarget(newMotion)
-                                  ? newActions[selectedActionIndex].target_spatial_transform
-                                  : undefined,
-                              };
-                              const nextBeat = { ...currentBeat, actions: newActions };
-                              const previousCompiledScene = selectedSceneIndex > 0
-                                ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
-                                : null;
-                              const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-                              newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                              return { ...prev, beats: newBeats };
-                            });
-                          }}
-                          className="w-full h-8 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 px-2 text-xs text-neutral-700 dark:text-neutral-300 shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-cyan-500/50 cursor-pointer appearance-none"
-                        >
-                          {(() => {
-                            const rig = storyData?.actors_detected.find(a => a.id === action.actor_id)?.drafted_rig;
-                            const availableMotions = new Set<string>();
-                            availableMotions.add(action.motion); // Always keep current motion as an option
-                            if (rig?.rig_data.motion_clips) {
-                              Object.keys(rig.rig_data.motion_clips).forEach(m => availableMotions.add(m));
-                            } else {
-                              // If no rig, at least allow idle and whatever it is now
-                              availableMotions.add('idle');
-                            }
-                            return Array.from(availableMotions).map(m => (
-                              <option key={m} value={m}>{m}</option>
-                            ));
-                          })()}
-                        </select>
-                      </div>
-
-                      {/* Transforms Editor */}
-                      <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800/40 relative mt-4">
-                        {selectedKeyframe && (
-                          <div className="absolute -top-3 left-0 bg-cyan-100/90 text-cyan-800 dark:bg-cyan-900/80 dark:text-cyan-200 px-2 py-0.5 rounded text-[9px] font-bold tracking-widest uppercase border border-cyan-200 dark:border-cyan-800 backdrop-blur shadow-sm">
-                            Editing {selectedKeyframe} Keyframe
-                          </div>
-                        )}
-                        {(!selectedKeyframe || selectedKeyframe === 'start') && (
-                          <div className={`p-2 rounded-lg transition-colors ${selectedKeyframe === 'start' ? 'bg-cyan-50 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : ''}`}>
-                            <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex justify-between items-center">
-                              <span className={selectedKeyframe === 'start' ? 'text-cyan-600 dark:text-cyan-400 font-bold' : ''}>Start Keyframe</span>
-                            </div>
-                            <div className="grid grid-cols-3 gap-2 mb-2">
-                              {[
-                                { label: 'X', prop: 'x', val: action.spatial_transform?.x ?? 960 },
-                                { label: 'Y', prop: 'y', val: action.spatial_transform?.y ?? 950 },
-                                { label: 'Scale', prop: 'scale', val: action.spatial_transform?.scale ?? 0.5, step: 0.05 }
-                              ].map((field) => (
-                                <div key={`start-${field.prop}`} className="flex flex-col gap-1">
-                                  <label className="text-[9px] text-neutral-400 font-mono tracking-widest">{field.label}</label>
-                                  <input
-                                    type="number"
-                                    step={field.step || 1}
-                                    value={typeof field.val === 'number' ? Number((field.val).toFixed(2)) : field.val}
-                                    onChange={(e) => {
-                                      const val = parseFloat(e.target.value);
-                                      if (isNaN(val)) return;
-                                      setStoryData(prev => {
-                                        if (!prev) return prev;
-                                        const newBeats = [...prev.beats];
-                                        const currentBeat = newBeats[selectedSceneIndex];
-                                        const newActions = [...currentBeat.actions];
-                                        const currentAction = newActions[selectedActionIndex];
-                                        
-                                        const oldVal = (currentAction.spatial_transform as any)?.[field.prop] ?? (field.prop === 'scale' ? 0.5 : (field.prop === 'x' ? 960 : 950));
-                                        const diff = val - oldVal;
-                                        
-                                        const newSpatialTransform = {
-                                          ...(currentAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
-                                          [field.prop]: val
-                                        };
-                                        
-                                        // Shift target if available
-                                        const newTargetSpatialTransform = currentAction.target_spatial_transform ? { ...currentAction.target_spatial_transform } : undefined;
-                                        if (newTargetSpatialTransform) {
-                                          if (field.prop === 'x' || field.prop === 'y') {
-                                            newTargetSpatialTransform[field.prop] = (newTargetSpatialTransform[field.prop] ?? oldVal) + diff;
-                                          } else if (field.prop === 'scale') {
-                                            newTargetSpatialTransform.scale = (newTargetSpatialTransform.scale ?? oldVal) * (val / oldVal);
-                                          }
-                                        }
-
-                                        newActions[selectedActionIndex] = {
-                                          ...currentAction,
-                                          spatial_transform: newSpatialTransform,
-                                          target_spatial_transform: newTargetSpatialTransform
-                                        };
-
-                                        const nextBeat = { ...currentBeat, actions: newActions };
-                                        const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
-                                        const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-                                        newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                                        return { ...prev, beats: newBeats };
-                                      });
-                                    }}
-                                    className={`w-full h-7 bg-white dark:bg-neutral-900 rounded border px-1.5 text-xs font-mono shadow-inner focus:outline-none focus:ring-1 transition-colors ${selectedKeyframe === 'start' ? 'border-cyan-300 dark:border-cyan-700/50 text-cyan-800 dark:text-cyan-300 focus:ring-cyan-500/50' : 'border-neutral-200 dark:border-neutral-700/50 text-neutral-700 dark:text-neutral-300 focus:ring-cyan-500/30'}`}
-                                  />
-                                </div>
-                              ))}
-                            </div>
-                            <div className="flex gap-4">
-                              <label className="flex items-center gap-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={action.spatial_transform?.flip_x ?? false}
-                                  onChange={(e) => {
-                                    setStoryData(prev => {
-                                      if (!prev) return prev;
-                                      const newBeats = [...prev.beats];
-                                      const currentBeat = newBeats[selectedSceneIndex];
-                                      const newActions = [...currentBeat.actions];
-                                      newActions[selectedActionIndex] = {
-                                        ...newActions[selectedActionIndex],
-                                        spatial_transform: {
-                                          ...(newActions[selectedActionIndex].spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
-                                          flip_x: e.target.checked
-                                        }
-                                      };
-                                      const nextBeat = { ...currentBeat, actions: newActions };
-                                      const recompiled = compileBeatToScene(nextBeat, availableRigs, selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null, stageOrientation);
-                                      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                                      return { ...prev, beats: newBeats };
-                                    });
-                                  }}
-                                  className={`rounded border-neutral-300 text-cyan-500 focus:ring-cyan-500/50 dark:border-neutral-600 dark:bg-neutral-800 ${selectedKeyframe === 'start' ? 'ring-1 ring-cyan-400' : ''}`}
-                                />
-                                <span className={`text-[9px] font-mono tracking-widest uppercase ${selectedKeyframe === 'start' ? 'text-cyan-700 dark:text-cyan-400' : 'text-neutral-500 dark:text-neutral-400'}`}>Flip X</span>
-                              </label>
-                              <label className="flex items-center gap-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={action.spatial_transform?.flip_y ?? false}
-                                  onChange={(e) => {
-                                    setStoryData(prev => {
-                                      if (!prev) return prev;
-                                      const newBeats = [...prev.beats];
-                                      const currentBeat = newBeats[selectedSceneIndex];
-                                      const newActions = [...currentBeat.actions];
-                                      newActions[selectedActionIndex] = {
-                                        ...newActions[selectedActionIndex],
-                                        spatial_transform: {
-                                          ...(newActions[selectedActionIndex].spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
-                                          flip_y: e.target.checked
-                                        }
-                                      };
-                                      const nextBeat = { ...currentBeat, actions: newActions };
-                                      const recompiled = compileBeatToScene(nextBeat, availableRigs, selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null, stageOrientation);
-                                      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                                      return { ...prev, beats: newBeats };
-                                    });
-                                  }}
-                                  className={`rounded border-neutral-300 text-cyan-500 focus:ring-cyan-500/50 dark:border-neutral-600 dark:bg-neutral-800 ${selectedKeyframe === 'start' ? 'ring-1 ring-cyan-400' : ''}`}
-                                />
-                                <span className={`text-[9px] font-mono tracking-widest uppercase ${selectedKeyframe === 'start' ? 'text-cyan-700 dark:text-cyan-400' : 'text-neutral-500 dark:text-neutral-400'}`}>Flip Y</span>
-                              </label>
-                            </div>
-                          </div>
-                        )}
-
-                        {motionNeedsTarget(action.motion) && (!selectedKeyframe || selectedKeyframe === 'end') && (
-                          <div className={`mt-2 p-2 rounded-lg transition-colors ${selectedKeyframe === 'end' ? 'bg-cyan-50 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : ''}`}>
-                            <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider flex justify-between items-center">
-                              <span className={selectedKeyframe === 'end' ? 'text-cyan-600 dark:text-cyan-400 font-bold' : ''}>End Keyframe</span>
-                            </div>
-                            <div className="grid grid-cols-3 gap-2 mb-2">
-                              {[
-                                { label: 'X', prop: 'x', val: action.target_spatial_transform?.x ?? (action.spatial_transform?.x ?? 960) },
-                                { label: 'Y', prop: 'y', val: action.target_spatial_transform?.y ?? (action.spatial_transform?.y ?? 950) },
-                                { label: 'Scale', prop: 'scale', val: action.target_spatial_transform?.scale ?? (action.spatial_transform?.scale ?? 0.5), step: 0.05 }
-                              ].map((field) => (
-                                <div key={`end-${field.prop}`} className="flex flex-col gap-1">
-                                  <label className="text-[9px] text-neutral-400 font-mono tracking-widest">{field.label}</label>
-                                  <input
-                                    type="number"
-                                    step={field.step || 1}
-                                    value={typeof field.val === 'number' ? Number((field.val).toFixed(2)) : field.val}
-                                    onChange={(e) => {
-                                      const val = parseFloat(e.target.value);
-                                      if (isNaN(val)) return;
-                                      setStoryData(prev => {
-                                        if (!prev) return prev;
-                                        const newBeats = [...prev.beats];
-                                        const currentBeat = newBeats[selectedSceneIndex];
-                                        const newActions = [...currentBeat.actions];
-                                        const fallbackTarget = newActions[selectedActionIndex].spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
-                                        newActions[selectedActionIndex] = {
-                                          ...newActions[selectedActionIndex],
-                                          target_spatial_transform: {
-                                            ...fallbackTarget,
-                                            ...(newActions[selectedActionIndex].target_spatial_transform || {}),
-                                            [field.prop]: val
-                                          }
-                                        };
-                                        const nextBeat = { ...currentBeat, actions: newActions };
-                                        const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
-                                        const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-                                        newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                                        return { ...prev, beats: newBeats };
-                                      });
-                                    }}
-                                    className={`w-full h-7 bg-white dark:bg-neutral-900 rounded border px-1.5 text-xs font-mono shadow-inner focus:outline-none focus:ring-1 transition-colors ${selectedKeyframe === 'end' ? 'border-cyan-300 dark:border-cyan-700/50 text-cyan-800 dark:text-cyan-300 focus:ring-cyan-500/50' : 'border-neutral-200 dark:border-neutral-700/50 text-cyan-700 dark:text-cyan-400 focus:ring-cyan-500/30'}`}
-                                  />
-                                </div>
-                              ))}
-                            </div>
-                            <div className="flex gap-4">
-                              <label className="flex items-center gap-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={action.target_spatial_transform?.flip_x ?? action.spatial_transform?.flip_x ?? false}
-                                  onChange={(e) => {
-                                    setStoryData(prev => {
-                                      if (!prev) return prev;
-                                      const newBeats = [...prev.beats];
-                                      const currentBeat = newBeats[selectedSceneIndex];
-                                      const newActions = [...currentBeat.actions];
-                                      const fallbackTarget = newActions[selectedActionIndex].spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
-                                      newActions[selectedActionIndex] = {
-                                        ...newActions[selectedActionIndex],
-                                        target_spatial_transform: {
-                                          ...fallbackTarget,
-                                          ...(newActions[selectedActionIndex].target_spatial_transform || {}),
-                                          flip_x: e.target.checked
-                                        }
-                                      };
-                                      const nextBeat = { ...currentBeat, actions: newActions };
-                                      const recompiled = compileBeatToScene(nextBeat, availableRigs, selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null, stageOrientation);
-                                      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                                      return { ...prev, beats: newBeats };
-                                    });
-                                  }}
-                                  className={`rounded border-neutral-300 text-cyan-500 focus:ring-cyan-500/50 dark:border-neutral-600 dark:bg-neutral-800 ${selectedKeyframe === 'end' ? 'ring-1 ring-cyan-400' : ''}`}
-                                />
-                                <span className={`text-[9px] font-mono tracking-widest uppercase ${selectedKeyframe === 'end' ? 'text-cyan-700 dark:text-cyan-400' : 'text-neutral-500 dark:text-neutral-400'}`}>Flip X</span>
-                              </label>
-                              <label className="flex items-center gap-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={action.target_spatial_transform?.flip_y ?? action.spatial_transform?.flip_y ?? false}
-                                  onChange={(e) => {
-                                    setStoryData(prev => {
-                                      if (!prev) return prev;
-                                      const newBeats = [...prev.beats];
-                                      const currentBeat = newBeats[selectedSceneIndex];
-                                      const newActions = [...currentBeat.actions];
-                                      const fallbackTarget = newActions[selectedActionIndex].spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
-                                      newActions[selectedActionIndex] = {
-                                        ...newActions[selectedActionIndex],
-                                        target_spatial_transform: {
-                                          ...fallbackTarget,
-                                          ...(newActions[selectedActionIndex].target_spatial_transform || {}),
-                                          flip_y: e.target.checked
-                                        }
-                                      };
-                                      const nextBeat = { ...currentBeat, actions: newActions };
-                                      const recompiled = compileBeatToScene(nextBeat, availableRigs, selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null, stageOrientation);
-                                      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                                      return { ...prev, beats: newBeats };
-                                    });
-                                  }}
-                                  className={`rounded border-neutral-300 text-cyan-500 focus:ring-cyan-500/50 dark:border-neutral-600 dark:bg-neutral-800 ${selectedKeyframe === 'end' ? 'ring-1 ring-cyan-400' : ''}`}
-                                />
-                                <span className={`text-[9px] font-mono tracking-widest uppercase ${selectedKeyframe === 'end' ? 'text-cyan-700 dark:text-cyan-400' : 'text-neutral-500 dark:text-neutral-400'}`}>Flip Y</span>
-                              </label>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Timeline Editor */}
-                      <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800/40 mt-4">
-                        <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-3 uppercase tracking-wider">
-                          Timeline Properties
-                        </div>
-                        <div className="grid grid-cols-3 gap-3">
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[9px] text-neutral-400 font-mono tracking-widest">Delay (s)</label>
-                            <input
-                              type="number"
-                              step={0.1}
-                              min={0}
-                              value={Number((action.animation_overrides?.delay ?? 0).toFixed(2))}
-                              onChange={(e) => {
-                                const val = Math.max(0, parseFloat(e.target.value) || 0);
-                                setStoryData(prev => {
-                                  if (!prev) return prev;
-                                  const newBeats = [...prev.beats];
-                                  const currentBeat = newBeats[selectedSceneIndex];
-                                  const newActions = [...currentBeat.actions];
-                                  newActions[selectedActionIndex] = {
-                                    ...newActions[selectedActionIndex],
-                                    animation_overrides: {
-                                      ...(newActions[selectedActionIndex].animation_overrides || {}),
-                                      delay: val
-                                    }
-                                  };
-                                  const nextBeat = { ...currentBeat, actions: newActions };
-                                  const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
-                                  const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-                                  newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                                  return { ...prev, beats: newBeats };
-                                });
-                              }}
-                              className="w-full h-7 bg-white dark:bg-neutral-900 rounded border border-neutral-200 dark:border-neutral-700/50 px-1.5 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-inner focus:outline-none focus:ring-1 focus:ring-cyan-500/30 transition-colors"
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[9px] text-neutral-400 font-mono tracking-widest">Duration (s)</label>
-                            <input
-                              type="number"
-                              step={0.1}
-                              min={0.1}
-                              value={Number((action.duration_seconds).toFixed(2))}
-                              onChange={(e) => {
-                                const val = Math.max(0.1, parseFloat(e.target.value) || 0.1);
-                                setStoryData(prev => {
-                                  if (!prev) return prev;
-                                  const newBeats = [...prev.beats];
-                                  const currentBeat = newBeats[selectedSceneIndex];
-                                  const newActions = [...currentBeat.actions];
-                                  newActions[selectedActionIndex] = {
-                                    ...newActions[selectedActionIndex],
-                                    duration_seconds: val
-                                  };
-                                  const nextBeat = { ...currentBeat, actions: newActions };
-                                  const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
-                                  const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-                                  newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                                  return { ...prev, beats: newBeats };
-                                });
-                              }}
-                              className="w-full h-7 bg-white dark:bg-neutral-900 rounded border border-neutral-200 dark:border-neutral-700/50 px-1.5 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-inner focus:outline-none focus:ring-1 focus:ring-cyan-500/30 transition-colors"
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[9px] text-amber-500 font-mono tracking-widest font-bold">Loop Speed (x)</label>
-                            <input
-                              type="number"
-                              step={0.1}
-                              min={0.1}
-                              value={Number((action.animation_overrides?.speed ?? 1.0).toFixed(2))}
-                              onChange={(e) => {
-                                const val = Math.max(0.1, parseFloat(e.target.value) || 1.0);
-                                setStoryData(prev => {
-                                  if (!prev) return prev;
-                                  const newBeats = [...prev.beats];
-                                  const currentBeat = newBeats[selectedSceneIndex];
-                                  const newActions = [...currentBeat.actions];
-                                  newActions[selectedActionIndex] = {
-                                    ...newActions[selectedActionIndex],
-                                    animation_overrides: {
-                                      ...(newActions[selectedActionIndex].animation_overrides || {}),
-                                      speed: val
-                                    }
-                                  };
-                                  const nextBeat = { ...currentBeat, actions: newActions };
-                                  const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
-                                  const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-                                  newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                                  return { ...prev, beats: newBeats };
-                                });
-                              }}
-                              className="w-full h-7 bg-white dark:bg-neutral-900 rounded border border-neutral-200 dark:border-neutral-700/50 px-1.5 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-inner focus:outline-none focus:ring-1 focus:ring-amber-500/30 transition-colors"
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      {binding && (
-                        <div>
-                          <div className="text-[10px] text-neutral-500 dark:text-neutral-500 font-bold mb-2 uppercase tracking-wider flex items-center gap-2">
-                            <Bug size={12} /> Collision Response
-                          </div>
-                          <div className="grid grid-cols-3 gap-2">
-                            {(["halt", "slide", "bounce"] as const).map((mode) => (
-                              <button
-                                key={mode}
-                                type="button"
-                                onClick={() => updateCollisionBehavior(mode)}
-                                className={`rounded border px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-colors ${(binding.collision_behavior || "halt") === mode
-                                    ? "border-amber-400 bg-amber-500 text-black"
-                                    : "border-neutral-200 dark:border-neutral-700/50 bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-                                  }`}
-                              >
-                                {mode}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-
-                      <div className="pt-5 flex justify-end">
-                        <button 
-                          type="button"
-                          className="px-3 py-1.5 rounded bg-red-50 text-red-600 border border-red-200 text-xs font-semibold hover:bg-red-100 dark:bg-red-900/20 dark:border-red-800/50 dark:text-red-400 dark:hover:bg-red-900/40 transition-colors"
-                          onClick={() => {
-                            setStoryData(prev => {
-                              if (!prev) return prev;
-                              const newBeats = [...prev.beats];
-                              const currentBeat = newBeats[selectedSceneIndex];
-                              const newActions = [...currentBeat.actions];
-                              newActions.splice(selectedActionIndex, 1);
-                              const nextBeat = { ...currentBeat, actions: newActions };
-                              const previousCompiledScene = selectedSceneIndex > 0
-                                ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
-                                : null;
-                              const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-                              newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                              return { ...prev, beats: newBeats };
-                            });
-                            setSelectedActionIndex(null);
-                          }}
-                        >
-                          Delete Action
-                        </button>
-                      </div>
-
-                    </div>
-                  );
-                })()}
-              </div>
-            </div>
+            <PropertiesPanel
+              storyData={storyData}
+              selectedSceneIndex={selectedSceneIndex}
+              selectedActionIndex={selectedActionIndex}
+              selectedActorId={selectedActorId}
+              isCameraSelected={isCameraSelected}
+              selectedKeyframe={selectedKeyframe}
+              actorReferences={actorReferences}
+              onSelectKeyframe={setSelectedKeyframe}
+              onSelectAction={setSelectedActionIndex}
+              onSelectActor={setSelectedActorId}
+              onUpdateCamera={handleUpdateCamera}
+              onClearCameraTarget={handleClearCameraTarget}
+              onUpdateAction={handleUpdateAction}
+              onDeleteAction={handleDeleteAction}
+              onUpdateCollisionBehavior={handleUpdateCollisionBehavior}
+            />
           </Panel>
         </PanelGroup>
       </main>
