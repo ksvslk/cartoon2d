@@ -8,6 +8,7 @@ import { IKInspector } from "./IKInspector";
 import { IKStage } from "./IKStage";
 import { PoseState, computePoseLayout, createRestPoseState } from "@/lib/ik/pose";
 import { RagdollState, createRagdollState, stepRagdoll } from "@/lib/ik/physics";
+import { IKSourceEditor } from "./IKSourceEditor";
 
 type SolverFeedback = {
   key: string;
@@ -265,6 +266,8 @@ export function IKLab({
     onChange(nextData);
   };
 
+  const [activeTab, setActiveTab] = useState<"inspector" | "source">("inspector");
+
   return (
     <div className="grid h-full min-h-[620px] grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="flex min-h-[620px] flex-col gap-4">
@@ -311,16 +314,55 @@ export function IKLab({
         />
       </div>
 
-      <IKInspector
-        graph={graph}
-        layout={layout}
-        selectedNodeId={resolvedSelectedNodeId}
-        pinnedNodeIds={pinnedIds}
-        invalidNodeIds={invalidNodeIds}
-        onTogglePin={togglePin}
-        onUpdatePin={updatePinToCurrentPose}
-        onUpdateLimit={updateLimit}
-      />
+      <div className="flex flex-col gap-3 min-h-0">
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTab("inspector")}
+            className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+              activeTab === "inspector"
+                ? "bg-neutral-800 text-white dark:bg-neutral-200 dark:text-neutral-900"
+                : "border border-neutral-200 text-neutral-600 hover:bg-neutral-50 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-900"
+            }`}
+          >
+            Physics Inspector
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("source")}
+            className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+              activeTab === "source"
+                ? "bg-neutral-800 text-white dark:bg-neutral-200 dark:text-neutral-900"
+                : "border border-neutral-200 text-neutral-600 hover:bg-neutral-50 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-900"
+            }`}
+          >
+            Raw SVG Source
+          </button>
+        </div>
+
+        <div className="flex-1 min-h-[400px]">
+          {activeTab === "inspector" ? (
+            <IKInspector
+              graph={graph}
+              layout={layout}
+              selectedNodeId={resolvedSelectedNodeId}
+              pinnedNodeIds={pinnedIds}
+              invalidNodeIds={invalidNodeIds}
+              onTogglePin={togglePin}
+              onUpdatePin={updatePinToCurrentPose}
+              onUpdateLimit={updateLimit}
+            />
+          ) : (
+            <IKSourceEditor
+              svgData={normalizedData.svg_data}
+              onChange={(nextSvg: string) => {
+                if (!onChange) return;
+                onChange({ ...normalizedData, svg_data: nextSvg });
+              }}
+            />
+          )}
+        </div>
+      </div>
     </div>
   );
 }
