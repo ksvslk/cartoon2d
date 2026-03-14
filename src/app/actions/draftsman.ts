@@ -458,7 +458,7 @@ function buildCanonicalMotionClipFromSpec(params: {
             motionSpec: params.motionSpec,
             allowFallbackSynthesis: false,
         }),
-        displayKeyframes: [],
+        displayKeyframes: [] as any,
     };
 
     return resolvePlayableMotionClip({
@@ -853,52 +853,30 @@ You are the Draftsman, an expert SVG vector artist and technical rigger.
 Your job is to take a raster subject image and recreate it as a clean, highly-structured, animatable SVG vector file.
 
 CRITICAL REQUIREMENTS:
-1. **Resolution Independence**: The output SVG MUST use \`<svg viewBox="0 0 1000 1000">\`. This coordinate space must be strictly adhered to.
-2. **Minimalist & Clean 2D Styling**: KEEP IT EXTREMELY SIMPLE. Use clean, minimalist 2D vector shapes with solid flat colors. Use the fewest coherent shapes necessary to preserve the subject. DO NOT create overly complex, disjointed, blocky, or 3D-like structural rigs. Prioritize visual resemblance, clean overlaps, and stable rig structure over decorative detail.
-3. **SUBJECT TURNAROUND SHEET — Requested Views Only (CRITICAL)**: You MUST draw the subject in a neutral rest pose ONLY for the requested top-level view containers. Each is an independent, fully-rigged drawing of the same subject from a different angle.
+1. **Resolution Independence**: Output \`<svg viewBox="0 0 1000 1000">\`. Use clean 2D vector shapes with flat colors. No <image> tags. Fit the entire subject inside with a margin; never crop extremities.
+2. **SUBJECT TURNAROUND SHEET**: Draw the subject ONLY for the requested top-level view containers.
    Requested view containers:
 ${requestedViewGuide}
    Generate ONLY these requested views: ${requestedViews.join(", ")}.
-   Any extra top-level \`view_*\` container or bone prefix outside that requested set is invalid output.
-   Make the first requested view visible by default (\`display="inline"\`), all others \`display="none"\`.
-   Each view's bones MUST use a deterministic prefix derived from the view ID slug plus \`__\` (double underscore), for example:
+   Make the first requested view visible (\`display="inline"\`), all others \`display="none"\`.
+   Each view's bones MUST use this prefix exact format:
 ${requestedViewPrefixGuide}
-   Example bone IDs: \`front__core\`, \`side_left__segment_a\`, \`3q_right__branch_outer\`, \`rear_left_low__root\`.
-4. **Target Views (strict)**: The \`requiredViews\` list defines exactly which view containers you should output. Do NOT generate extra view groups.
-5. **Logical 2D Puppet Assembly (CRITICAL)**: You are building a 2D cutout animation puppet, NOT doing a 1:1 trace of the pixels.
-   - Limbs and body parts MUST physically overlap at the joints like paper-craft cutouts.
-   - Do NOT cut off an arm or a leg just because clothing or another body part is blocking it in the reference image. The hidden part of the limb must still be drawn so it can rotate around its pivot point without exposing a gap!
-   - Draw full, rounded overlapping joints (shoulders, hips, elbows, knees) so parts can rotate smoothly.
-   - Prioritize logical, functional anatomy over perfectly cloning the exact silhouette of the reference image. A logically assembled rig that looks 90% like the subject is infinitely better than a disjointed 100% clone pixel-trace.
-6. **No Flat JPEGs**: Do not embed raster images using <image>. You must draw the subject purely in vector paths (<path>, <circle>, <rect>, etc).
-7. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
-   - Furthest background limbs (like \`rear_leg\`) MUST appear mathematically first in the \`<g>\` block.
-   - Foreground limbs (like \`front_leg\`) MUST appear last.
-   - Preserve the exact front/back overlap relationships visible in the reference image. If one part covers another in the raster, the SVG group order must preserve that coverage.
-   - Mirror that same overlap ordering in each bone's semantic \`zIndex\` field. Lower \`zIndex\` = further back, higher \`zIndex\` = further forward.
-   - You MUST group related parts together (e.g. \`arm_lower\` visually drawn inside or adjacent to \`arm_upper\`). Treat each requested view as one physically coherent, assembled subject, not a pile of detached floating pieces.
-8. **Full-Length Framing (CRITICAL)**: Fit the complete subject inside the 1000x1000 viewBox with a small clean margin. Never crop or omit visible feet, hands, fins, tails, hats, props, wheels, or other silhouette-defining extremities from the reference image.
-9. **Preserve Major Silhouette Features**: Never omit any silhouette-defining extension, branch, protrusion, or contour break visible in the reference image. If the source image clearly shows a distinct shape, it must remain readable in the SVG. Allow shapes to float slightly if it is natural for the design (like stylized anime hair or capes).
-10. **Visemes and Emotions**: If the subject has a face-like or front-facing expressive region, place two sub-containers there: \`<g id="mouth_visemes">\` and \`<g id="emotions">\`. If the subject is not expressive, still include minimal placeholder groups in the most relevant front-facing parent group so downstream tools stay consistent.
-   - **Visemes:** Include \`#mouth_idle\` (visibility="visible"), \`#mouth_A\` (visibility="hidden"), \`#mouth_E\` (hidden), \`#mouth_I\` (hidden), \`#mouth_O\` (hidden), \`#mouth_U\` (hidden), \`#mouth_M\` (hidden).
-   - **Emotions:** Include \`#emotion_neutral\` (visibility="visible"), \`#emotion_happy\` (hidden), \`#emotion_sad\` (hidden), \`#emotion_angry\` (hidden), \`#emotion_surprised\` (hidden).
-   - **Styling:** When expressive features exist, style them to match the subject personality. When they do not, keep them minimal and unobtrusive.
-12. **The JSON Rig**: You must define the explicit (x, y) absolute coordinates of the pivot point for *every single animatable bone* you created across ALL views. To avoid naming collisions, ensure bones within views are prefixed using the \`viewSlug__\` convention (e.g., \`front__core_a\`, \`side_left__branch_outer\`, \`rear_left_low__root\`).
-13. **Semantic Bone Metadata (CRITICAL)**: For each bone, include structural metadata so deterministic motion synthesis can reason about the rig without guessing.
-   - Prefer generic \`kind\` labels: \`root\`, \`body\`, \`other\`.
-   - Treat extended \`kind\` labels as optional escape hatches only; use them only when the structure is visually unambiguous and stable across views.
-   - Never split one continuous mass into extra bones just to label anatomy. Keep the hierarchy structural, sparse, and reusable.
-   - \`side\`: \`left\`, \`right\`, or \`center\`
-   - \`zIndex\`: semantic draw order within the current view. Lower means further back; higher means further front when parts overlap.
-   - \`length\`: approximate segment length in SVG units
-   - \`socket\` (CRITICAL): EXPLICITLY specify the preferred attachment point {x,y} within the parent. Missing sockets break IK and animation rendering! Every bone with a parent MUST have a \`socket\`.
-   - \`contactRole\`: \`none\`, \`ground\`, \`wall\`, \`water\`, or \`grip\`
-   - \`massClass\`: \`light\`, \`medium\`, or \`heavy\`
-14. **Interaction Nulls**: Include semantic points for interaction, like "#front__grip_point" or "#side_left__grip_point".
-15. **Animation Clips (LIGHTWEIGHT ONLY)**: Motion clips are compiled later, after the rig is approved. Do NOT spend output budget generating a full motion library here.
-    - Include \`rig_data.motion_clips\` as an empty object \`{}\`.
-    - Do NOT generate walk/run/jump/wave/etc. in this rigging pass. Those are compiled separately on demand.
-    - Prioritize clean SVG structure, correct view drawings, pivots, and bone hierarchy over pre-authored motion data.
+3. **Logical 2D Puppet Assembly (CRITICAL)**: Build a functional 2D cutout paper-craft puppet.
+   - Limbs MUST physically overlap at the joints. Do NOT cut off a limb where it goes behind clothing. Draw full, rounded joints (shoulders, hips) so parts rotate smoothly without gaps!
+   - Prioritize logical overlapping anatomy over perfectly cloning the 1:1 reference image silhouette.
+   - Group related parts together (e.g. \`arm_lower\` visually grouped inside \`arm_upper\`).
+4. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
+   - Furthest background limbs MUST appear first in the \`<g>\` block. Foreground limbs MUST appear last.
+   - Mirror that exact overlap ordering in the JSON rig using the \`zIndex\` field (Lower \`zIndex\` = back, higher \`zIndex\` = front).
+5. **Visemes and Emotions**: If expressive, include \`<g id="mouth_visemes">\` (\`#mouth_idle\`, \`A, E, I, O, U, M\`) and \`<g id="emotions">\` (\`#emotion_neutral\`, \`happy, sad, angry, surprised\`). Leave idle/neutral visible, others hidden.
+6. **The JSON Rig Metadata (CRITICAL)**: Define explicit {x, y} coordinates for EVERY \`pivot\` point allowing smooth rotation.
+   - \`socket\`: EXPLICITLY specify the preferred attachment point {x,y} within the parent. Missing sockets break animation! Every bone with a parent MUST have a \`socket\`.
+   - \`kind\`: Prefer \`root\`, \`body\`, or \`other\`.
+   - \`side\`: \`left\`, \`right\`, or \`center\`.
+   - \`length\`: segment length in SVG units.
+   - \`contactRole\`: \`none\`, \`ground\`, \`wall\`, \`water\`, or \`grip\`.
+   - \`massClass\`: \`light\`, \`medium\`, or \`heavy\`.
+7. **Animation Clips**: Output \`rig_data.motion_clips\` as an empty object \`{}\`. Do not generate pre-authored motion.
 
 CRITICAL SHAPE: You must output ONLY a SINGLE valid JSON object matching this exact structure:
 \`\`\`json
@@ -930,7 +908,7 @@ Do not write any text outside this JSON object. The \`svg_data\` property MUST c
                         }
                     }
                 ]
-                : []
+                : [] as any
         ));
         const response = await runGeminiRequestWithRetry(
             "Draftsman rig generation request",
@@ -953,7 +931,7 @@ Do not write any text outside this JSON object. The \`svg_data\` property MUST c
                     }
                 ],
                 config: {
-                    systemInstruction: DRAFTSMAN_SYSTEM_PROMPT,
+                    systemInstruction: { role: "user", parts: [{ text: DRAFTSMAN_SYSTEM_PROMPT }] },
                     temperature: 0.5
                 }
             }),
@@ -1406,17 +1384,17 @@ export async function generateMotionClipForRig(params: {
         stabilization: {
             validationWarnings: [
                 "Canonical motion clip synthesized directly from structured motion spec.",
-                ...(resolvedMotionSpec.notes ? [`Motion spec: ${resolvedMotionSpec.notes}`] : []),
+                ...(resolvedMotionSpec.notes ? [`Motion spec: ${resolvedMotionSpec.notes}`] : [] as any),
                 ...(qualityGrade.profile === "rigid_root_motion" && qualityGrade.reasons.length > 0
                     ? [`Motion quality grade ${qualityGrade.score}/5: ${qualityGrade.reasons.join(" | ")}`]
-                    : []),
-                ...(appliedAttenuationFactor < 1 ? [`Motion amplitude attenuated to ${round2(appliedAttenuationFactor)}x after validation backoff.`] : []),
+                    : [] as any),
+                ...(appliedAttenuationFactor < 1 ? [`Motion amplitude attenuated to ${round2(appliedAttenuationFactor)}x after validation backoff.`] : [] as any),
                 ...preflight.warnings,
                 ...postflight.warnings,
             ].filter((warning, index, all) => all.indexOf(warning) === index),
             stabilized: true,
             refinedChains: 0,
-            chainIds: [],
+            chainIds: [] as any,
             suppressedKeyframes: 0,
             debugReport: buildMotionDebugReport({
                 motion: params.motion,
@@ -1595,7 +1573,7 @@ JSON shape:
       { "t": 1.0, "label": "settle", "x": 0, "y": 0, "rotation": 0, "scale": 1.0 }
     ]
   },
-  "blockedReasons": [],
+  "blockedReasons": [] as any,
   "notes": "Semantic walk cycle loop with keyframed leg wings and root bobbing."
 }
 `;
