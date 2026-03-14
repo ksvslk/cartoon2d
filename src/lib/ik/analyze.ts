@@ -270,6 +270,18 @@ function warningForAttachmentIntegrity(ik: RigIKData, nodes: RigIKNode[]): strin
       warnings.push(`${node.id} has no explicit attachment socket or pivot in ${defaultView}; connected parts should declare how they attach.`);
       return;
     }
+
+    // Distance-based gap detection: flag when child attachment point is
+    // far from parent attachment point, indicating disconnected art.
+    const childAttachment = resolveAttachmentPoint(childBinding);
+    const parentAttachment = resolveAttachmentPoint(parentBinding);
+    if (childAttachment && parentAttachment) {
+      const gap = distance(childAttachment, parentAttachment);
+      const tolerance = Math.max(14, Math.min(32, (node.restLength || 0) * 0.18 || 18));
+      if (gap > tolerance) {
+        warnings.push(`${node.id} attachment gap in ${defaultView} is ${gap.toFixed(1)}px from parent ${node.parent}.`);
+      }
+    }
   });
 
   return warnings;

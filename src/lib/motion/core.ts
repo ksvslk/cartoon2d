@@ -122,7 +122,6 @@ function addCompiledTransformTrack(
   actorId: string,
   transformTrack: Array<{ time: number; x: number; y: number; scale: number; rotation?: number; flip_x?: boolean; flip_y?: boolean }>,
   initialFacingSign?: number,
-  isBackwardMotion?: boolean,
 ) {
   const sorted = [...transformTrack].sort((a, b) => a.time - b.time);
   if (sorted.length === 0) return;
@@ -137,13 +136,8 @@ function addCompiledTransformTrack(
     const next = sorted[index + 1];
     if (next) {
       const deltaX = next.x - current.x;
-      if (isBackwardMotion) {
-        if (deltaX < -10) facingSign = 1;
-        else if (deltaX > 10) facingSign = -1;
-      } else {
-        if (deltaX < -10) facingSign = -1;
-        else if (deltaX > 10) facingSign = 1;
-      }
+      if (deltaX < -10) facingSign = -1;
+      else if (deltaX > 10) facingSign = 1;
     }
 
     return facingSign;
@@ -192,9 +186,9 @@ export function detectObjectAnimations(container: HTMLElement): Array<{ id: stri
   return result;
 }
 
-function displayKeyframesForClip(motionClip: StoredMotionClip | undefined) {
-  return motionClip?.displayKeyframes || [];
-}
+// addDirectOpacityKeyframes and displayKeyframesForClip removed.
+// Bone opacity animations caused more harm than good (stale opacity values,
+// body part flickering). CSS !important rule provides a permanent safety net.
 
 function viewForClip(motionClip: StoredMotionClip | undefined): string | undefined {
   return motionClip?.view;
@@ -202,47 +196,6 @@ function viewForClip(motionClip: StoredMotionClip | undefined): string | undefin
 
 function estimateClipDuration(motionClip: StoredMotionClip | undefined): number {
   return estimateMotionClipDuration(motionClip);
-}
-
-function addDirectOpacityKeyframes(params: {
-  timeline: gsap.core.Timeline;
-  actorId: string;
-  keyframes: NonNullable<RigMotionClip["displayKeyframes"]>;
-  amp: number;
-  spd: number;
-  startDelay: number;
-  actionDuration: number;
-}): void {
-  const { timeline, actorId, keyframes, amp, spd, startDelay, actionDuration } = params;
-
-  keyframes
-    .forEach((keyframe) => {
-      const scaledTo = scaleProp(keyframe.prop, keyframe.to, amp);
-      const scaledFrom = keyframe.from !== undefined
-        ? scaleProp(keyframe.prop, keyframe.from, amp)
-        : undefined;
-      const duration = (keyframe.duration || 0.5) / spd;
-      const delay = (keyframe.delay ?? 0) / spd;
-      const yoyo = keyframe.yoyo ?? false;
-      const repeat = keyframe.repeat === -1
-        ? calcRepeat(actionDuration - delay, duration, yoyo)
-        : (keyframe.repeat ?? 0);
-      const tweenVars: gsap.TweenVars = {
-        opacity: scaledTo,
-        duration,
-        yoyo,
-        repeat,
-        ease: keyframe.ease ?? "sine.inOut",
-        overwrite: "auto",
-      };
-      const target = `#actor_group_${actorId} [id="${keyframe.boneId}"]`;
-
-      if (scaledFrom !== undefined) {
-        timeline.fromTo(target, { opacity: scaledFrom }, tweenVars, startDelay + delay);
-      } else {
-        timeline.to(target, tweenVars, startDelay + delay);
-      }
-    });
 }
 
 function addCanonicalIKPlayback(params: {
@@ -346,15 +299,8 @@ function playAmbientIKClip(
     startDelay: 0,
     actionDuration: clipDuration,
   });
-  addDirectOpacityKeyframes({
-    timeline,
-    actorId,
-    keyframes: displayKeyframesForClip(playableClip),
-    amp: 1,
-    spd: 1,
-    startDelay: 0,
-    actionDuration: clipDuration,
-  });
+  // Note: Do NOT add displayKeyframes/opacity animations to ambient.
+  // They can leave stale opacity values that cause actors to dissolve.
 
   syncPlaybackActors([ikActor]);
 }
@@ -462,36 +408,8 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
         .sort((left, right) => left.start_time - right.start_time)[0]
         ?.ik_playback?.motion_spec?.locomotion?.preferredDirection;
       const initialFacingSign = facingSignForDirection(initialDirection);
-      
-      const isBackwardMotion = track.clip_bindings.some(b => 
-        b.ik_playback?.motion_spec?.locomotion?.preferredDirection === "backward" ||
-        normalizeMotionKey(b.motion).includes("backward")
-      );
 
-      addCompiledTransformTrack(tl, container, id, track.transform_track, initialFacingSign, isBackwardMotion);
-
-      // Actor visibility: Only show the actor when they have an active keyframe binding.
-      const sortedBindings = [...track.clip_bindings].sort((a, b) => (a.start_time || 0) - (b.start_time || 0));
-      if (sortedBindings.length === 0) {
-        tl.set(`#actor_group_${id}`, { autoAlpha: 0 }, 0);
-      } else {
-        const firstStart = Math.max(0, sortedBindings[0].start_time || 0);
-        if (firstStart > 0) {
-          tl.set(`#actor_group_${id}`, { autoAlpha: 0 }, 0);
-          tl.set(`#actor_group_${id}`, { autoAlpha: 1 }, firstStart);
-        } else {
-          tl.set(`#actor_group_${id}`, { autoAlpha: 1 }, 0);
-        }
-        let currentEnd = firstStart + (sortedBindings[0].duration_seconds || 0);
-        for (let i = 1; i < sortedBindings.length; i++) {
-          const nextStart = sortedBindings[i].start_time || 0;
-          if (nextStart > currentEnd + 0.05) {
-             tl.set(`#actor_group_${id}`, { autoAlpha: 0 }, currentEnd);
-             tl.set(`#actor_group_${id}`, { autoAlpha: 1 }, nextStart);
-          }
-          currentEnd = Math.max(currentEnd, nextStart + (sortedBindings[i].duration_seconds || 0));
-        }
-      }
+      addCompiledTransformTrack(tl, container, id, track.transform_track, initialFacingSign);
 
       track.clip_bindings.forEach(binding => {
         const m = normalizeMotionKey(binding.motion);
@@ -554,17 +472,6 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
           startDelay,
           actionDuration,
         });
-        addDirectOpacityKeyframes({
-          timeline: tl,
-          actorId: id,
-          keyframes: displayKeyframesForClip(playableClip),
-          amp,
-          spd,
-          startDelay,
-          actionDuration,
-        });
-
-        tl.set(`#actor_group_${id}`, {}, startDelay + actionDuration);
       });
     });
 
@@ -575,24 +482,25 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
     // Audio / Lipsync Visemes
     if (beat.audio && beat.audio.length > 0) {
       beat.audio.forEach((audioItem, idx) => {
-        if (audioItem.type === 'dialogue' && audioItem.actor_id && audioItem.audio_data_url && audioItem.visemes && audioItem.visemes.length > 0) {
-          const actorId = audioItem.actor_id;
-          
-          const audioElId = `__audio_${actorId}_${idx}`;
-          let audioEl = container.querySelector<HTMLAudioElement>(`#${audioElId}`);
-          if (!audioEl) {
-            audioEl = document.createElement("audio");
-            audioEl.id = audioElId;
-            audioEl.src = audioItem.audio_data_url;
-            audioEl.style.display = "none";
-            audioEl.crossOrigin = "anonymous"; // Safety for cross-domain TTS if needed
-            container.appendChild(audioEl);
-          }
+        if (!audioItem.audio_data_url) return;
 
+        const audioElId = `__audio_${audioItem.type}_${audioItem.actor_id || "scene"}_${idx}`;
+        let audioEl = container.querySelector<HTMLAudioElement>(`#${audioElId}`);
+        if (!audioEl) {
+          audioEl = document.createElement("audio");
+          audioEl.id = audioElId;
+          audioEl.src = audioItem.audio_data_url;
+          audioEl.style.display = "none";
+          audioEl.crossOrigin = "anonymous";
+          container.appendChild(audioEl);
+        }
+
+        if (audioItem.type === 'dialogue' && audioItem.actor_id && audioItem.visemes && audioItem.visemes.length > 0) {
+          // Dialogue with lip-sync visemes
+          const actorId = audioItem.actor_id;
           const lastViseme = audioItem.visemes[audioItem.visemes.length - 1];
           const audioEnd = lastViseme.time + lastViseme.duration;
           
-          // Sync HTMLAudioElement play/pause with GSAP Timeline 
           tl.to(audioEl, {
             currentTime: audioEnd,
             duration: audioEnd,
@@ -616,6 +524,19 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
           mouthGroups.forEach(m => {
              tl.set(`${actorSelector} ${m}`, { autoAlpha: m === `#mouth_idle` ? 1 : 0 }, audioEnd);
           });
+        } else {
+          // SFX / Music — play audio synced to timeline without visemes
+          // Estimate audio duration from the element or use a default
+          const estimatedDuration = 3; // seconds, audio will naturally end
+          tl.add(() => {
+            if (!tl.paused()) {
+              audioEl!.currentTime = 0;
+              audioEl!.play().catch(() => {});
+            }
+          }, 0);
+          tl.add(() => {
+            audioEl?.pause();
+          }, tl.duration());
         }
       });
     }
@@ -721,15 +642,6 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
       actor: ikActor,
       clipView,
       compiledIK,
-      amp,
-      spd,
-      startDelay,
-      actionDuration,
-    });
-    addDirectOpacityKeyframes({
-      timeline: tl,
-      actorId: id,
-      keyframes: displayKeyframesForClip(playableClip),
       amp,
       spd,
       startDelay,

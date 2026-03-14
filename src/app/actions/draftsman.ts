@@ -507,6 +507,35 @@ function attenuateMotionSpec(motionSpec: MotionSpec, factor: number): MotionSpec
         ...motionSpec,
         amplitude: round2(Math.max(0.02, (motionSpec.amplitude || 1) * safeFactor)),
         intensity: round2(Math.max(0, Math.min(1, (motionSpec.intensity || 0.5) * (0.45 + (safeFactor * 0.55))))),
+        // Scale actual rotation track values so attenuation can fix angle-limit violations
+        rotationTracks: motionSpec.rotationTracks?.map(track => ({
+            ...track,
+            samples: track.samples.map(s => ({
+                ...s,
+                rotation: round2(s.rotation * safeFactor),
+            })),
+        })),
+        // Scale axial wave amplitudes
+        axialWaves: motionSpec.axialWaves?.map(wave => ({
+            ...wave,
+            amplitudeDeg: round2(wave.amplitudeDeg * safeFactor),
+        })),
+        // Scale rootMotion offsets
+        rootMotion: motionSpec.rootMotion?.map(sample => ({
+            ...sample,
+            x: sample.x !== undefined ? round2(sample.x * safeFactor) : undefined,
+            y: sample.y !== undefined ? round2(sample.y * safeFactor) : undefined,
+            rotation: sample.rotation !== undefined ? round2(sample.rotation * safeFactor) : undefined,
+        })),
+        // Scale wholeObjectMotion anchors
+        wholeObjectMotion: motionSpec.wholeObjectMotion ? {
+            anchors: motionSpec.wholeObjectMotion.anchors.map(anchor => ({
+                ...anchor,
+                x: anchor.x !== undefined ? round2(anchor.x * safeFactor) : undefined,
+                y: anchor.y !== undefined ? round2(anchor.y * safeFactor) : undefined,
+                rotation: anchor.rotation !== undefined ? round2(anchor.rotation * safeFactor) : undefined,
+            })),
+        } : undefined,
         notes: [
             motionSpec.notes,
             `Validation attenuation applied at ${round2(safeFactor)}x.`,
@@ -866,9 +895,11 @@ ${requestedViewGuide}
    Each view's bones MUST use this prefix exact format:
 ${requestedViewPrefixGuide}
 3. **Skeleton-First IK Ragdoll (CRITICAL)**: You are building a functional, unbroken IK skeletal ragdoll. The art is just skin over that skeleton.
+   - **MINIMUM BONE COUNT (CRITICAL)**: Use the ABSOLUTE MINIMUM number of bones needed. More bones = more failure. Only create bones for parts that MUST move independently during animation. Examples: a simple prop = 1-2 bones. A fish = 3-4 bones (body, tail_base, tail_tip, maybe a fin). A quadruped = 6-8 bones (body, head, 4 legs, tail). A humanoid = 8-12 bones (torso, head, 2 arms upper/lower, 2 legs upper/lower). Do NOT add extra bones for decorative details, fingers, toes, or non-articulating segments. When in doubt, FEWER bones.
    - You MUST guarantee a continuous, unbroken skeletal chain for the main body and all four limbs (even if visually obscured by clothing, hair, or armor).
    - NEVER fuse joints together. NEVER cut off hidden limbs. 
-   - **PERFECT CIRCULAR JOINTS & DEEP OVERLAPS**: The ends of every limb segment (shoulders, elbows, hips, knees) MUST be drawn with perfectly rounded, circular caps. Do NOT draw flat lines at the top of an arm or leg. The limb geometry MUST extend deeply inside the parent body so that when it rotates 90 degrees around its pivot, no sharp corners or gaps are exposed!
+   - **OVERLAP RULE (CRITICAL — MOST COMMON FAILURE)**: Every limb segment MUST physically overlap its parent by at least 30-50px. The geometry at joints MUST be drawn with round, bulging caps so that when any limb rotates 90° around its pivot, there is ZERO visible gap or sharp corner. Imagine the pivot is a ball joint — the art must cover the ball. If you draw a flat line at a joint boundary, the animation WILL show ugly gaps.
+   - **SOCKET = PIVOT overlap test**: The \`socket\` {x,y} of a child bone must be INSIDE the parent's drawn geometry (not on its edge). The child's art must extend past the socket point deeply into the parent.
    - Any external masses (dresses, cloaks, long hair, large props) MUST be drawn as secondary, overlapping panels anchored to the skeleton (e.g. pinned at the waist or neck) so they can swing freely without breaking the underlying ragdoll.
    - Group related parts logically (e.g. \`arm_lower\` inside \`arm_upper\`).
 4. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
@@ -1052,7 +1083,10 @@ function reviewDraftQuality(data: DraftsmanData, requestedViews: string[]): Draf
         reasons.push(`IK confidence is soft (${ikConfidence.toFixed(2)}).`);
     }
 
-    if (attachmentWarnings.length >= 2) {
+    if (attachmentWarnings.length >= 3) {
+        score += 6;
+        reasons.push(`Multiple critical attachment gaps: ${attachmentWarnings.slice(0, 3).join(" ")}`);
+    } else if (attachmentWarnings.length >= 2) {
         score += 4;
         reasons.push(`Attachment integrity is poor: ${attachmentWarnings.slice(0, 2).join(" ")}`);
     } else if (attachmentWarnings.length === 1) {
@@ -1242,7 +1276,7 @@ export async function generateMotionClipForRig(params: {
         durationSeconds: params.durationSeconds,
     });
 
-    const attenuationPasses = [1, 0.82, 0.68, 0.56, 0.46, 0.38, 0.3, 0.24];
+    const attenuationPasses = [1, 0.9, 0.8, 0.7, 0.6];
     let motionClip: RigMotionClip | undefined;
     let postflight = validateRigForMotion({
         rig: normalizedRig,
@@ -1517,7 +1551,6 @@ Motion request:
 - durationSeconds: ${params.durationSeconds || 2}
 - actorName: ${params.actorName || "unknown"}
 - actorDescription: ${params.actorDescription || "unknown"}
-- sceneNarrative: ${params.sceneNarrative || "none"}
 
 Available rig bones and topology:
 ${JSON.stringify(boneSummary, null, 2)}
@@ -1538,12 +1571,21 @@ Motion strategy guidance:
 ${motionStrategyGuidance}
 
 Rules:
-1. FORMATTING & SCHEMAS: Output ONLY JSON. Use exact bone/node IDs for 'leadBones' and 'contacts'. All enums (view, locomotion.mode, locomotion.preferredDirection) must strictly match the available values.
-2. PHYSICS & LIMITS: Stay comfortably inside 'usableRotationLimit'. Respect the 'motion affordance profile' (favor translation/root-motion for rigid/limited subjects). Make sure looping clips close cleanly onto frame 0.
-3. ANIMATION STRATEGY (CRITICAL):
-   - Use 'rotationTracks' to explicitly keyframe local rotation for semantic limbs (walking, running, kicking).
-   - Use 'axialWaves' ONLY for procedural, flowing, or breathing motions (tails, snakes).
-   - Provide explicit 'rootMotion' or 'wholeObjectMotion' anchors for weight-shifts, hopping, or travel realism, especially for rigid subjects.
+1. PURE SINGLE-ACTION CLIP (CRITICAL): Generate ONLY the motion named '${params.motion}'. This clip is a PURE, SELF-CONTAINED, LOOPABLE animation cycle for this ONE action only. Do NOT mix in other actions (no roaring during walk, no talking during idle, no scene-specific narrative actions). If the motion is 'walk', output ONLY a walk cycle. If 'idle', output ONLY an idle breathing loop.
+2. FORMATTING & SCHEMAS: Output ONLY JSON. Use exact bone/node IDs for 'leadBones' and 'contacts'. All enums must strictly match available values.
+3. PHYSICS & LIMITS: Stay comfortably inside 'usableRotationLimit'. Respect motion affordance profile. Looping clips MUST close cleanly (frame 1.0 = frame 0.0).
+4. ANIMATION QUALITY (CRITICAL — READ CAREFULLY):
+   You are creating EXPRESSIVE, PROFESSIONAL 2D animation. Apply the 12 classic animation principles:
+   - **Anticipation**: Before any major action, add a small counter-motion (e.g., squat before jump, pull back before push).
+   - **Follow-through & Overlapping Action**: Different body parts should NOT move simultaneously. Head leads, then neck follows 0.05-0.1t later, then body. Tails/arms/hair drag and overshoot.
+   - **Slow-in/Slow-out**: Use MORE samples (at least 5-8 per rotation track) with eased timing — cluster samples at the start and end of motions, fewer in the middle.
+   - **Secondary Motion**: While the main action happens (e.g., body sway for idle), add subtle secondary motion on at least 2-3 other joints (tail tip flick, head tilt, arm drift).
+   - **Weight & Mass**: Heavy body parts (torso, root) should move with small amplitude (3-8°). Light parts (tail tip, head, fingers) should move with larger amplitude (15-30°).
+   - EVERY rotation track MUST have at least 5 samples. More is better for smooth motion.
+   - Use 'rotationTracks' for ALL explicit limb/joint animation (walking, gesturing, head-bobbing, tail-swishing).
+   - Use 'axialWaves' ONLY for procedural flowing motions (spines, tentacles, snakes).
+   - Provide 'rootMotion' for whole-body translation (bobbing, swaying, breathing up/down).
+   - Provide 'wholeObjectMotion' anchors for weight-shifts and travel realism.
 
 JSON shape:
 {
@@ -1559,17 +1601,41 @@ JSON shape:
     {
       "nodeId": "hip_l",
       "samples": [
-        { "t": 0.0, "rotation": 25 },
-        { "t": 0.5, "rotation": -25 },
-        { "t": 1.0, "rotation": 25 }
+        { "t": 0.0, "rotation": 20 },
+        { "t": 0.1, "rotation": 25 },
+        { "t": 0.25, "rotation": 10 },
+        { "t": 0.4, "rotation": -15 },
+        { "t": 0.5, "rotation": -22 },
+        { "t": 0.6, "rotation": -18 },
+        { "t": 0.75, "rotation": 5 },
+        { "t": 0.9, "rotation": 18 },
+        { "t": 1.0, "rotation": 20 }
       ]
     },
     {
       "nodeId": "hip_r",
       "samples": [
-        { "t": 0.0, "rotation": -25 },
-        { "t": 0.5, "rotation": 25 },
-        { "t": 1.0, "rotation": -25 }
+        { "t": 0.0, "rotation": -20 },
+        { "t": 0.1, "rotation": -25 },
+        { "t": 0.25, "rotation": -10 },
+        { "t": 0.4, "rotation": 15 },
+        { "t": 0.5, "rotation": 22 },
+        { "t": 0.6, "rotation": 18 },
+        { "t": 0.75, "rotation": -5 },
+        { "t": 0.9, "rotation": -18 },
+        { "t": 1.0, "rotation": -20 }
+      ]
+    },
+    {
+      "nodeId": "head",
+      "samples": [
+        { "t": 0.0, "rotation": 0 },
+        { "t": 0.15, "rotation": 3 },
+        { "t": 0.35, "rotation": -2 },
+        { "t": 0.55, "rotation": 4 },
+        { "t": 0.75, "rotation": -3 },
+        { "t": 0.9, "rotation": 1 },
+        { "t": 1.0, "rotation": 0 }
       ]
     }
   ],
@@ -1590,7 +1656,7 @@ JSON shape:
 }
 `;
 
-    const maxGenerationPasses = rigProfileReport.profile === "rigid_object" ? 2 : 1;
+    const maxGenerationPasses = 3;
     const usageTotals = {
         promptTokenCount: 0,
         candidatesTokenCount: 0,
@@ -1603,18 +1669,18 @@ JSON shape:
         const attemptPrompt = rejectionFeedback
             ? `${prompt}
 
-Revision feedback for the previous rejected rigid-motion spec:
+Revision feedback for the previous rejected motion spec (attempt ${pass - 1}):
 ${rejectionFeedback}
 
-Return a revised JSON motion spec only.`
+Return a revised JSON motion spec only. Output ONLY one JSON object, nothing else.`
             : prompt;
         const response = await runGeminiRequestWithRetry(
-            `Draftsman motion-spec request${maxGenerationPasses > 1 ? ` pass ${pass}` : ""}`,
+            `Draftsman motion-spec request pass ${pass}/${maxGenerationPasses}`,
             () => ai.models.generateContent({
                 model: motionSpecModel,
                 contents: [{ role: "user", parts: [{ text: attemptPrompt }] }],
                 config: {
-                    temperature: 0.2,
+                    temperature: pass === 1 ? 0.2 : 0.4,
                 }
             }),
         );
@@ -1622,22 +1688,23 @@ Return a revised JSON motion spec only.`
         usageTotals.candidatesTokenCount += response.usageMetadata?.candidatesTokenCount || 0;
         usageTotals.totalTokenCount += response.usageMetadata?.totalTokenCount || 0;
 
-        const text = extractJSONObject(
-            response.text || "",
-            "Gemini returned an empty motion spec response.",
-            "No JSON motion spec found in Gemini response.",
-        );
         let rawJson: any;
         try {
+            const text = extractJSONObject(
+                response.text || "",
+                "Gemini returned an empty motion spec response.",
+                "No JSON motion spec found in Gemini response.",
+            );
             rawJson = JSON.parse(text);
         } catch (e: any) {
-            rejectionFeedback = `Invalid JSON format: ${e.message}`;
+            console.error(`Motion spec extraction/parse failed for ${params.motion} (pass ${pass}): ${e.message}`);
+            rejectionFeedback = `JSON extraction or parse error: ${e.message}. Return ONLY a valid JSON object.`;
             continue;
         }
 
         const safeParsed = MotionSpecSchema.safeParse(normalizeGeneratedMotionSpecPayload(rawJson));
         if (!safeParsed.success) {
-            console.error(`Motion Spec Schema failed for ${params.motion}:\n`, safeParsed.error.message, `\nRaw JSON:`, rawJson);
+            console.error(`Motion Spec Schema failed for ${params.motion} (pass ${pass}):\n`, safeParsed.error.message);
             rejectionFeedback = `JSON Schema violation:\n${safeParsed.error.message}`;
             continue;
         }
@@ -1668,7 +1735,7 @@ Return a revised JSON motion spec only.`
     }
 
     if (!parsed) {
-        throw new Error("Motion-spec generation did not produce a parsed result.");
+        throw new Error(`Motion-spec generation did not produce a parsed result after ${maxGenerationPasses} passes.`);
     }
 
     return {

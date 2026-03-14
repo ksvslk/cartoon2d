@@ -42,3 +42,12 @@ body {
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #555;
 }
+
+/* Nuclear dissolve prevention: actor groups must ALWAYS be visible.
+   GSAP autoAlpha sets visibility:hidden + opacity:0 which causes actors
+   to dissolve after timeline playback. This CSS !important overrides
+   any inline styles GSAP might apply. */
+[id^="actor_group_"] {
+  opacity: 1 !important;
+  visibility: visible !important;
+}

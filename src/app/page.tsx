@@ -9,6 +9,7 @@ import { ClipBinding, CompiledSceneData, SpatialTransform, StoryBeatData, StoryG
 import { loadStoryFromStorage, saveStoryToStorage, clearStoryStorage, getProjectsList, createProject, deleteProject, updateProjectTitle, ProjectMetadata, loadActorIdentities, saveActorIdentity, updateProjectOrientation } from "@/lib/storage/db";
 import { generateMotionClipForRig, processDraftsmanPrompt, suggestRigViewsFromRaster, type DraftQualityMode, type DraftQualityReview, type MotionDebugReport } from "@/app/actions/draftsman";
 import { generateSpeechTTS } from "@/app/actions/tts";
+import { executeSoundEffect } from "@/app/actions/sfx";
 import { processSetDesignerPrompt } from "@/app/actions/set_designer";
 import { DraftsmanData } from "@/lib/schema/rig";
 import { RigViewer } from "@/components/RigViewer";
@@ -1093,6 +1094,27 @@ export default function Home() {
          return audio;
       });
 
+      // Generate SFX/music audio for items without audio_data_url
+      const sfxToGenerate = prevAudio.filter(a => (a.type === 'sfx' || a.type === 'music') && a.description && !a.audio_data_url);
+      if (sfxToGenerate.length > 0) {
+        console.log(`[SFX] Generating ${sfxToGenerate.length} sound effects...`);
+        const sfxPromises = sfxToGenerate.map(async (audio) => {
+          const result = await executeSoundEffect({ prompt: audio.description! });
+          return { audio, result };
+        });
+        const sfxResults = await Promise.all(sfxPromises);
+        sfxResults.forEach(({ audio, result }) => {
+          if (result.url) {
+            const idx = newAudio.findIndex(a => a === audio);
+            if (idx !== -1) {
+              newAudio[idx] = { ...newAudio[idx], audio_data_url: result.url };
+            }
+          } else if (result.error) {
+            console.error(`[SFX] Failed for '${audio.description}': ${result.error}`);
+          }
+        });
+      }
+
       setStoryData(prev => {
         if (!prev) return prev;
         const newBeats = [...prev.beats];
@@ -1125,8 +1147,10 @@ export default function Home() {
 
   const handlePlayComplete = () => {
     setIsPlaying(false);
-    livePlayheadPosRef.current = 100;
-    setPlayheadPos(100);
+    // Reset playhead to start — keeping it at 100 (end) causes Effect 3 to seek
+    // the timeline to the end, where stale opacity/display states cause dissolve.
+    livePlayheadPosRef.current = 0;
+    setPlayheadPos(0);
   };
 
   const handleTimelineReady = (durationSeconds: number) => {
@@ -2078,6 +2102,71 @@ export default function Home() {
             sceneRigs[actorId] = nextRig;
           }
         }
+      }
+
+      // ── TTS & SFX Audio Generation ───────────────────────────────────────────
+      const audioItems = workingBeat.audio || [];
+      const dialogueToGenerate = audioItems.filter(a => a.type === 'dialogue' && a.text && !a.audio_data_url);
+      const sfxToGenerate = audioItems.filter(a => (a.type === 'sfx' || a.type === 'music') && a.description && !a.audio_data_url);
+
+      if (dialogueToGenerate.length > 0 || sfxToGenerate.length > 0) {
+        const updatedAudio = [...audioItems];
+
+        if (dialogueToGenerate.length > 0) {
+          addLog(`> Generating ${dialogueToGenerate.length} voice track${dialogueToGenerate.length > 1 ? 's' : ''}...`);
+          try {
+            const ttsResults = await Promise.all(dialogueToGenerate.map(async (audio) => {
+              const ttsResult = await generateSpeechTTS(audio.text!, "en-US-Journey-F", audio.delivery_style);
+              return { audio, ttsResult };
+            }));
+            ttsResults.forEach(({ audio, ttsResult }) => {
+              const idx = updatedAudio.indexOf(audio);
+              if (idx !== -1) {
+                updatedAudio[idx] = {
+                  ...updatedAudio[idx],
+                  audio_data_url: ttsResult.audioDataUrl,
+                  visemes: ttsResult.visemes,
+                  generation_cost: { cost: ttsResult.costEstimate, characters: ttsResult.billedCharacters },
+                };
+              }
+            });
+            addLog(`✓ Generated ${ttsResults.length} voice track${ttsResults.length > 1 ? 's' : ''}.`);
+          } catch (e) {
+            addLog(`[BLOCKED] TTS generation failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+
+        if (sfxToGenerate.length > 0) {
+          addLog(`> Generating ${sfxToGenerate.length} sound effect${sfxToGenerate.length > 1 ? 's' : ''}...`);
+          try {
+            const sfxResults = await Promise.all(sfxToGenerate.map(async (audio) => {
+              const result = await executeSoundEffect({ prompt: audio.description! });
+              return { audio, result };
+            }));
+            sfxResults.forEach(({ audio, result }) => {
+              if (result.url) {
+                const idx = updatedAudio.indexOf(audio);
+                if (idx !== -1) {
+                  updatedAudio[idx] = { ...updatedAudio[idx], audio_data_url: result.url };
+                }
+              } else if (result.error) {
+                addLog(`[BLOCKED] SFX '${audio.description}': ${result.error}`);
+              }
+            });
+            const successCount = sfxResults.filter(r => r.result.url).length;
+            addLog(`✓ Generated ${successCount} sound effect${successCount > 1 ? 's' : ''}.`);
+          } catch (e) {
+            addLog(`[BLOCKED] SFX generation failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+
+        workingBeat = { ...workingBeat, audio: updatedAudio };
+        setStoryData(prev => {
+          if (!prev) return prev;
+          const newBeats = [...prev.beats];
+          newBeats[index] = { ...newBeats[index], audio: updatedAudio };
+          return { ...prev, beats: newBeats };
+        });
       }
 
       const previousCompiledScene = index > 0 ? storyData.beats[index - 1]?.compiled_scene ?? null : null;
@@ -3295,7 +3384,30 @@ export default function Home() {
                                 <div className="flex flex-wrap gap-1.5">
                                   {beat.audio.map((audio, i) => (
                                     <span key={`audio-${i}`} className={`group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[9px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
-                                      <Volume2 size={8} /> {audio.type === 'dialogue' ? `"${audio.text}"` : audio.description}
+                                      <Volume2 size={8} />
+                                      <input
+                                        type="text"
+                                        className="bg-transparent border-none outline-none text-[9px] font-medium min-w-[60px] max-w-[200px] placeholder-current/40 cursor-text"
+                                        style={{ width: `${Math.max(60, (audio.type === 'dialogue' ? (audio.text?.length || 0) : (audio.description?.length || 0)) * 5.5 + 16)}px` }}
+                                        value={audio.type === 'dialogue' ? (audio.text || '') : (audio.description || '')}
+                                        placeholder={audio.type === 'dialogue' ? 'Type dialogue...' : 'Describe sound...'}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          setStoryData(prev => {
+                                            if (!prev) return prev;
+                                            const newBeats = [...prev.beats];
+                                            const newAudio = [...newBeats[index].audio];
+                                            if (audio.type === 'dialogue') {
+                                              newAudio[i] = { ...newAudio[i], text: val };
+                                            } else {
+                                              newAudio[i] = { ...newAudio[i], description: val };
+                                            }
+                                            newBeats[index] = { ...newBeats[index], audio: newAudio };
+                                            return { ...prev, beats: newBeats };
+                                          });
+                                        }}
+                                      />
                                       <button
                                         className="opacity-0 group-hover/tag:opacity-100 ml-0.5 hover:text-red-500 transition-all"
                                         onClick={(e) => {
@@ -3341,6 +3453,51 @@ export default function Home() {
                                       >×</button>
                                     </span>
                                   ))}
+                                  {/* Add Dialogue / SFX buttons */}
+                                  <button
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-dashed border-amber-300 dark:border-amber-600/40 text-amber-600 dark:text-amber-500 text-[9px] font-medium hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const actorIds = storyData?.actors_detected.map(a => a.id) || [];
+                                      const defaultActorId = actorIds[0] || "";
+                                      setStoryData(prev => {
+                                        if (!prev) return prev;
+                                        const newBeats = [...prev.beats];
+                                        const currentAudio = [...newBeats[index].audio];
+                                        currentAudio.push({
+                                          type: "dialogue" as const,
+                                          actor_id: defaultActorId,
+                                          text: "",
+                                          delivery_style: "neutral",
+                                        });
+                                        newBeats[index] = { ...newBeats[index], audio: currentAudio };
+                                        return { ...prev, beats: newBeats };
+                                      });
+                                    }}
+                                    title="Add dialogue line"
+                                  >
+                                    + Dialogue
+                                  </button>
+                                  <button
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-dashed border-cyan-300 dark:border-cyan-600/40 text-cyan-600 dark:text-cyan-500 text-[9px] font-medium hover:bg-cyan-50 dark:hover:bg-cyan-900/20 transition-colors"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setStoryData(prev => {
+                                        if (!prev) return prev;
+                                        const newBeats = [...prev.beats];
+                                        const currentAudio = [...newBeats[index].audio];
+                                        currentAudio.push({
+                                          type: "sfx" as const,
+                                          description: "",
+                                        });
+                                        newBeats[index] = { ...newBeats[index], audio: currentAudio };
+                                        return { ...prev, beats: newBeats };
+                                      });
+                                    }}
+                                    title="Add sound effect"
+                                  >
+                                    + SFX
+                                  </button>
                                 </div>
                               </div>
 

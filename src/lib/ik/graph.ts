@@ -96,6 +96,43 @@ function angleBetween(a: Point, b: Point): number {
   return round2((Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI);
 }
 
+/**
+ * Infer safe default rotation limits from topology metadata when the Rigger
+ * didn't provide explicit ones. Uses kind, massClass, and contactRole —
+ * never bone names — to derive semantically appropriate limits.
+ */
+function inferDefaultRotationLimit(params: {
+  parent?: string;
+  kind?: RigBoneKind;
+  massClass?: RigBoneMassClass;
+  contactRole?: RigBoneContactRole;
+}): [number, number] {
+  const { parent, kind, massClass, contactRole } = params;
+
+  // Root nodes: minimal sway to prevent whole-body spinning
+  if (!parent || kind === "root") {
+    return massClass === "light" ? [-20, 20] : [-12, 12];
+  }
+
+  // Ground/wall contact nodes: constrained to maintain surface contact
+  if (contactRole === "ground" || contactRole === "wall") {
+    return [-30, 30];
+  }
+
+  // Body/core segments: restricted range to prevent spine/torso flip
+  if (kind === "body") {
+    if (massClass === "heavy") return [-25, 25];
+    if (massClass === "medium") return [-35, 35];
+    return [-45, 45]; // light body segments
+  }
+
+  // Everything else: scale by mass
+  if (massClass === "heavy") return [-30, 30];
+  if (massClass === "medium") return [-55, 55];
+  // Light or unspecified: most freedom (extremities, tips)
+  return [-90, 90];
+}
+
 function inferViewIdFromBoneId(boneId: string): string {
   const lower = boneId.toLowerCase();
   const genericPrefix = lower.match(/^([a-z0-9_]+)__/);
@@ -288,9 +325,14 @@ export function deriveIKFromRigData(rigData: RigData): RigIKData {
       const parent = pickMostCommonDefined(infos.map((info) => info.canonicalParentId));
       const kind = pickMostCommonDefined(infos.map((info) => info.bone.kind));
       const side = pickMostCommonDefined(infos.map((info) => info.bone.side));
-      const rotationLimit = pickMostCommonDefined(infos.map((info) => info.bone.rotationLimit as [number, number] | undefined));
+      const explicitRotationLimit = pickMostCommonDefined(infos.map((info) => info.bone.rotationLimit as [number, number] | undefined));
       const massClass = pickMostCommonDefined(infos.map((info) => info.bone.massClass));
       const contactRole = pickPreferredContactRole(infos.map((info) => info.bone.contactRole));
+
+      // Infer safe default rotation limits from topology metadata when the Rigger didn't provide explicit ones.
+      // Without limits, the IK solver can spin joints 180°+, literally flipping body parts apart.
+      const rotationLimit: [number, number] = explicitRotationLimit
+        ?? inferDefaultRotationLimit({ parent, kind, massClass, contactRole });
 
       return {
         id: nodeId,
@@ -333,9 +375,15 @@ export function deriveIKFromRigData(rigData: RigData): RigIKData {
 
     const childCount = childIdsByNode.get(node.id)?.length || 0;
 
+    // Ensure child nodes always have a positive rest length so the length constraint
+    // is never skipped. Without this, co-located pivots produce restLength=0, the
+    // constraint solver skips them, and body parts drift apart visually.
+    const rawRestLength = round2(average(sharedDistances) ?? node.restLength ?? 0);
+    const safeRestLength = node.parent ? Math.max(1, rawRestLength) : rawRestLength;
+
     return {
       ...node,
-      restLength: round2(average(sharedDistances) ?? node.restLength ?? 0),
+      restLength: safeRestLength,
       restRotation: round2(averageAngle(sharedAngles) ?? node.restRotation ?? 0),
       ikRole: inferIKRole({
         existing: node.ikRole,

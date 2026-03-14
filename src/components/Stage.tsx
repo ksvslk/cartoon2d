@@ -174,6 +174,13 @@ export default function Stage({
     // Scrubable timeline returned by buildTimeline()
     const gsapTimelineRef = useRef<gsap.core.Timeline | null>(null);
     const actorLayerOrderRef = useRef("");
+    // Saved initial positioning so Effect 2 can re-apply after reverting
+    const targetTransformsRef = useRef<Record<string, { x: number; y: number; scale: number; rotation?: number; facingSign: number }>>({});
+    const stageWRef = useRef(1920);
+    const stageHRef = useRef(1080);
+    // Master GSAP context — wraps ALL gsap operations inside the container.
+    // revert() on this nukes every inline style GSAP has ever set on any descendant.
+    const masterCtxRef = useRef<gsap.Context | null>(null);
 
     // Drag state ref — avoids re-renders during drag
     const dragRef = useRef<DragState | null>(null);
@@ -374,6 +381,8 @@ export default function Stage({
         ).sort((a, b) => a.zIndex - b.zIndex);
 
         const targetTransforms: Record<string, { x: number; y: number; scale: number; rotation?: number; facingSign: number }> = {};
+        stageWRef.current = stageW;
+        stageHRef.current = stageH;
         let actorIdx = 0;
 
         actorsInScene.forEach(({ actorId }) => {
@@ -415,6 +424,7 @@ export default function Stage({
             }
 
             actorLayer.appendChild(actorGroup);
+            targetTransformsRef.current = targetTransforms;
             actorIdx++;
         });
 
@@ -552,6 +562,8 @@ export default function Stage({
             }
 
         }, containerRef);
+        // Store as master context — revert() on this will clean ALL GSAP state
+        masterCtxRef.current = posCtx;
 
         // Start ambient animations immediately after positioning
         if (!disableAmbient) {
@@ -587,11 +599,8 @@ export default function Stage({
                     const naturalCX = parseFloat(targetActorGroup.dataset.naturalCx || "0");
                     const naturalBottom = parseFloat(targetActorGroup.dataset.naturalBottom || "0");
                     
-                    // We want the viewport center to equal the actor's current world position
                     const worldActorX = naturalCX + actorX;
-                    const worldActorY = naturalBottom + actorY - 150; // offset slightly up so feet aren't centered
-                    
-                    const zoom = gsap.getProperty(cameraGroup, "scaleX") as number || 1;
+                    const worldActorY = naturalBottom + actorY - 150;
                     
                     gsap.set(cameraGroup, {
                         x: (stageW / 2) - worldActorX,
@@ -638,6 +647,7 @@ export default function Stage({
 
         return () => {
             posCtx.revert();
+            masterCtxRef.current = null;
             if (ambientCtxRef.current)   { ambientCtxRef.current.revert(); ambientCtxRef.current  = null; }
             if (gsapTimelineRef.current) { gsapTimelineRef.current.kill(); gsapTimelineRef.current = null; }
             actorLayerOrderRef.current = "";
@@ -657,16 +667,116 @@ export default function Stage({
             const requestedStart = Math.max(0, Math.min(playheadTimeRef.current, tl.duration()));
             tl.play(requestedStart);
         } else {
-            console.log("[stage] Pause");
-            tl.pause();
-            // Restart ambient when playback stops
-            if (!disableAmbient && !ambientCtxRef.current && containerRef.current && beatRef.current) {
+            console.log("[stage] Pause — reverting ALL GSAP state via master context");
+            
+            // 1. NUCLEAR CLEANUP: revert the master context.
+            // This removes EVERY inline style GSAP has ever set on ANY element
+            // inside the container — actor group transforms, bone transforms
+            // from IK sync (applyPoseToSvg), camera transforms, everything.
+            if (masterCtxRef.current) {
+                masterCtxRef.current.revert();
+                masterCtxRef.current = null;
+            }
+            // Also kill any timeline and ambient that might live outside the context
+            if (gsapTimelineRef.current) {
+                gsapTimelineRef.current.kill();
+                gsapTimelineRef.current = null;
+            }
+            if (ambientCtxRef.current) {
+                ambientCtxRef.current.revert();
+                ambientCtxRef.current = null;
+            }
+
+            // COMPREHENSIVE CLEANUP: clear ALL GSAP inline styles from every <g>
+            // inside the container. This catches state created outside the master
+            // context — timeline display:none on view groups, bone transforms
+            // from applyPoseToSvg, camera transforms, etc.
+            if (containerRef.current) {
+                containerRef.current.querySelectorAll<SVGGElement>('g').forEach(g => {
+                    gsap.set(g, { clearProps: 'all' });
+                });
+                // Reset all view groups to visible (timeline may have set display:none)
+                containerRef.current.querySelectorAll<SVGGElement>('[id^="view_"]').forEach(v => {
+                    v.setAttribute('display', 'inline');
+                });
+            }
+
+            // 2. Re-apply initial positioning from saved refs (clean slate)
+            if (containerRef.current) {
+                const domSvg = containerRef.current.querySelector('svg');
+                // Re-run deterministic rig assembly (bone ordering/nesting)
+                if (domSvg && beatRef.current) {
+                    const actorsInScene = beatRef.current.actions?.map(a => a.actor_id) || [];
+                    const uniqueActors = Array.from(new Set(actorsInScene));
+                    uniqueActors.forEach(actorId => {
+                        const rig = rigsRef.current[actorId];
+                        const actorGroup = domSvg.querySelector<SVGGElement>(`#actor_group_${actorId}`);
+                        if (rig && actorGroup) {
+                            applyDeterministicRigAssembly(actorGroup, rig);
+                        }
+                    });
+                }
+
+                // Create a fresh positioning context
+                const freshPosCtx = gsap.context(() => {
+                    Object.entries(targetTransformsRef.current).forEach(([id, t]) => {
+                        const group = domSvg?.querySelector(`#actor_group_${id}`) as SVGGElement | null;
+                        if (!group) return;
+                        const naturalCX = parseFloat(group.dataset.naturalCx || String(stageWRef.current / 2));
+                        const naturalBottom = parseFloat(group.dataset.naturalBottom || String(stageHRef.current * 0.97));
+                        gsap.set(group, {
+                            x: t.x - naturalCX,
+                            y: t.y - naturalBottom,
+                            rotation: t.rotation ?? 0,
+                            scaleX: t.scale * t.facingSign,
+                            scaleY: t.scale,
+                            svgOrigin: `${naturalCX} ${naturalBottom}`,
+                        });
+                    });
+                }, containerRef);
+                masterCtxRef.current = freshPosCtx;
+            }
+
+            // 3. Restart ambient on clean, properly-positioned actors
+            if (!disableAmbient && containerRef.current && beatRef.current) {
                 ambientCtxRef.current = animateAmbient({
                     container: containerRef.current,
                     beat: beatRef.current,
                     compiledScene: compiledSceneRef.current,
                     availableRigs: rigsRef.current,
                 });
+            }
+
+            // 4. Rebuild timeline (paused at 0) for future seek/play
+            if (containerRef.current && beatRef.current) {
+                const freshTl = buildTimeline({
+                    container: containerRef.current,
+                    beat: beatRef.current,
+                    compiledScene: compiledSceneRef.current,
+                    availableRigs: rigsRef.current,
+                }) as TimelineWithIKSync;
+                freshTl.eventCallback("onUpdate", () => {
+                    syncTimelineIK(freshTl);
+                    syncActorLayerOrder(freshTl.time());
+                    onPlayheadUpdateRef.current?.(freshTl.time());
+                });
+                freshTl.eventCallback("onComplete", () => {
+                    console.log("[stage] Timeline complete");
+                    if (loopOnCompleteRef.current) {
+                        freshTl.pause(0);
+                        syncTimelineIK(freshTl);
+                        syncActorLayerOrder(0);
+                        onPlayheadUpdateRef.current?.(0);
+                        requestAnimationFrame(() => freshTl.play(0));
+                        return;
+                    }
+                    freshTl.pause(freshTl.duration());
+                    syncTimelineIK(freshTl);
+                    syncActorLayerOrder(freshTl.duration());
+                    onPlayCompleteRef.current?.();
+                });
+                freshTl.pause(0);
+                gsapTimelineRef.current = freshTl;
             }
         }
     }, [disableAmbient, isPlaying]);
