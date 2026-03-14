@@ -863,6 +863,7 @@ ${requestedViewGuide}
 ${requestedViewPrefixGuide}
 3. **Logical 2D Puppet Assembly (CRITICAL)**: Build a functional 2D cutout paper-craft puppet.
    - Limbs MUST physically overlap at the joints. Do NOT cut off a limb where it goes behind clothing. Draw full, rounded joints (shoulders, hips) so parts rotate smoothly without gaps!
+   - **Skirts & Dresses**: If the character wears a dress or long coat, you MUST still draw the fully articulated legs underneath it! Do NOT fuse the legs into the skirt. Break the skirt into overlapping panels (e.g. \`skirt_front\`, \`skirt_back\`) pivoted at the waist so they can swing out of the way of the legs.
    - Prioritize logical overlapping anatomy over perfectly cloning the 1:1 reference image silhouette.
    - Group related parts together (e.g. \`arm_lower\` visually grouped inside \`arm_upper\`).
 4. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
