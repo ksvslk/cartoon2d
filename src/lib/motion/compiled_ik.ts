@@ -320,9 +320,16 @@ function buildRotationTracksFromSourceClip(params: {
         }))
         .filter((sample, index, all) => (
           index === 0 ||
+          index === all.length - 1 ||
           sample.t !== all[index - 1].t ||
           sample.rotation !== all[index - 1].rotation
         ));
+
+      // Force cyclic looping continuity by ensuring the last frame perfectly
+      // matches the first frame if the duration is meant to seamlessly loop.
+      if (samples.length > 1) {
+        samples[samples.length - 1].rotation = samples[0].rotation;
+      }
 
       if (samples.length === 0 || samples.every((sample) => Math.abs(sample.rotation) < 0.01)) {
         return null;
