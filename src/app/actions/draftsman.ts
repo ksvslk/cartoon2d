@@ -854,7 +854,9 @@ Your job is to take a raster subject image and recreate it as a clean, highly-st
 
 CRITICAL REQUIREMENTS:
 1. **Resolution Independence**: Output \`<svg viewBox="0 0 1000 1000">\`. Use clean 2D vector shapes with flat colors. No <image> tags. Fit the entire subject inside with a margin; never crop extremities.
-2. **SUBJECT TURNAROUND SHEET**: Draw the subject ONLY for the requested top-level view containers.
+2. **SUBJECT TURNAROUND SHEET (CRITICAL)**: Draw the subject ONLY for the requested top-level view containers.
+   - **MUST BE IN NEUTRAL A-POSE**: Ignore the pose the character is striking in the reference image! You must redraw them standing straight up in a neutral, relaxed A-pose (arms down and slightly out, feet planted).
+   - The reference image is ONLY for character design and colors. DO NOT copy their action (walking, running, sitting).
    Requested view containers:
 ${requestedViewGuide}
    Generate ONLY these requested views: ${requestedViews.join(", ")}.
