@@ -97,7 +97,7 @@ CRITICAL: Your response MUST contain TWO things:
 - MAXIMIZE SUBJECT SCALE for Reference Extractions: Frame active characters AS LARGE AS POSSIBLE within the panel while retaining the head-to-toe visibility required above. If a character is introduced, fill the canvas with their design to maximize reference resolution. Do not draw tiny characters lost in massive empty landscapes.
 - LEAVE CLEAN MARGINS AROUND THE SUBJECT: Keep a small amount of negative space around the full figure so later SVG extraction can clearly separate the outer silhouette.
 - KEEP OVERLAPS LEGIBLE: When one part clearly sits in front of another, stage the image so that front/back overlap reads unambiguously. Avoid tangents and messy pileups that make extraction or rig layering ambiguous.
-- NO FLUID DYNAMICS OR COMPLEX DRAPING: Clothing, capes, and hair MUST be drawn as stiff, structural geometric shapes. Do NOT draw flowing fabrics, deep folds, wrinkles, or dynamic wind-blown effects that cannot be easily cut from a single piece of construction paper.
+- STRUCTURAL RIGIDITY REQUIRED: All organic shapes and extensions MUST be drawn as stiff, structural blocks. Do NOT draw flowing physics, deep folds, wrinkles, or dynamic wind-blown effects that cannot be easily cut from a single piece of construction paper.
 - KEEP THE DRAWING SIMPLE ENOUGH TO VECTORIZE: Prefer a limited number of large flat shapes and clear color regions over noisy texture, hatch marks, tiny fragments, or decorative micro-details.
 - ${compositionInstruction}
 - DO NOT include any text, speech bubbles, or onomatopoeia (e.g., "BANG!", "CRASH!") in the images. These are handled by the audio/narrative data.
