@@ -179,13 +179,26 @@ function round3(value: number): number {
 function sampleTimesFromKeyframes(keyframes: AnimationKeyframe[], durationSeconds: number): number[] {
   const times = new Set<number>([0, round3(durationSeconds)]);
   keyframes.forEach((keyframe) => {
-    const start = clamp(keyframe.delay ?? 0, 0, durationSeconds);
-    const end = clamp(start + (keyframe.duration || 0.5), 0, durationSeconds);
-    const mid = clamp(start + ((keyframe.duration || 0.5) * 0.5), 0, durationSeconds);
+    const start = keyframe.delay ?? 0;
+    if (start >= durationSeconds) return;
+
+    const tweenDuration = Math.max(0.0001, keyframe.duration || 0.5);
+    const cycleDuration = tweenDuration * (keyframe.yoyo ? 2 : 1);
+    const totalCycles = keyframe.repeat === -1 ? Number.POSITIVE_INFINITY : Math.max(1, (keyframe.repeat ?? 0) + 1);
+    const activeEnd = Math.min(durationSeconds, start + (cycleDuration * totalCycles));
+
     times.add(round3(start));
-    times.add(round3(mid));
-    times.add(round3(end));
+    times.add(round3(activeEnd));
   });
+  
+  // Dense-sample the entire timeline at 30 fps to perfectly capture easing curves.
+  // The IK motion intent evaluates linearly, so we need dense points to represent sine waves cleanly.
+  const fps = 30;
+  const frameCount = Math.ceil(durationSeconds * fps);
+  for (let i = 0; i <= frameCount; i++) {
+    times.add(round3(i / fps));
+  }
+  
   return Array.from(times).sort((left, right) => left - right);
 }
 
@@ -223,13 +236,20 @@ function valueAtTime(keyframes: AnimationKeyframe[], time: number, defaultValue 
 
     const elapsed = Math.max(0, time - start);
     const cycleTime = cycleDuration > 0 ? elapsed % cycleDuration : 0;
+    
+    // Default to sine.inOut for Cartoon2D aesthetics unless explicit linear/none
+    const applyEase = (alpha: number) => {
+      if (keyframe.ease === "linear" || keyframe.ease === "none") return alpha;
+      return -(Math.cos(Math.PI * alpha) - 1) / 2;
+    };
+
     if (cycleTime <= tweenDuration) {
-      const alpha = clamp(cycleTime / tweenDuration, 0, 1);
+      const alpha = applyEase(clamp(cycleTime / tweenDuration, 0, 1));
       return isRotation ? round2(lerpDegrees(from, to, alpha)) : round2(from + ((to - from) * alpha));
     }
 
     if (keyframe.yoyo) {
-      const alpha = clamp((cycleTime - tweenDuration) / tweenDuration, 0, 1);
+      const alpha = applyEase(clamp((cycleTime - tweenDuration) / tweenDuration, 0, 1));
       return isRotation ? round2(lerpDegrees(to, from, alpha)) : round2(to + ((from - to) * alpha));
     }
 

@@ -148,21 +148,47 @@ function ensureWholeObjectMotionRecipe(
 function interpolateSamples<T extends { t: number }>(
   samples: T[],
   normalizedTime: number,
+  loop: boolean = true
 ): [T, T, number] | undefined {
   if (samples.length === 0) return undefined;
+  if (samples.length === 1) return [samples[0], samples[0], 0];
+
   const ordered = [...samples].sort((left, right) => left.t - right.t);
-  if (normalizedTime <= ordered[0].t) return [ordered[0], ordered[0], 0];
+
+  if (normalizedTime < ordered[0].t) {
+    if (loop) {
+      const last = ordered[ordered.length - 1];
+      const first = ordered[0];
+      const span = (1.0 - last.t) + first.t;
+      if (span <= 0.0001) return [last, first, 0];
+      const elapsedSinceLast = (1.0 - last.t) + normalizedTime;
+      const alpha = elapsedSinceLast / span;
+      return [last, first, alpha];
+    }
+    return [ordered[0], ordered[0], 0];
+  }
+
   if (normalizedTime >= ordered[ordered.length - 1].t) {
+    if (loop) {
+      const last = ordered[ordered.length - 1];
+      const first = ordered[0];
+      const span = (1.0 - last.t) + first.t;
+      if (span <= 0.0001) return [last, first, 0];
+      const elapsedSinceLast = normalizedTime - last.t;
+      const alpha = elapsedSinceLast / span;
+      return [last, first, alpha];
+    }
     return [ordered[ordered.length - 1], ordered[ordered.length - 1], 0];
   }
 
   for (let index = 0; index < ordered.length - 1; index += 1) {
     const current = ordered[index];
     const next = ordered[index + 1];
-    if (normalizedTime < current.t || normalizedTime > next.t) continue;
-    const span = Math.max(0.0001, next.t - current.t);
-    const linearAlpha = (normalizedTime - current.t) / span;
-    return [current, next, linearAlpha];
+    if (normalizedTime >= current.t && normalizedTime <= next.t) {
+      const span = Math.max(0.0001, next.t - current.t);
+      const alpha = (normalizedTime - current.t) / span;
+      return [current, next, alpha];
+    }
   }
 
   return [ordered[ordered.length - 1], ordered[ordered.length - 1], 0];
@@ -497,15 +523,51 @@ function deriveRootMotionFromSpec(
   ];
 }
 
+function gcd(a: number, b: number): number {
+  let A = Math.round(a);
+  let B = Math.round(b);
+  while (B !== 0) {
+    const temp = B;
+    B = A % B;
+    A = temp;
+  }
+  return A;
+}
+
+function lcm(a: number, b: number): number {
+  if (a === 0 || b === 0) return 0;
+  return (a * b) / gcd(a, b);
+}
+
 export function estimateMotionClipDuration(motionClip: RigMotionClip | undefined): number {
   if (!motionClip) return 2;
+  
+  let hasInfiniteLoop = false;
+  let lcmLoopDurationMs = 0;
+  
   const displayDuration = (motionClip.displayKeyframes || []).reduce((max, keyframe) => {
+    const isInfinite = keyframe.repeat === -1;
+    if (isInfinite) {
+      hasInfiniteLoop = true;
+      const cycleMultiplier = keyframe.yoyo ? 2 : 1;
+      const loopLenMs = Math.round((keyframe.duration || 0.5) * cycleMultiplier * 1000);
+      lcmLoopDurationMs = lcmLoopDurationMs === 0 ? loopLenMs : lcm(lcmLoopDurationMs, loopLenMs);
+    }
+    
     const repeat = keyframe.repeat ?? 0;
     const cycles = repeat === -1 ? 2 : repeat + 1;
     const cycleMultiplier = keyframe.yoyo ? 2 : 1;
     const endTime = (keyframe.delay ?? 0) + (keyframe.duration || 0.5) * cycles * cycleMultiplier;
     return Math.max(max, endTime);
   }, 0);
+  
+  if (hasInfiniteLoop && lcmLoopDurationMs > 0) {
+    // If the clip is fundamentally an infinite procedural loop, 
+    // its duration should be exactly the Least Common Multiple (LCM) of all its cycles.
+    // This allows the playhead modulo math to wrap seamlessly mid-swing.
+    return lcmLoopDurationMs / 1000;
+  }
+  
   return Math.max(0.5, motionClip.intent?.duration || 0, displayDuration || 0);
 }
 
@@ -604,6 +666,8 @@ export function evaluateMotionIntentAtTime(
     const nodeIds = wave.nodeIds.filter((nodeId) => graph.nodeMap.has(nodeId));
     if (nodeIds.length === 0) return acc;
 
+    const freq = normalizeLoopedWaveFrequency(wave.frequency);
+
     nodeIds.forEach((nodeId, index) => {
       const progress = nodeIds.length <= 1 ? 0 : index / (nodeIds.length - 1);
       const falloff = wave.falloff === "tip_bias"
@@ -612,7 +676,7 @@ export function evaluateMotionIntentAtTime(
           ? 1.2 - (progress * 0.7)
           : 1;
       const phaseOffset = wave.phase + (progress * 0.16);
-      const scalar = Math.sin((Math.PI * 2 * wave.frequency * normalizedTime) - (phaseOffset * Math.PI * 2));
+      const scalar = Math.sin((Math.PI * 2 * freq * normalizedTime) - (phaseOffset * Math.PI * 2));
       acc[nodeId] = round2((acc[nodeId] || 0) + (wave.amplitudeDeg * falloff * scalar));
     });
 

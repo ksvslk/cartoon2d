@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { DraftsmanData } from "@/lib/schema/rig";
 import { resolvePlayableMotionClip } from "@/lib/motion/compiled_ik";
 import { EvaluatedMotionGoals, estimateMotionClipDuration, evaluateMotionIntentAtTime } from "@/lib/motion/intent";
+import { Play, Pause, AlertCircle } from "lucide-react";
+import gsap from "gsap";
 import { buildPoseGraph } from "@/lib/ik/graph";
 import { createRestPoseState, PoseState } from "@/lib/ik/pose";
 import { solvePoseFromGoals } from "@/lib/ik/goal_solver";
@@ -25,6 +27,7 @@ export function RigClipPreview({
   playheadTime,
   frameRate = 60,
   loop = true,
+  playbackSpeed = 1.0,
   onPlayheadUpdate,
 }: {
   rig: DraftsmanData;
@@ -33,6 +36,7 @@ export function RigClipPreview({
   playheadTime: number;
   frameRate?: number;
   loop?: boolean;
+  playbackSpeed?: number;
   onPlayheadUpdate?: (timeSeconds: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -104,7 +108,7 @@ export function RigClipPreview({
 
   useEffect(() => {
     if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
+      gsap.ticker.remove(rafRef.current as any);
       rafRef.current = null;
     }
     lastFrameRef.current = null;
@@ -114,45 +118,36 @@ export function RigClipPreview({
 
     if (!isPlaying) return;
 
-    const minFrameMs = 1000 / Math.max(1, frameRate);
+    // Use GSAP's native ticker for absolute frame-perfect sync with the physics timeline
+    const step = (time: number, deltaTimeMs: number) => {
+      // Delta time from GSAP gives us exact elapsed ms
+      const exactElapsedSeconds = (deltaTimeMs / 1000) * (playbackSpeed ?? 1.0);
+      let nextTime = currentTimeRef.current + exactElapsedSeconds;
 
-    const step = (now: number) => {
-      if (lastFrameRef.current === null) {
-        lastFrameRef.current = now;
-      }
-
-      const elapsedMs = now - lastFrameRef.current;
-      if (elapsedMs >= minFrameMs) {
-        const frameCount = Math.max(1, Math.floor(elapsedMs / minFrameMs));
-        const advancedMs = frameCount * minFrameMs;
-        const elapsedSeconds = advancedMs / 1000;
-        let nextTime = currentTimeRef.current + elapsedSeconds;
-        if (durationSeconds > 0) {
-          if (loop) {
-            nextTime = nextTime % durationSeconds;
-          } else {
-            nextTime = Math.min(durationSeconds, nextTime);
-          }
+      if (durationSeconds > 0) {
+        if (loop) {
+          nextTime = nextTime % durationSeconds;
+        } else {
+          nextTime = Math.min(durationSeconds, nextTime);
         }
-
-        currentTimeRef.current = nextTime;
-        lastFrameRef.current += advancedMs;
-        renderAtTime(nextTime);
-        onPlayheadUpdate?.(nextTime);
       }
 
-      rafRef.current = requestAnimationFrame(step);
+      currentTimeRef.current = nextTime;
+      renderAtTime(nextTime);
+      onPlayheadUpdate?.(nextTime);
     };
 
-    rafRef.current = requestAnimationFrame(step);
+    gsap.ticker.add(step);
+    rafRef.current = step as any;
+
     return () => {
       if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
+        gsap.ticker.remove(rafRef.current as any);
         rafRef.current = null;
       }
       lastFrameRef.current = null;
     };
-  }, [durationSeconds, frameRate, isPlaying, loop, onPlayheadUpdate, renderAtTime]);
+  }, [durationSeconds, isPlaying, loop, playbackSpeed, onPlayheadUpdate, renderAtTime]);
 
   if (!validation.ok) {
     return (
