@@ -698,6 +698,7 @@ export default function Home() {
   const [editProjectTitle, setEditProjectTitle] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmDeleteBeatIndex, setConfirmDeleteBeatIndex] = useState<number | null>(null);
+  const [confirmDeleteActorId, setConfirmDeleteActorId] = useState<string | null>(null);
   const [confirmClearStory, setConfirmClearStory] = useState(false);
 
   // Draftsman / Rigging State
@@ -1346,6 +1347,34 @@ export default function Home() {
       console.error("Failed to delete project", err);
       setConfirmDeleteId(null);
     }
+  };
+
+  const handleDeleteActor = (actorId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    if (confirmDeleteActorId !== actorId) {
+      setConfirmDeleteActorId(actorId);
+
+      // Auto-cancel confirmation after 3 seconds
+      setTimeout(() => {
+        setConfirmDeleteActorId(current => current === actorId ? null : current);
+      }, 3000);
+      return;
+    }
+
+    setStoryData(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        actors_detected: prev.actors_detected.filter(a => a.id !== actorId)
+      };
+    });
+
+    if (selectedActorId === actorId) {
+      setSelectedActorId(null);
+    }
+    
+    setConfirmDeleteActorId(null);
   };
 
   const handleUpdateProjectTitle = async (id: string, newTitle: string) => {
@@ -2729,6 +2758,19 @@ export default function Home() {
                                   <Plus size={14} />
                                 </button>
                                 
+                                {/* Delete Actor Button */}
+                                <button
+                                  onClick={(e) => handleDeleteActor(actor.id, e)}
+                                  className={`p-1.5 rounded transition-all group-hover:opacity-100 ${
+                                    confirmDeleteActorId === actor.id
+                                      ? "text-red-500 bg-red-100 dark:bg-red-950/30 opacity-100 cursor-pointer"
+                                      : "text-neutral-400 hover:text-red-500 opacity-0 bg-transparent hover:bg-red-50 dark:hover:bg-red-950/20"
+                                  }`}
+                                  title={confirmDeleteActorId === actor.id ? "Click again to delete" : "Delete Actor"}
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+
                                 {/* Draft Vector Rig Button */}
                                 <button
                                   onClick={(e) => {
