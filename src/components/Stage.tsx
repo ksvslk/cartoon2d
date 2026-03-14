@@ -31,13 +31,15 @@ interface StageProps {
     onActorSelect?: (actorId: string | null) => void;
     onActorPositionChange?: (actorId: string, dx: number, dy: number) => void;
     onActorScaleChange?: (actorId: string, scaleRatio: number) => void;
+    onActorRotationChange?: (actorId: string, rotation: number) => void;
+    onActorFlip?: (actorId: string) => void;
     onCameraChange?: (camera: { zoom: number; x: number; y: number; rotation: number; isEndKeyframe?: boolean }) => void;
     stageOrientation?: StageOrientation;
 }
 
 interface DragState {
     actorId: string;
-    mode: 'move' | 'scale' | 'camera_pan' | 'camera_rotate';
+    mode: 'move' | 'scale' | 'rotate' | 'camera_pan' | 'camera_rotate';
     naturalCX: number;
     naturalBottom: number;
     offsetX: number;
@@ -119,6 +121,8 @@ export default function Stage({
     onActorSelect,
     onActorPositionChange,
     onActorScaleChange,
+    onActorRotationChange,
+    onActorFlip,
     onCameraChange,
     stageOrientation = "landscape",
     selectedKeyframe = null,
@@ -229,16 +233,20 @@ export default function Stage({
         const selRect = domSvg?.querySelector<SVGRectElement>("#__sel_rect");
         if (!selRect) return;
 
-        if (!actorId) {
+        const hideAll = () => {
             selRect.setAttribute("display", "none");
-            return;
-        }
+            ['tl', 'tr', 'bl', 'br'].forEach(pos => domSvg?.querySelector(`#__sel_handle_${pos}`)?.setAttribute('display', 'none'));
+            domSvg?.querySelector('#__sel_rotate')?.setAttribute('display', 'none');
+            domSvg?.querySelector('#__sel_rotate_line')?.setAttribute('display', 'none');
+            domSvg?.querySelector('#__sel_rotate_icon')?.setAttribute('display', 'none');
+            domSvg?.querySelector('#__sel_flip')?.setAttribute('display', 'none');
+            domSvg?.querySelector('#__sel_flip_icon')?.setAttribute('display', 'none');
+        };
+
+        if (!actorId) { hideAll(); return; }
 
         const group = domSvg?.querySelector<SVGGElement>(`#actor_group_${actorId}`);
-        if (!group) {
-            selRect.setAttribute("display", "none");
-            return;
-        }
+        if (!group) { hideAll(); return; }
 
         try {
             const bbox = group.getBBox();
@@ -278,6 +286,7 @@ export default function Stage({
             selRect.setAttribute("height", String(maxY - minY + pad * 2));
             selRect.setAttribute("display", "");
 
+            // Scale corner handles
             const handles = ['tl', 'tr', 'bl', 'br'].map(pos => domSvg?.querySelector(`#__sel_handle_${pos}`));
             handles[0]?.setAttribute('cx', String(minX - pad));
             handles[0]?.setAttribute('cy', String(minY - pad));
@@ -289,9 +298,47 @@ export default function Stage({
             handles[3]?.setAttribute('cy', String(maxY + pad));
             handles.forEach(h => h?.setAttribute('display', ''));
 
+            // Rotate handle — 40px above top-center
+            const centerX = (minX + maxX) / 2;
+            const rotY = minY - pad - 40;
+            const rotLine = domSvg?.querySelector('#__sel_rotate_line');
+            const rotHandle = domSvg?.querySelector('#__sel_rotate');
+            const rotIcon = domSvg?.querySelector('#__sel_rotate_icon');
+            if (rotLine) {
+                rotLine.setAttribute('x1', String(centerX));
+                rotLine.setAttribute('y1', String(minY - pad));
+                rotLine.setAttribute('x2', String(centerX));
+                rotLine.setAttribute('y2', String(rotY));
+                rotLine.setAttribute('display', '');
+            }
+            if (rotHandle) {
+                rotHandle.setAttribute('cx', String(centerX));
+                rotHandle.setAttribute('cy', String(rotY));
+                rotHandle.setAttribute('display', '');
+            }
+            if (rotIcon) {
+                rotIcon.setAttribute('x', String(centerX));
+                rotIcon.setAttribute('y', String(rotY));
+                rotIcon.setAttribute('display', '');
+            }
+
+            // Flip button — 40px below bottom-center
+            const flipY = maxY + pad + 30;
+            const flipBtn = domSvg?.querySelector('#__sel_flip');
+            const flipIcon = domSvg?.querySelector('#__sel_flip_icon');
+            if (flipBtn) {
+                flipBtn.setAttribute('cx', String(centerX));
+                flipBtn.setAttribute('cy', String(flipY));
+                flipBtn.setAttribute('display', '');
+            }
+            if (flipIcon) {
+                flipIcon.setAttribute('x', String(centerX));
+                flipIcon.setAttribute('y', String(flipY));
+                flipIcon.setAttribute('display', '');
+            }
+
         } catch {
-            selRect.setAttribute("display", "none");
-            ['tl', 'tr', 'bl', 'br'].forEach(pos => domSvg?.querySelector(`#__sel_handle_${pos}`)?.setAttribute('display', 'none'));
+            hideAll();
         }
     }, []);
 
@@ -459,6 +506,59 @@ export default function Stage({
             handle.setAttribute("display", "none");
             overlayGroup.appendChild(handle);
         });
+
+        // Rotate handle — circle above top-center with connector line
+        const rotLine = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "line");
+        rotLine.setAttribute("id", "__sel_rotate_line");
+        rotLine.setAttribute("stroke", "cyan");
+        rotLine.setAttribute("stroke-width", "2");
+        rotLine.setAttribute("pointer-events", "none");
+        rotLine.setAttribute("display", "none");
+        overlayGroup.appendChild(rotLine);
+
+        const rotHandle = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "circle");
+        rotHandle.setAttribute("id", "__sel_rotate");
+        rotHandle.setAttribute("r", "10");
+        rotHandle.setAttribute("fill", "white");
+        rotHandle.setAttribute("stroke", "#f472b6");
+        rotHandle.setAttribute("stroke-width", "3");
+        rotHandle.setAttribute("cursor", "grab");
+        rotHandle.setAttribute("display", "none");
+        overlayGroup.appendChild(rotHandle);
+
+        // Rotate icon inside the handle (↻ symbol)
+        const rotIcon = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "text");
+        rotIcon.setAttribute("id", "__sel_rotate_icon");
+        rotIcon.setAttribute("text-anchor", "middle");
+        rotIcon.setAttribute("dominant-baseline", "central");
+        rotIcon.setAttribute("fill", "#f472b6");
+        rotIcon.setAttribute("font-size", "12");
+        rotIcon.setAttribute("pointer-events", "none");
+        rotIcon.setAttribute("display", "none");
+        rotIcon.textContent = "↻";
+        overlayGroup.appendChild(rotIcon);
+
+        // Flip button — horizontal flip icon below bottom-center
+        const flipBtn = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "circle");
+        flipBtn.setAttribute("id", "__sel_flip");
+        flipBtn.setAttribute("r", "10");
+        flipBtn.setAttribute("fill", "white");
+        flipBtn.setAttribute("stroke", "#60a5fa");
+        flipBtn.setAttribute("stroke-width", "3");
+        flipBtn.setAttribute("cursor", "pointer");
+        flipBtn.setAttribute("display", "none");
+        overlayGroup.appendChild(flipBtn);
+
+        const flipIcon = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "text");
+        flipIcon.setAttribute("id", "__sel_flip_icon");
+        flipIcon.setAttribute("text-anchor", "middle");
+        flipIcon.setAttribute("dominant-baseline", "central");
+        flipIcon.setAttribute("fill", "#60a5fa");
+        flipIcon.setAttribute("font-size", "14");
+        flipIcon.setAttribute("pointer-events", "none");
+        flipIcon.setAttribute("display", "none");
+        flipIcon.textContent = "⇔";
+        overlayGroup.appendChild(flipIcon);
 
         masterSvgElement.appendChild(overlayGroup);
 
@@ -836,6 +936,23 @@ export default function Stage({
             actorIdToDrag = selectedActorId;
             mode = 'scale';
             actorGroup = containerRef.current?.querySelector(`#actor_group_${selectedActorId}`) as SVGGElement | null;
+        } else if (target.id === '__sel_rotate') {
+            if (!selectedActorId) return;
+            actorIdToDrag = selectedActorId;
+            mode = 'rotate';
+            actorGroup = containerRef.current?.querySelector(`#actor_group_${selectedActorId}`) as SVGGElement | null;
+        } else if (target.id === '__sel_flip') {
+            // Flip is instant — no drag needed
+            if (selectedActorId) {
+                const group = containerRef.current?.querySelector<SVGGElement>(`#actor_group_${selectedActorId}`);
+                if (group) {
+                    const currentScaleX = gsap.getProperty(group, 'scaleX') as number;
+                    gsap.set(group, { scaleX: -currentScaleX });
+                    updateSelectionOverlay(selectedActorId);
+                    onActorFlip?.(selectedActorId);
+                }
+            }
+            return;
         } else {
             actorGroup = findActorGroup(e.target);
             if (!actorGroup) {
@@ -917,7 +1034,7 @@ export default function Stage({
                     lastFeetY: feetY,
                     lastDist: 0,
                 };
-            } else {
+            } else if (mode === 'scale') {
                 const dx = svgCoords.x - feetX;
                 const dy = svgCoords.y - feetY;
                 const initialDist = Math.max(1, Math.sqrt(dx*dx + dy*dy));
@@ -936,6 +1053,26 @@ export default function Stage({
                     lastFeetX: feetX,
                     lastFeetY: feetY,
                     lastDist: initialDist,
+                };
+            } else if (mode === 'rotate') {
+                // Store initial angle from actor center to mouse position
+                const initialAngle = Math.atan2(svgCoords.y - feetY, svgCoords.x - feetX);
+                const currentRotation = gsap.getProperty(actorGroup, "rotation") as number || 0;
+                
+                dragRef.current = {
+                    actorId: actorIdToDrag,
+                    mode,
+                    naturalCX,
+                    naturalBottom,
+                    offsetX: initialAngle, // initial mouse angle
+                    offsetY: currentRotation, // initial rotation value
+                    initialDist: 0,
+                    initialScale: currentScaleY,
+                    initialFeetX: feetX,
+                    initialFeetY: feetY,
+                    lastFeetX: feetX,
+                    lastFeetY: feetY,
+                    lastDist: 0,
                 };
             }
         }
@@ -1026,7 +1163,7 @@ export default function Stage({
                 x: newFeetX - naturalCX,
                 y: newFeetY - naturalBottom,
             });
-        } else {
+        } else if (mode === 'scale') {
             const currentX = gsap.getProperty(group, "x") as number;
             const currentY = gsap.getProperty(group, "y") as number;
             const feetX = naturalCX + currentX;
@@ -1047,6 +1184,18 @@ export default function Stage({
                 scaleX: newScale * facingSign,
                 scaleY: newScale,
             });
+        } else if (mode === 'rotate') {
+            // Arc-based rotation: compute angle delta from center to mouse
+            const currentX = gsap.getProperty(group, "x") as number;
+            const currentY = gsap.getProperty(group, "y") as number;
+            const feetX = naturalCX + currentX;
+            const feetY = naturalBottom + currentY;
+            
+            const currentAngle = Math.atan2(svgCoords.y - feetY, svgCoords.x - feetX);
+            const angleDelta = (currentAngle - offsetX) * (180 / Math.PI); // offsetX = initial angle
+            const newRotation = offsetY + angleDelta; // offsetY = initial rotation
+            
+            gsap.set(group, { rotation: newRotation });
         }
 
         // Update selection overlay to follow
@@ -1087,12 +1236,15 @@ export default function Stage({
                         if (dx !== 0 || dy !== 0) {
                             onActorPositionChange?.(dragState.actorId, dx, dy);
                         }
-                    } else {
+                    } else if (dragState.mode === 'scale') {
                         const finalScale = Math.abs(gsap.getProperty(group, "scaleY") as number) || dragState.initialScale;
                         const scaleRatio = finalScale / Math.max(0.0001, dragState.initialScale);
                         if (Number.isFinite(scaleRatio) && Math.abs(scaleRatio - 1) > 0.0001) {
                             onActorScaleChange?.(dragState.actorId, scaleRatio);
                         }
+                    } else if (dragState.mode === 'rotate') {
+                        const finalRotation = gsap.getProperty(group, "rotation") as number || 0;
+                        onActorRotationChange?.(dragState.actorId, finalRotation);
                     }
                 }
             }
@@ -1101,7 +1253,7 @@ export default function Stage({
         dragRef.current = null;
         isDraggingRef.current = false;
         detachWindowDragHandlers();
-    }, [detachWindowDragHandlers, onActorPositionChange, onActorScaleChange]);
+    }, [detachWindowDragHandlers, onActorPositionChange, onActorScaleChange, onActorRotationChange, onActorFlip]);
 
     const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
         handleDragMove(e.clientX, e.clientY);

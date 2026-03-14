@@ -2448,6 +2448,98 @@ export default function Home() {
     });
   };
 
+  const handleActorRotationChange = (actorId: string, rotation: number) => {
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const beat = newBeats[selectedSceneIndex];
+      if (!beat) return prev;
+
+      const targetActionIndex = selectedActionIndex !== null && beat.actions[selectedActionIndex]?.actor_id === actorId
+        ? selectedActionIndex
+        : beat.actions.findIndex(a => a.actor_id === actorId);
+
+      if (targetActionIndex === -1) return prev;
+
+      const newActions = [...beat.actions];
+      const targetedAction = newActions[targetActionIndex];
+
+      const newSpatialTransform = {
+        ...(targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
+      };
+      let newTargetSpatialTransform = targetedAction.target_spatial_transform
+        ? { ...targetedAction.target_spatial_transform }
+        : undefined;
+
+      const editStart = selectedKeyframe === 'start' || !selectedKeyframe;
+      const editEnd = selectedKeyframe === 'end';
+
+      if (editStart) {
+        newSpatialTransform.rotation = Math.round(rotation);
+      }
+      if (editEnd && newTargetSpatialTransform) {
+        newTargetSpatialTransform.rotation = Math.round(rotation);
+      } else if (editEnd) {
+        newTargetSpatialTransform = {
+          ...(targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5 }),
+          rotation: Math.round(rotation),
+        };
+      }
+
+      newActions[targetActionIndex] = {
+        ...targetedAction,
+        spatial_transform: newSpatialTransform,
+        target_spatial_transform: newTargetSpatialTransform,
+      };
+
+      const nextBeat = { ...beat, actions: newActions };
+      const previousCompiledScene = selectedSceneIndex > 0
+        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+        : null;
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+      return { ...prev, beats: newBeats };
+    });
+  };
+
+  const handleActorFlip = (actorId: string) => {
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const beat = newBeats[selectedSceneIndex];
+      if (!beat) return prev;
+
+      const targetActionIndex = selectedActionIndex !== null && beat.actions[selectedActionIndex]?.actor_id === actorId
+        ? selectedActionIndex
+        : beat.actions.findIndex(a => a.actor_id === actorId);
+
+      if (targetActionIndex === -1) return prev;
+
+      const newActions = [...beat.actions];
+      const targetedAction = newActions[targetActionIndex];
+
+      const newSpatialTransform = {
+        ...(targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
+      };
+
+      // Toggle flip_x
+      newSpatialTransform.flip_x = !(newSpatialTransform.flip_x ?? false);
+
+      newActions[targetActionIndex] = {
+        ...targetedAction,
+        spatial_transform: newSpatialTransform,
+      };
+
+      const nextBeat = { ...beat, actions: newActions };
+      const previousCompiledScene = selectedSceneIndex > 0
+        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+        : null;
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+      return { ...prev, beats: newBeats };
+    });
+  };
+
   const handleCameraChange = useCallback((cameraUpdate: { zoom: number; x: number; y: number; rotation: number; isEndKeyframe?: boolean }) => {
     setStoryData(prev => {
       if (!prev) return prev;
@@ -3761,6 +3853,8 @@ export default function Home() {
                           onActorSelect={handleActorSelect}
                           onActorPositionChange={handleActorPositionChange}
                           onActorScaleChange={handleActorScaleChange}
+                          onActorRotationChange={handleActorRotationChange}
+                          onActorFlip={handleActorFlip}
                           onCameraChange={handleCameraChange}
                           stageOrientation={stageOrientation}
                           selectedKeyframe={selectedKeyframe}
