@@ -68,15 +68,10 @@ function initialFacingSignForTrack(track: CompiledSceneData["instance_tracks"][n
     if (!track) return 1;
     const sortedTransforms = [...track.transform_track].sort((left, right) => left.time - right.time);
     const firstTransform = sortedTransforms[0];
-    const secondTransform = sortedTransforms[1];
     if (firstTransform?.flip_x !== undefined) {
         return firstTransform.flip_x ? -1 : 1;
     }
-    if (firstTransform && secondTransform) {
-        const deltaX = secondTransform.x - firstTransform.x;
-        if (deltaX < -10) return -1;
-        if (deltaX > 10) return 1;
-    }
+    // Do NOT infer facing from deltaX movement — only use explicit flip_x or locomotion direction
 
     const preferredDirection = [...track.clip_bindings]
         .sort((left, right) => left.start_time - right.start_time)[0]
@@ -254,14 +249,17 @@ export default function Stage({
             const svgEl = domSvg as SVGSVGElement;
             const svgCTM = svgEl.getCTM();
 
-            // Transform bbox corners to SVG root coordinates
+            // Since overlay is inside the camera layer (same coordinate space as actors),
+            // we only need to account for the actor group's local transforms (GSAP-applied)
             let minX = bbox.x, minY = bbox.y;
             let maxX = bbox.x + bbox.width, maxY = bbox.y + bbox.height;
 
             if (ctm && svgCTM) {
-                const inv = svgCTM.inverse();
-                const toRoot = inv.multiply(ctm);
-                // Transform all 4 corners and take min/max
+                // Get local transform of the group relative to the camera layer (its parent)
+                const camEl = group.closest('#__camera_layer') as SVGGraphicsElement | null;
+                const parentCTM = camEl?.getCTM?.() || svgCTM;
+                const inv = parentCTM.inverse();
+                const toLocal = inv.multiply(ctm);
                 const corners = [
                     { x: bbox.x, y: bbox.y },
                     { x: bbox.x + bbox.width, y: bbox.y },
@@ -271,7 +269,7 @@ export default function Stage({
                 const transformed = corners.map(c => {
                     const pt = svgEl.createSVGPoint();
                     pt.x = c.x; pt.y = c.y;
-                    return pt.matrixTransform(toRoot);
+                    return pt.matrixTransform(toLocal);
                 });
                 minX = Math.min(...transformed.map(p => p.x));
                 minY = Math.min(...transformed.map(p => p.y));
@@ -560,7 +558,13 @@ export default function Stage({
         flipIcon.textContent = "⇔";
         overlayGroup.appendChild(flipIcon);
 
-        masterSvgElement.appendChild(overlayGroup);
+        // Append overlay inside camera layer so it shares the same coordinate space as actors
+        const cameraLayerForOverlay = masterSvgElement.querySelector('#__camera_layer');
+        if (cameraLayerForOverlay) {
+            cameraLayerForOverlay.appendChild(overlayGroup);
+        } else {
+            masterSvgElement.appendChild(overlayGroup);
+        }
 
         if (showObstacleDebug && compiledScene?.obstacles?.length) {
             const obstacleGroup = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -647,17 +651,25 @@ export default function Stage({
 
             const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
             if (cameraGroup && beat.camera) {
-                const cx = beat.camera.x ?? (stageW / 2);
-                const cy = beat.camera.y ?? (stageH / 2);
-                const zoom = beat.camera.zoom ?? 1;
+                const rawCx = beat.camera.x ?? (stageW / 2);
+                const rawCy = beat.camera.y ?? (stageH / 2);
+                const rawZoom = beat.camera.zoom ?? 1;
                 const rot = beat.camera.rotation ?? 0;
+                // Sanitize: clamp camera to prevent stored extreme values from hiding everything
+                const cx = Math.max(-3000, Math.min(3000, isFinite(rawCx) ? rawCx : stageW / 2));
+                const cy = Math.max(-3000, Math.min(3000, isFinite(rawCy) ? rawCy : stageH / 2));
+                const zoom = Math.max(0.2, Math.min(3, isFinite(rawZoom) ? rawZoom : 1));
+                console.log(`[stage] Camera — raw: x=${rawCx}, y=${rawCy}, zoom=${rawZoom} → clamped: x=${cx}, y=${cy}, zoom=${zoom}`);
+                // Use stage-center transformOrigin to match the timeline tween
+                const originX = stageW / 2;
+                const originY = stageH / 2;
                 gsap.set(cameraGroup, {
-                    x: (stageW / 2) - cx,
-                    y: (stageH / 2) - cy,
+                    x: originX - cx,
+                    y: originY - cy,
                     scaleX: zoom,
                     scaleY: zoom,
                     rotation: rot,
-                    transformOrigin: `${cx}px ${cy}px`
+                    transformOrigin: `${originX}px ${originY}px`
                 });
             }
 
@@ -711,6 +723,8 @@ export default function Stage({
             }
         });
         tl.eventCallback("onComplete", () => {
+          // Only act on completion during actual playback — not manual seek
+          if (!isPlayingRef.current) return;
           console.log("[stage] Timeline complete");
           if (loopOnCompleteRef.current) {
             tl.pause(0);
@@ -861,6 +875,7 @@ export default function Stage({
                     onPlayheadUpdateRef.current?.(freshTl.time());
                 });
                 freshTl.eventCallback("onComplete", () => {
+                    if (!isPlayingRef.current) return;
                     console.log("[stage] Timeline complete");
                     if (loopOnCompleteRef.current) {
                         freshTl.pause(0);
@@ -886,8 +901,12 @@ export default function Stage({
         if (isPlayingRef.current) return;  // GSAP drives the playhead while playing
         if (isDraggingRef.current) return; // Wait until drag is finished to not overwrite local overrides
         const tl = gsapTimelineRef.current;
-        if (!tl) return;
+        if (!tl) {
+            console.log(`[stage] Effect 3 — no timeline to seek`);
+            return;
+        }
         
+        console.log(`[stage] Effect 3 — seeking to ${playheadTime.toFixed(3)}s (tl duration: ${tl.duration().toFixed(3)}s)`);
         // Use regular seek. Suppressing events entirely sometimes skips rendering the frame.
         tl.seek(playheadTime, false);
         syncTimelineIK(tl);

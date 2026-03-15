@@ -101,8 +101,15 @@ export default function PropertiesPanel({
       return (
         <div className="flex flex-col gap-5 transition-opacity">
           <div>
-            <div className="text-[10px] text-amber-500 dark:text-amber-500 font-bold mb-1 uppercase tracking-wider flex justify-between">
+            <div className="text-[10px] text-amber-500 dark:text-amber-500 font-bold mb-1 uppercase tracking-wider flex justify-between items-center">
               <span>Camera Lens</span>
+              <button onClick={() => {
+                onUpdateCamera('x', 960);
+                onUpdateCamera('y', 540);
+                onUpdateCamera('zoom', 1.0);
+                onUpdateCamera('rotation', 0);
+                onClearCameraTarget();
+              }} className="px-2 py-0.5 border border-amber-200 dark:border-amber-600 bg-white dark:bg-neutral-800 text-amber-600 dark:text-amber-400 rounded text-[9px] hover:bg-amber-50 dark:hover:bg-amber-900/40 transition-colors font-medium" title="Reset camera to default center view">⟲ Reset Camera</button>
             </div>
             <div className="w-full h-8 bg-amber-50 dark:bg-amber-900/20 rounded border border-amber-200 dark:border-amber-700/50 flex items-center px-3 text-xs text-amber-700 dark:text-amber-300 font-mono shadow-sm dark:shadow-none transition-colors">
               {cam.target_x !== undefined || cam.target_actor_id ? "Cinematic Pan / Follow" : "Static Camera"}

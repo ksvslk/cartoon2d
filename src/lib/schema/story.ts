@@ -47,6 +47,7 @@ export const CameraSchema = z.object({
     x: z.number().default(960).describe("Camera focal point X in stage coordinates. Default 960 (center)."),
     y: z.number().default(540).describe("Camera focal point Y in stage coordinates. Default 540 (center)."),
     rotation: z.number().default(0).describe("Camera rotation in degrees."),
+    duration: z.number().optional().describe("Camera layer duration in seconds. If not set, defaults to scene duration."),
     target_actor_id: z.string().optional().describe("If provided, the camera will track this actor's movement over the course of the scene."),
     target_x: z.number().optional().describe("If provided, the camera will pan to this X coordinate by the end of the scene."),
     target_y: z.number().optional().describe("If provided, the camera will pan to this Y coordinate by the end of the scene."),

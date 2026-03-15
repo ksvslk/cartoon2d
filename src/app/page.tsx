@@ -327,9 +327,16 @@ export default function Home() {
     return sanitizeDurationSeconds(fallbackDuration);
   }, [sceneTimelineDurations, selectedSceneIndex, selectedBeat, selectedCompiledScene]);
 
+  // Display duration: fixed visual scale for timeline (accounts for all layer durations + buffer)
+  const cameraDuration = selectedBeat?.camera?.duration ?? totalDuration;
+  const computedDisplayDuration = Math.max(Math.ceil(Math.max(totalDuration, cameraDuration) * 1.3), 3);
+  // Freeze during drag so the visual scale doesn't shift while the user is dragging
+  const [frozenDisplayDuration, setFrozenDisplayDuration] = useState<number | null>(null);
+  const displayDuration = frozenDisplayDuration ?? computedDisplayDuration;
+
   // Playhead callbacks — called by Stage when GSAP timeline ticks or completes
   const handlePlayheadUpdate = useCallback((timeSeconds: number) => {
-    const pct = Math.min(100, totalDuration > 0 ? (timeSeconds / totalDuration) * 100 : 0);
+    const pct = Math.min(100, displayDuration > 0 ? (timeSeconds / displayDuration) * 100 : 0);
     livePlayheadPosRef.current = pct;
     if (!isPlayingRef.current) {
       setPlayheadPos(pct);
@@ -343,94 +350,228 @@ export default function Home() {
 
     lastPlayheadUiSyncAtRef.current = now;
     setPlayheadPos(pct);
-  }, [totalDuration]);
+  }, [displayDuration]);
 
-  // Pill Drag Handlers
+  // Pill Drag Handlers — zero React re-renders during drag for instant response
   const handlePillMouseDown = useCallback((e: React.MouseEvent, idx: number, actorId: string, delay: number, duration: number, mode: 'move' | 'resize') => {
     e.stopPropagation();
+    e.preventDefault();
     setIsPlaying(false);
-    dragPillRef.current = {
-      idx,
-      actorId,
-      mode,
-      startX: e.clientX,
-      initialDelay: delay,
-      initialDuration: duration,
-    };
-    setSelectedActionIndex(idx);
-    setSelectedActorId(actorId);
+
+    const capturedDisplayDuration = displayDuration;
+
+    // Get the pill DOM element BEFORE any state updates could replace it
+    const pillEl = mode === 'resize'
+      ? (e.currentTarget as HTMLElement).parentElement as HTMLElement
+      : e.currentTarget as HTMLElement;
+
+    const parentWidthPx = Math.max(1, pillEl.parentElement?.clientWidth ?? 400);
+
+    // Snap targets built from compiled scene bindings (same source as pill rendering)
+    const beat = storyData?.beats[selectedSceneIndex];
+    const endTimeSnapTargets: number[] = [];
+    const durationSnapTargets: number[] = [];
+    if (beat) {
+      const camDur = beat.camera?.duration ?? totalDuration;
+      endTimeSnapTargets.push(camDur);
+      durationSnapTargets.push(camDur);
+
+      // Use compiled bindings for accurate snap targets (matches pill rendering)
+      const compiledTracks = beat.compiled_scene?.instance_tracks ?? [];
+      for (const track of compiledTracks) {
+        for (const binding of track.clip_bindings) {
+          if (binding.source_action_index === idx) continue; // skip self
+          const bindStart = binding.start_time ?? 0;
+          const bindDur = binding.duration_seconds ?? 2;
+          endTimeSnapTargets.push(bindStart + bindDur);
+          durationSnapTargets.push(bindDur);
+        }
+      }
+
+      // Fallback: if no compiled scene, use raw actions
+      if (compiledTracks.length === 0) {
+        beat.actions.forEach((a, i) => {
+          if (i === idx) return;
+          const actionDelay = a.animation_overrides?.delay ?? 0;
+          const actionDur = a.duration_seconds || 2;
+          endTimeSnapTargets.push(actionDelay + actionDur);
+          durationSnapTargets.push(actionDur);
+        });
+      }
+    }
+    const snapThresholdSec = (8 / parentWidthPx) * capturedDisplayDuration;
+
+    dragPillRef.current = { idx, actorId, mode, startX: e.clientX, initialDelay: delay, initialDuration: duration };
+    // Disable CSS transitions during drag so the pill follows the mouse instantly
+    pillEl.style.transition = 'none';
+
+    let finalValue = mode === 'resize' ? duration : delay;
 
     const handleWindowMouseMove = (eMouse: MouseEvent) => {
-      if (!timelineRef.current || !dragPillRef.current) return;
-      
-      const timelineTrack = timelineRef.current.querySelector('div')?.getBoundingClientRect();
-      const trackWidthPixels = Math.max(1, (timelineTrack?.width || timelineRef.current.clientWidth) - 192);
+      if (!dragPillRef.current) return;
       const deltaX = eMouse.clientX - dragPillRef.current.startX;
-      const deltaSeconds = (deltaX / trackWidthPixels) * totalDuration;
 
-      setStoryData(prev => {
-        if (!prev || !dragPillRef.current) return prev;
-        const newBeats = [...prev.beats];
-        const newActions = [...newBeats[selectedSceneIndex].actions];
-        const action = { ...newActions[dragPillRef.current.idx] };
+      if (mode === 'resize') {
+        const deltaSec = (deltaX / parentWidthPx) * capturedDisplayDuration;
+        let newDuration = Math.max(0.1, dragPillRef.current.initialDuration + deltaSec);
+        const endTime = delay + newDuration;
 
-        if (dragPillRef.current.mode === 'move') {
-          const newDelay = Math.max(0, dragPillRef.current.initialDelay + deltaSeconds);
-          action.animation_overrides = { ...action.animation_overrides, delay: newDelay };
-          
-          // Live scrub the stage to the start time being dragged
-          const scrubTime = newDelay;
-          setPlayheadPos(totalDuration > 0 ? (scrubTime / totalDuration) * 100 : 0);
-          handlePlayheadUpdate(scrubTime);
-        } else if (dragPillRef.current.mode === 'resize') {
-          const newDuration = Math.max(0.1, dragPillRef.current.initialDuration + deltaSeconds);
-          action.duration_seconds = newDuration;
-          
-          // Live scrub the stage to the end frame we are resizing
-          const scrubTime = dragPillRef.current.initialDelay + newDuration;
-          setPlayheadPos(totalDuration > 0 ? (scrubTime / totalDuration) * 100 : 0);
-          handlePlayheadUpdate(scrubTime);
+        // Snap to other layer end positions
+        for (const target of endTimeSnapTargets) {
+          if (Math.abs(endTime - target) < snapThresholdSec) {
+            newDuration = Math.max(0.1, target - delay);
+            break;
+          }
+        }
+        // Snap to matching duration (same length as another layer)
+        for (const target of durationSnapTargets) {
+          if (Math.abs(newDuration - target) < snapThresholdSec) {
+            newDuration = Math.max(0.1, target);
+            break;
+          }
         }
 
-        newActions[dragPillRef.current.idx] = action;
-        const nextBeat = { ...newBeats[selectedSceneIndex], actions: newActions };
-        
-        // Recompile live so the UI (which depends on compiled_scene) updates immediately
-        const previousCompiledScene = selectedSceneIndex > 0
-          ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
-          : null;
-        const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-        nextBeat.compiled_scene = recompiled;
-        
-        newBeats[selectedSceneIndex] = nextBeat;
-        return { ...prev, beats: newBeats };
-      });
+        finalValue = newDuration;
+        pillEl.style.width = `${(newDuration / capturedDisplayDuration) * 100}%`;
+      } else {
+        const deltaSec = (deltaX / parentWidthPx) * capturedDisplayDuration;
+        const newDelay = Math.max(0, dragPillRef.current.initialDelay + deltaSec);
+        finalValue = newDelay;
+        pillEl.style.left = `${(newDelay / capturedDisplayDuration) * 100}%`;
+      }
     };
 
     const handleWindowMouseUp = () => {
       dragPillRef.current = null;
+      pillEl.style.transition = '';
       window.removeEventListener('mousemove', handleWindowMouseMove);
       window.removeEventListener('mouseup', handleWindowMouseUp);
 
-      // Recompile on drop so changes take effect
+      // ALL state updates happen here, after drag is done
+      setSelectedActionIndex(idx);
+      setSelectedActorId(actorId);
+      setFrozenDisplayDuration(null);
+
       setStoryData(prev => {
         if (!prev) return prev;
         const newBeats = [...prev.beats];
-        const currentBeat = newBeats[selectedSceneIndex];
+        const newActions = [...newBeats[selectedSceneIndex].actions];
+        const action = { ...newActions[idx] };
+
+        if (mode === 'resize') {
+          action.duration_seconds = finalValue;
+        } else {
+          action.animation_overrides = { ...action.animation_overrides, delay: finalValue };
+        }
+
+        newActions[idx] = action;
+        const nextBeat = { ...newBeats[selectedSceneIndex], actions: newActions };
         const previousCompiledScene = selectedSceneIndex > 0
           ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
           : null;
-        const recompiled = compileBeatToScene(currentBeat, availableRigs, previousCompiledScene, stageOrientation);
-        newBeats[selectedSceneIndex] = { ...currentBeat, compiled_scene: recompiled };
+        nextBeat.compiled_scene = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+        newBeats[selectedSceneIndex] = nextBeat;
         return { ...prev, beats: newBeats };
       });
     };
 
     window.addEventListener('mousemove', handleWindowMouseMove);
     window.addEventListener('mouseup', handleWindowMouseUp);
-  }, [totalDuration, selectedSceneIndex, availableRigs, stageOrientation, handlePlayheadUpdate]);
+  }, [totalDuration, selectedSceneIndex, displayDuration, storyData, availableRigs, stageOrientation]);
 
-  const currentTimeSeconds = (playheadPos / 100) * totalDuration;
+  const handleCameraPillMouseDown = useCallback((e: React.MouseEvent, mode: 'move' | 'resize') => {
+    e.stopPropagation();
+    e.preventDefault();
+    setIsPlaying(false);
+
+    const capturedDisplayDuration = displayDuration;
+    // NO state updates here — pill DOM element must stay valid
+
+    const pillEl = mode === 'resize'
+      ? (e.currentTarget as HTMLElement).parentElement as HTMLElement
+      : e.currentTarget as HTMLElement;
+    pillEl.style.transition = 'none';
+
+    const parentWidthPx = Math.max(1, pillEl.parentElement?.clientWidth ?? 400);
+
+    const beat = storyData?.beats[selectedSceneIndex];
+    const endTimeSnapTargets: number[] = [];
+    const durationSnapTargets: number[] = [];
+    if (beat) {
+      // Use compiled bindings for accurate snap targets
+      const compiledTracks = beat.compiled_scene?.instance_tracks ?? [];
+      for (const track of compiledTracks) {
+        for (const binding of track.clip_bindings) {
+          const bindStart = binding.start_time ?? 0;
+          const bindDur = binding.duration_seconds ?? 2;
+          endTimeSnapTargets.push(bindStart + bindDur);
+          durationSnapTargets.push(bindDur);
+        }
+      }
+      // Fallback
+      if (compiledTracks.length === 0) {
+        beat.actions.forEach(a => {
+          const actionDelay = a.animation_overrides?.delay ?? 0;
+          const actionDur = a.duration_seconds || 2;
+          endTimeSnapTargets.push(actionDelay + actionDur);
+          durationSnapTargets.push(actionDur);
+        });
+      }
+    }
+    const snapThresholdSec = (8 / parentWidthPx) * capturedDisplayDuration;
+
+    let finalDuration = beat?.camera?.duration ?? totalDuration;
+    const startX = e.clientX;
+    const initialCameraDuration = finalDuration;
+
+    const handleWindowMouseMove = (eMouse: MouseEvent) => {
+      if (mode === 'resize') {
+        const deltaX = eMouse.clientX - startX;
+        const deltaSec = (deltaX / parentWidthPx) * capturedDisplayDuration;
+        let newDuration = Math.max(0.5, initialCameraDuration + deltaSec);
+
+        // Snap to actor layer end positions
+        for (const target of endTimeSnapTargets) {
+          if (Math.abs(newDuration - target) < snapThresholdSec) {
+            newDuration = Math.max(0.5, target);
+            break;
+          }
+        }
+        // Snap to matching duration (same length as an actor layer)
+        for (const target of durationSnapTargets) {
+          if (Math.abs(newDuration - target) < snapThresholdSec) {
+            newDuration = Math.max(0.5, target);
+            break;
+          }
+        }
+
+        finalDuration = newDuration;
+        pillEl.style.width = `${(newDuration / capturedDisplayDuration) * 100}%`;
+      }
+    };
+
+    const handleWindowMouseUp = () => {
+      window.removeEventListener('mousemove', handleWindowMouseMove);
+      window.removeEventListener('mouseup', handleWindowMouseUp);
+      pillEl.style.transition = '';
+      setFrozenDisplayDuration(null);
+
+      // Commit to state
+      setStoryData(prev => {
+        if (!prev) return prev;
+        const newBeats = [...prev.beats];
+        const currentBeat = { ...newBeats[selectedSceneIndex] };
+        currentBeat.camera = { ...currentBeat.camera, duration: finalDuration };
+        newBeats[selectedSceneIndex] = currentBeat;
+        return { ...prev, beats: newBeats };
+      });
+    };
+
+    window.addEventListener('mousemove', handleWindowMouseMove);
+    window.addEventListener('mouseup', handleWindowMouseUp);
+  }, [totalDuration, selectedSceneIndex, storyData, availableRigs, stageOrientation]);
+
+  const currentTimeSeconds = (playheadPos / 100) * displayDuration;
   const currentFrame = Math.round(currentTimeSeconds * fps);
   const totalFrames = Math.max(1, Math.min(Math.round(totalDuration * fps), 216000));
   const selectedStageKey = selectedBeat
@@ -585,8 +726,9 @@ export default function Home() {
 
   const handleJumpToEnd = () => {
     setIsPlaying(false);
-    livePlayheadPosRef.current = 100;
-    setPlayheadPos(100);
+    const endPct = displayDuration > 0 ? (totalDuration / displayDuration) * 100 : 100;
+    livePlayheadPosRef.current = endPct;
+    setPlayheadPos(endPct);
   };
 
   const handleTogglePlayback = () => {
@@ -596,7 +738,8 @@ export default function Home() {
       setIsPlaying(false);
       return;
     }
-    if (playheadPos >= 99.9) {
+    const endPct = displayDuration > 0 ? (totalDuration / displayDuration) * 100 : 100;
+    if (playheadPos >= endPct * 0.999) {
       livePlayheadPosRef.current = 0;
       setPlayheadPos(0);
     }
@@ -2102,6 +2245,11 @@ export default function Home() {
   };
 
   const handleCameraChange = useCallback((cameraUpdate: { zoom: number; x: number; y: number; rotation: number; isEndKeyframe?: boolean }) => {
+    // Clamp to prevent extreme values from zoom-amplified drag
+    const clampedX = Math.max(-3000, Math.min(3000, Math.round(cameraUpdate.x)));
+    const clampedY = Math.max(-3000, Math.min(3000, Math.round(cameraUpdate.y)));
+    const clampedZoom = Math.max(0.2, Math.min(3.0, cameraUpdate.zoom));
+
     setStoryData(prev => {
       if (!prev) return prev;
       const newBeats = [...prev.beats];
@@ -2112,13 +2260,13 @@ export default function Home() {
       let newCamera = { ...currentCamera };
       
       if (cameraUpdate.isEndKeyframe) {
-          newCamera.target_x = cameraUpdate.x;
-          newCamera.target_y = cameraUpdate.y;
-          newCamera.target_zoom = cameraUpdate.zoom;
+          newCamera.target_x = clampedX;
+          newCamera.target_y = clampedY;
+          newCamera.target_zoom = clampedZoom;
       } else {
-          newCamera.x = cameraUpdate.x;
-          newCamera.y = cameraUpdate.y;
-          newCamera.zoom = cameraUpdate.zoom;
+          newCamera.x = clampedX;
+          newCamera.y = clampedY;
+          newCamera.zoom = clampedZoom;
           newCamera.rotation = cameraUpdate.rotation;
       }
       
@@ -3480,6 +3628,7 @@ export default function Home() {
                     onPlayheadUpdate={handlePlayheadUpdate}
                     onLayerMove={handleLayerMove}
                     onPillMouseDown={handlePillMouseDown}
+                    onCameraPillMouseDown={handleCameraPillMouseDown}
                     onAddAction={handleAddAction}
                   />
                 </Panel>

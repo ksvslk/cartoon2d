@@ -15,6 +15,10 @@ import { estimateMotionClipDuration } from "./intent";
 
 const BASE_OBJECT_CLIP_ID = "base_object";
 
+/** Clamp a camera value to safe bounds */
+function clampCam(v: number, fallback = 960): number { return Number.isFinite(v) ? Math.max(-3000, Math.min(3000, v)) : fallback; }
+function clampZoom(v: number, fallback = 1): number { return Number.isFinite(v) ? Math.max(0.2, Math.min(3, v)) : fallback; }
+
 export interface AnimationContext {
   container: HTMLElement;
   beat: StoryBeatData;
@@ -127,19 +131,11 @@ function addCompiledTransformTrack(
   if (sorted.length === 0) return;
 
   let facingSign = initialFacingSign ?? 1;
-  const keyframeFacingSigns = sorted.map((current, index) => {
+  const keyframeFacingSigns = sorted.map((current) => {
     if (current.flip_x !== undefined) {
       facingSign = current.flip_x ? -1 : 1;
-      return facingSign;
     }
-
-    const next = sorted[index + 1];
-    if (next) {
-      const deltaX = next.x - current.x;
-      if (deltaX < -10) facingSign = -1;
-      else if (deltaX > 10) facingSign = 1;
-    }
-
+    // Do NOT infer facing from deltaX movement — only use explicit flip_x
     return facingSign;
   });
 
@@ -547,30 +543,33 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
         // Assume landscape for compiled scene resolution playback logic internally inside builder
         const { width: stageW, height: stageH } = getStageDims("landscape");
         
-        const startX = beat.camera.x ?? (stageW / 2);
-        const startY = beat.camera.y ?? (stageH / 2);
-        const startZoom = beat.camera.zoom ?? 1;
+        const startX = clampCam(beat.camera.x ?? (stageW / 2), stageW / 2);
+        const startY = clampCam(beat.camera.y ?? (stageH / 2), stageH / 2);
+        const startZoom = clampZoom(beat.camera.zoom ?? 1);
         const startRotation = beat.camera.rotation ?? 0;
 
-        const tgtX = beat.camera.target_x ?? startX;
-        const tgtY = beat.camera.target_y ?? startY;
-        const tgtZoom = beat.camera.target_zoom ?? startZoom;
+        const tgtX = clampCam(beat.camera.target_x ?? startX, startX);
+        const tgtY = clampCam(beat.camera.target_y ?? startY, startY);
+        const tgtZoom = clampZoom(beat.camera.target_zoom ?? startZoom, startZoom);
         const tgtRotation = beat.camera.rotation ?? startRotation; // Assuming no target rotation for now
 
+        // Use fixed transformOrigin at stage center — GSAP cannot interpolate transformOrigin strings
+        const originX = stageW / 2;
+        const originY = stageH / 2;
         tl.fromTo(cameraGroup, {
-            x: (stageW / 2) - startX,
-            y: (stageH / 2) - startY,
+            x: originX - startX,
+            y: originY - startY,
             scaleX: startZoom,
             scaleY: startZoom,
             rotation: startRotation,
-            transformOrigin: `${startX}px ${startY}px`
+            transformOrigin: `${originX}px ${originY}px`
         }, {
-            x: (stageW / 2) - tgtX,
-            y: (stageH / 2) - tgtY,
+            x: originX - tgtX,
+            y: originY - tgtY,
             scaleX: tgtZoom,
             scaleY: tgtZoom,
             rotation: tgtRotation,
-            transformOrigin: `${tgtX}px ${tgtY}px`,
+            transformOrigin: `${originX}px ${originY}px`,
             duration: tl.duration(),
             ease: "power1.inOut"
         }, 0);
@@ -661,9 +660,9 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
     const cameraGroup = container.querySelector<SVGGElement>("#__camera_layer");
     if (cameraGroup) {
       const { width: stageW, height: stageH } = getStageDims("landscape");
-      const tgtX = beat.camera.target_x ?? beat.camera.x ?? (stageW / 2);
-      const tgtY = beat.camera.target_y ?? beat.camera.y ?? (stageH / 2);
-      const tgtZoom = beat.camera.target_zoom ?? beat.camera.zoom ?? 1;
+      const tgtX = clampCam(beat.camera.target_x ?? beat.camera.x ?? (stageW / 2), stageW / 2);
+      const tgtY = clampCam(beat.camera.target_y ?? beat.camera.y ?? (stageH / 2), stageH / 2);
+      const tgtZoom = clampZoom(beat.camera.target_zoom ?? beat.camera.zoom ?? 1);
 
       tl.to(cameraGroup, {
           x: (stageW / 2) - tgtX,
