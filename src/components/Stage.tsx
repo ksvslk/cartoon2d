@@ -706,8 +706,8 @@ export default function Stage({
             syncActorLayerOrder(tl.time());
             onPlayheadUpdateRef.current?.(tl.time());
 
-            // ── Camera Tracking Update ──
-            if (beat.camera?.target_actor_id && containerRef.current) {
+            // ── Camera Tracking Update (only during playback) ──
+            if (isPlayingRef.current && beat.camera?.target_actor_id && containerRef.current) {
                 const domSvg = containerRef.current.querySelector("svg");
                 const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
                 const targetActorGroup = domSvg?.querySelector<SVGGElement>(`#actor_group_${beat.camera.target_actor_id}`);
