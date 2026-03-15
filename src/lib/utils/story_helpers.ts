@@ -96,13 +96,14 @@ export function buildClipPreviewScene(actorId: string, clipName: string, rig: Dr
   const beat: StoryBeatData = {
     scene_number: 1,
     narrative: `${actorId} previewing ${clipName}`,
-    camera: { zoom: 1, x: cx, y: cy, rotation: 0 },
+    cameras: [{ start_time: 0, zoom: 1, x: cx, y: cy, rotation: 0 }],
     audio: [],
     actions: [
       {
         actor_id: actorId,
         motion: clipName,
         style: "preview",
+        start_time: 0,
         duration_seconds: durationSeconds,
         spatial_transform: {
           x: cx,

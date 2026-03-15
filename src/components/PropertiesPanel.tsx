@@ -23,7 +23,7 @@ export interface PropertiesPanelProps {
   selectedActionIndex: number | null;
   selectedActorId: string | null;
   selectedAudioIndex: number | null;
-  isCameraSelected: boolean;
+  selectedCameraIndex: number | null;
   selectedKeyframe: "start" | "end" | null;
   actorReferences: Record<string, string>;
 
@@ -34,16 +34,17 @@ export interface PropertiesPanelProps {
 
   /** Update camera start/end properties. key = camera field name, value = new value. */
   onUpdateCamera: (key: string, value: unknown) => void;
-  /** Clear camera target (removes target_x, target_y, target_zoom, target_actor_id). */
-  onClearCameraTarget: () => void;
+
   /** Update an action field. Merges into the action at selectedActionIndex. */
   onUpdateAction: (update: ActionUpdate) => void;
   /** Update an audio track field. Merges into the audio at selectedAudioIndex. */
-  onUpdateAudio: (update: Partial<StoryBeatData["audio"][0]>) => void;
+  onUpdateAudio: (idx: number, updates: Partial<StoryBeatData["audio"][0]>) => void;
   /** Delete the currently selected action. */
   onDeleteAction: () => void;
   /** Update collision behavior for the current action. */
   onUpdateCollisionBehavior: (value: "halt" | "slide" | "bounce") => void;
+  onGenerateAudio?: (audioIdx: number) => void;
+  isGeneratingAudio?: boolean;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -54,18 +55,20 @@ export default function PropertiesPanel({
   selectedActionIndex,
   selectedActorId,
   selectedAudioIndex,
-  isCameraSelected,
+  selectedCameraIndex,
   selectedKeyframe,
   actorReferences,
   onSelectKeyframe,
   onSelectAction,
   onSelectActor,
   onUpdateCamera,
-  onClearCameraTarget,
+
   onUpdateAction,
   onUpdateAudio,
   onDeleteAction,
   onUpdateCollisionBehavior,
+  onGenerateAudio,
+  isGeneratingAudio
 }: PropertiesPanelProps) {
 
   if (!storyData || storyData.beats.length === 0) {
@@ -103,6 +106,7 @@ export default function PropertiesPanel({
     // ── Audio Properties ──────
     if (selectedAudioIndex !== null && beat.audio[selectedAudioIndex]) {
       const audio = beat.audio[selectedAudioIndex];
+      const idx = selectedAudioIndex; // Get the index for onUpdateAudio
       const isSFX = audio.type !== "dialogue";
       return (
         <div className="flex flex-col gap-5 transition-opacity">
@@ -121,7 +125,7 @@ export default function PropertiesPanel({
                 <input
                   type="text"
                   value={isSFX ? (audio.description || "") : (audio.delivery_style || "")}
-                  onChange={(e) => onUpdateAudio(isSFX ? { description: e.target.value } : { delivery_style: e.target.value })}
+                  onChange={(e) => onUpdateAudio(idx, isSFX ? { description: e.target.value } : { delivery_style: e.target.value })}
                   placeholder={isSFX ? "e.g. loud explosion" : "e.g. jaw, whisper, angry"}
                   className="w-full bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 px-2 py-1.5 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-sm focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
                 />
@@ -133,7 +137,7 @@ export default function PropertiesPanel({
                   <label className="text-[9px] text-neutral-400 font-mono tracking-widest uppercase">Dialogue Text</label>
                   <textarea
                     value={audio.text || ""}
-                    onChange={(e) => onUpdateAudio({ text: e.target.value })}
+                    onChange={(e) => onUpdateAudio(idx, { text: e.target.value })}
                     rows={3}
                     placeholder="Words to speak out loud..."
                     className="w-full bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 px-2 py-1.5 text-xs text-neutral-700 dark:text-neutral-300 shadow-sm focus:outline-none focus:ring-1 focus:ring-cyan-500/50 resize-none leading-relaxed"
@@ -151,7 +155,7 @@ export default function PropertiesPanel({
                   value={audio.start_time || 0}
                   onChange={(e) => {
                     const val = Math.max(0, parseFloat(e.target.value) || 0);
-                    onUpdateAudio({ start_time: val });
+                    onUpdateAudio(idx, { start_time: val });
                   }}
                   className="w-32 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 px-2 py-1.5 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-sm focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
                 />
@@ -169,6 +173,26 @@ export default function PropertiesPanel({
                     {!isSFX && `Visemes: ${audio.visemes?.length || 0}`}
                   </div>
                 )}
+                {onGenerateAudio && (
+                  <div className="mt-2">
+                    <button 
+                      onClick={() => onGenerateAudio(idx)}
+                      disabled={isGeneratingAudio}
+                      className={`w-full h-8 text-white rounded text-[10px] font-bold uppercase tracking-wider transition-colors shadow-sm ${
+                        isGeneratingAudio 
+                          ? 'bg-neutral-400 dark:bg-neutral-600 cursor-not-allowed opacity-70'
+                          : 'bg-cyan-500 hover:bg-cyan-400 dark:bg-cyan-600 dark:hover:bg-cyan-500'
+                      }`}
+                    >
+                      {isGeneratingAudio ? (
+                        <span className="flex items-center justify-center gap-2">
+                          <svg className="animate-spin h-3 w-3 text-white" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                          Generating...
+                        </span>
+                      ) : audio.audio_data_url ? 'Regenerate Track' : 'Generate Track'}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -177,20 +201,26 @@ export default function PropertiesPanel({
     }
 
     // ── Camera Properties ──────
-    if (isCameraSelected) {
-      const cam = beat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 };
+    if (selectedCameraIndex !== null) {
+      const cam = beat.cameras?.[selectedCameraIndex] || { zoom: 1, x: 960, y: 540, rotation: 0 };
       return (
         <div className="flex flex-col gap-5 transition-opacity">
           <div>
             <div className="text-[10px] text-amber-500 dark:text-amber-500 font-bold mb-1 uppercase tracking-wider flex justify-between items-center">
               <span>Camera Lens</span>
-              <button onClick={() => {
-                onUpdateCamera('x', 960);
-                onUpdateCamera('y', 540);
-                onUpdateCamera('zoom', 1.0);
-                onUpdateCamera('rotation', 0);
-                onClearCameraTarget();
-              }} className="px-2 py-0.5 border border-amber-200 dark:border-amber-600 bg-white dark:bg-neutral-800 text-amber-600 dark:text-amber-400 rounded text-[9px] hover:bg-amber-50 dark:hover:bg-amber-900/40 transition-colors font-medium" title="Reset camera to default center view">⟲ Reset Camera</button>
+              <div className="flex items-center gap-1">
+                <button onClick={() => {
+                  onUpdateCamera('x', 960);
+                  onUpdateCamera('y', 540);
+                  onUpdateCamera('zoom', 1.0);
+                  onUpdateCamera('rotation', 0);
+                  onUpdateCamera('target_actor_id', undefined);
+                  onUpdateCamera('target_x', undefined);
+                  onUpdateCamera('target_y', undefined);
+                  onUpdateCamera('target_zoom', undefined);
+                }} className="px-2 py-0.5 border border-amber-200 dark:border-amber-600 bg-white dark:bg-neutral-800 text-amber-600 dark:text-amber-400 rounded text-[9px] hover:bg-amber-50 dark:hover:bg-amber-900/40 transition-colors font-medium" title="Reset camera to default center view">⟲ Reset</button>
+                <button onClick={onDeleteAction} className="px-2 py-0.5 border border-red-200 dark:border-red-900/50 bg-white dark:bg-neutral-800 text-red-500 dark:text-red-400 rounded text-[9px] hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors font-medium" title="Delete Camera Cut">Delete</button>
+              </div>
             </div>
             <div className="w-full h-8 bg-amber-50 dark:bg-amber-900/20 rounded border border-amber-200 dark:border-amber-700/50 flex items-center px-3 text-xs text-amber-700 dark:text-amber-300 font-mono shadow-sm dark:shadow-none transition-colors">
               {cam.target_x !== undefined || cam.target_actor_id ? "Cinematic Pan / Follow" : "Static Camera"}
@@ -211,6 +241,10 @@ export default function PropertiesPanel({
                    onUpdateCamera('y', 540);
                    onUpdateCamera('zoom', 1.0);
                    onUpdateCamera('rotation', 0);
+                   onUpdateCamera('target_actor_id', undefined);
+                   onUpdateCamera('target_x', undefined);
+                   onUpdateCamera('target_y', undefined);
+                   onUpdateCamera('target_zoom', undefined);
                 }} className="px-1.5 py-0.5 border border-cyan-200 bg-white text-cyan-600 rounded text-[9px] hover:bg-cyan-100 dark:bg-transparent dark:hover:bg-cyan-900 transition-colors">Reset</button>
               )}
             </div>
@@ -250,7 +284,6 @@ export default function PropertiesPanel({
               {selectedKeyframe === 'end' && (
                 <button onClick={(e) => {
                   e.stopPropagation();
-                  onClearCameraTarget();
                 }} className="px-1.5 py-0.5 border border-blue-200 bg-white text-blue-600 rounded text-[9px] hover:bg-blue-100 dark:bg-transparent dark:hover:bg-blue-900 transition-colors">Clear</button>
               )}
             </div>

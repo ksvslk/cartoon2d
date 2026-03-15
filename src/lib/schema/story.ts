@@ -25,7 +25,7 @@ export const ActorSchema = z.object({
 
 export const AudioSchema = z.object({
     type: z.enum(["sfx", "dialogue", "music"]),
-    actor_id: z.string().optional().describe("If type is dialogue, the ID of the speaking actor."),
+    actor_id: z.string().optional().describe("Required if type is dialogue, MUST exactly match the ID of the speaking actor from actors_detected."),
     text: z.string().optional().describe("If type is dialogue, the exact words spoken."),
     description: z.string().optional().describe("If type is sfx or music, a description of the sound (e.g., 'birds chirping in park')"),
     delivery_style: z.string().optional().describe("If type is dialogue, the emotional delivery or acting style (e.g. 'shouting angrily', 'whispering softly', 'cheerful')."),
@@ -44,13 +44,13 @@ export const AudioSchema = z.object({
         characters: z.number()
     }).optional().describe("Cloud TTS generation cost tracking.")
 });
-
 export const CameraSchema = z.object({
+    start_time: z.number().default(0).describe("Timeline start time in seconds for this camera move/cut."),
     zoom: z.number().default(1.0).describe("Camera zoom level. 1.0 is default, >1.0 is zooming in."),
     x: z.number().default(960).describe("Camera focal point X in stage coordinates. Default 960 (center)."),
     y: z.number().default(540).describe("Camera focal point Y in stage coordinates. Default 540 (center)."),
     rotation: z.number().default(0).describe("Camera rotation in degrees."),
-    duration: z.number().optional().describe("Camera layer duration in seconds. If not set, defaults to scene duration."),
+    duration: z.number().optional().describe("Camera layer duration in seconds. If not set, defaults to playing until the next camera cut or scene end."),
     target_actor_id: z.string().optional().describe("If provided, the camera will track this actor's movement over the course of the scene."),
     target_x: z.number().optional().describe("If provided, the camera will pan to this X coordinate by the end of the scene."),
     target_y: z.number().optional().describe("If provided, the camera will pan to this Y coordinate by the end of the scene."),
@@ -161,6 +161,7 @@ export const ActionSchema = z.object({
     actor_id: z.string().describe("The ID of the actor performing the action."),
     motion: z.string().describe("A semantic action verb, e.g., 'walk', 'idle', 'run', 'tip_hat'"),
     style: z.string().describe("An adverb or modifier describing how the action is performed, e.g., 'casual', 'panic', 'polite'"),
+    start_time: z.number().default(0).describe("Timeline start time in seconds for this action."),
     duration_seconds: z.number().describe("The estimated duration of this specific action clip."),
     spatial_transform: SpatialTransformSchema.optional(),
     target_spatial_transform: SpatialTransformSchema.pick({
@@ -179,7 +180,7 @@ export const ActionSchema = z.object({
 export const StoryBeatSchema = z.object({
     scene_number: z.number().describe("Sequential index of the scene."),
     narrative: z.string().describe("A human-readable summary of what happens in this scene."),
-    camera: CameraSchema,
+    cameras: z.array(CameraSchema).describe("An array of sequential camera cuts or moves. Usually just 1 item, but can be more to cut between actors."),
     audio: z.array(AudioSchema).describe("Expected audio cues to play during this beat."),
     actions: z.array(ActionSchema).describe("Semantic motions that actors perform during this beat."),
     comic_panel_prompt: z.string().describe("A highly optimized text prompt suitable for an Image Generation model to draw a static comic panel of this specific beat."),

@@ -196,7 +196,7 @@ export default function Home() {
   const [selectedKeyframe, setSelectedKeyframe] = useState<'start' | 'end' | null>(null);
   const [selectedActorId, setSelectedActorId] = useState<string | null>(null);
   const [selectedAudioIndex, setSelectedAudioIndex] = useState<number | null>(null);
-  const [isCameraSelected, setIsCameraSelected] = useState<boolean>(false);
+  const [selectedCameraIndex, setSelectedCameraIndex] = useState<number | null>(null);
   const [scenePreviewIndex, setScenePreviewIndex] = useState<number | null>(null);
   const [loopPlayback, setLoopPlayback] = useState(false);
   const [clipPreviewState, setClipPreviewState] = useState<{ actorId: string; clipName: string } | null>(null);
@@ -356,7 +356,7 @@ export default function Home() {
   }, [sceneTimelineDurations, selectedSceneIndex, selectedBeat, selectedCompiledScene]);
 
   // Display duration: fixed visual scale for timeline (accounts for all layer durations + buffer)
-  const cameraDuration = selectedBeat?.camera?.duration ?? totalDuration;
+  const cameraDuration = selectedBeat?.cameras?.[0]?.duration ?? totalDuration;
   const computedDisplayDuration = Math.max(Math.ceil(Math.max(totalDuration, cameraDuration) * 1.3), 3);
   // Freeze during drag so the visual scale doesn't shift while the user is dragging
   const [frozenDisplayDuration, setFrozenDisplayDuration] = useState<number | null>(null);
@@ -400,7 +400,7 @@ export default function Home() {
     const endTimeSnapTargets: number[] = [];
     const durationSnapTargets: number[] = [];
     if (beat) {
-      const camDur = beat.camera?.duration ?? totalDuration;
+      const camDur = beat.cameras?.[0]?.duration ?? totalDuration;
       endTimeSnapTargets.push(camDur);
       durationSnapTargets.push(camDur);
 
@@ -507,13 +507,12 @@ export default function Home() {
     window.addEventListener('mouseup', handleWindowMouseUp);
   }, [totalDuration, selectedSceneIndex, displayDuration, storyData, availableRigs, stageOrientation]);
 
-  const handleCameraPillMouseDown = useCallback((e: React.MouseEvent, mode: 'move' | 'resize') => {
+  const handleCameraPillMouseDown = useCallback((e: React.MouseEvent, index: number, mode: 'move' | 'resize') => {
     e.stopPropagation();
     e.preventDefault();
     setIsPlaying(false);
 
     const capturedDisplayDuration = displayDuration;
-    // NO state updates here — pill DOM element must stay valid
 
     const pillEl = mode === 'resize'
       ? (e.currentTarget as HTMLElement).parentElement as HTMLElement
@@ -522,11 +521,28 @@ export default function Home() {
 
     const parentWidthPx = Math.max(1, pillEl.parentElement?.clientWidth ?? 400);
 
-    const beat = storyData?.beats[selectedSceneIndex];
     const endTimeSnapTargets: number[] = [];
     const durationSnapTargets: number[] = [];
+    const beat = storyData?.beats[selectedSceneIndex];
+    let totalDuration = 0;
+
+    const initialCamera = beat?.cameras?.[index];
+    const initialStartTime = initialCamera?.start_time || 0;
+    const initialDuration = initialCamera?.duration || 2;
+    const startX = e.clientX;
+    let finalValue = mode === 'resize' ? initialDuration : initialStartTime;
+
     if (beat) {
-      // Use compiled bindings for accurate snap targets
+      const audioMax = Math.max(0, ...(beat.audio || []).map(a => (a.start_time || 0) + (a.duration_seconds || 0)));
+      const actionMax = Math.max(0, ...(beat.actions || []).map(a => (a.start_time || 0) + (a.duration_seconds || 0)));
+      totalDuration = Math.max(audioMax, actionMax);
+
+      const firstCam = beat.cameras?.[0];
+      const camDur = (firstCam?.start_time || 0) + (firstCam?.duration ?? totalDuration);
+      
+      endTimeSnapTargets.push(camDur);
+      durationSnapTargets.push(camDur);
+
       const compiledTracks = beat.compiled_scene?.instance_tracks ?? [];
       for (const track of compiledTracks) {
         for (const binding of track.clip_bindings) {
@@ -536,7 +552,6 @@ export default function Home() {
           durationSnapTargets.push(bindDur);
         }
       }
-      // Fallback
       if (compiledTracks.length === 0) {
         beat.actions.forEach(a => {
           const actionDelay = a.animation_overrides?.delay ?? 0;
@@ -548,24 +563,19 @@ export default function Home() {
     }
     const snapThresholdSec = (8 / parentWidthPx) * capturedDisplayDuration;
 
-    let finalDuration = beat?.camera?.duration ?? totalDuration;
-    const startX = e.clientX;
-    const initialCameraDuration = finalDuration;
-
     const handleWindowMouseMove = (eMouse: MouseEvent) => {
+      const deltaX = eMouse.clientX - startX;
+      const deltaSec = (deltaX / parentWidthPx) * capturedDisplayDuration;
+      
       if (mode === 'resize') {
-        const deltaX = eMouse.clientX - startX;
-        const deltaSec = (deltaX / parentWidthPx) * capturedDisplayDuration;
-        let newDuration = Math.max(0.5, initialCameraDuration + deltaSec);
+        let newDuration = Math.max(0.5, initialDuration + deltaSec);
 
-        // Snap to actor layer end positions
         for (const target of endTimeSnapTargets) {
           if (Math.abs(newDuration - target) < snapThresholdSec) {
             newDuration = Math.max(0.5, target);
             break;
           }
         }
-        // Snap to matching duration (same length as an actor layer)
         for (const target of durationSnapTargets) {
           if (Math.abs(newDuration - target) < snapThresholdSec) {
             newDuration = Math.max(0.5, target);
@@ -573,8 +583,12 @@ export default function Home() {
           }
         }
 
-        finalDuration = newDuration;
+        finalValue = newDuration;
         pillEl.style.width = `${(newDuration / capturedDisplayDuration) * 100}%`;
+      } else {
+        const newStart = Math.max(0, initialStartTime + deltaSec);
+        finalValue = newStart;
+        pillEl.style.left = `${(newStart / capturedDisplayDuration) * 100}%`;
       }
     };
 
@@ -584,20 +598,61 @@ export default function Home() {
       pillEl.style.transition = '';
       setFrozenDisplayDuration(null);
 
-      // Commit to state
       setStoryData(prev => {
         if (!prev) return prev;
         const newBeats = [...prev.beats];
         const currentBeat = { ...newBeats[selectedSceneIndex] };
-        currentBeat.camera = { ...currentBeat.camera, duration: finalDuration };
-        newBeats[selectedSceneIndex] = currentBeat;
-        return { ...prev, beats: newBeats };
+        
+        const updatedBeats = newBeats.map(b => {
+          let maxTime = 0;
+          
+          b.actions?.forEach(action => {
+            const end = (action.start_time || 0) + (action.duration_seconds || 0);
+            if (end > maxTime) maxTime = end;
+          });
+
+          b.audio?.forEach(audio => {
+            const end = (audio.start_time || 0) + (audio.duration_seconds || 0);
+            if (end > maxTime) maxTime = end;
+          });
+
+          const firstCamDur = b.cameras?.[index]?.duration;
+          if (firstCamDur && firstCamDur > maxTime) maxTime = firstCamDur;
+
+          const currentFirstCam = b.cameras?.[index] || { zoom: 1, x: 960, y: 540, rotation: 0, start_time: 0 };
+          const updatedFirstCam = { ...currentFirstCam, duration: currentFirstCam.duration || maxTime };
+
+          return b; // Skip maxTime modification since cameras can overlap
+        });
+
+        if (!currentBeat.cameras) currentBeat.cameras = [];
+        const newCameras = [...currentBeat.cameras];
+        
+        if (newCameras.length > index) {
+          const camToUpdate = { ...newCameras[index] };
+          if (mode === 'resize') {
+            camToUpdate.duration = finalValue;
+          } else {
+            camToUpdate.start_time = finalValue;
+          }
+          newCameras[index] = camToUpdate;
+        } else {
+          newCameras[0] = { start_time: mode === 'move' ? finalValue : 0, zoom: 1, x: 960, y: 540, rotation: 0, duration: mode === 'resize' ? finalValue : undefined };
+        }
+        
+        currentBeat.cameras = newCameras;
+
+        if (currentBeat.compiled_scene && index === 0 && mode === 'resize') {
+          currentBeat.compiled_scene = { ...currentBeat.compiled_scene, duration_seconds: finalValue };
+        }
+        updatedBeats[selectedSceneIndex] = currentBeat;
+        return { ...prev, beats: updatedBeats };
       });
     };
 
     window.addEventListener('mousemove', handleWindowMouseMove);
     window.addEventListener('mouseup', handleWindowMouseUp);
-  }, [totalDuration, selectedSceneIndex, storyData, availableRigs, stageOrientation]);
+  }, [totalDuration, selectedSceneIndex, displayDuration, storyData, availableRigs, stageOrientation]);
 
   const handleDialoguePillMouseDown = useCallback((e: React.MouseEvent, actorId: string, audioIndex: number, startTime: number, duration: number, mode: 'move' | 'resize') => {
     e.stopPropagation();
@@ -642,8 +697,7 @@ export default function Home() {
 
       setSelectedAudioIndex(audioIndex);
       setSelectedActionIndex(null);
-      setSelectedActorId(actorId);
-      setIsCameraSelected(false);
+      setSelectedCameraIndex(null);
       setSelectedKeyframe(null);
 
       setStoryData(prev => {
@@ -747,18 +801,18 @@ export default function Home() {
 
           let stretchedVisemes = matchingResult.ttsResult.visemes;
 
-          // If the backend had to estimate duration (e.g. Journey voices with no timepoints), 
+          // If the backend had to estimate duration (e.g. Journey voices with no timepoints),
           // stretch the visemes to perfectly span the true decoded browser audio length.
           if (exactDur && matchingResult.ttsResult.durationSeconds && stretchedVisemes && stretchedVisemes.length > 0) {
-              const ratio = exactDur / matchingResult.ttsResult.durationSeconds;
-              // Only stretch if the estimate is off by more than 5%
-              if (Math.abs(ratio - 1.0) > 0.05) {
-                  stretchedVisemes = stretchedVisemes.map(v => ({
-                      ...v,
-                      time: v.time * ratio,
-                      duration: v.duration * ratio
-                  }));
-              }
+            const ratio = exactDur / matchingResult.ttsResult.durationSeconds;
+            // Only stretch if the estimate is off by more than 5%
+            if (Math.abs(ratio - 1.0) > 0.05) {
+              stretchedVisemes = stretchedVisemes.map(v => ({
+                ...v,
+                time: v.time * ratio,
+                duration: v.duration * ratio
+              }));
+            }
           }
 
           return {
@@ -965,6 +1019,7 @@ export default function Home() {
       const blob = new Blob([sanitizeSvgMarkup(svgMarkup)], { type: "image/svg+xml;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const img = new Image();
+      img.src = url;
       img.onload = () => {
         URL.revokeObjectURL(url);
         resolve(img);
@@ -1310,6 +1365,82 @@ export default function Home() {
       console.error("Generation failed:", err);
       const errorMessage = err instanceof Error ? err.message : String(err);
       setError(`Failed to connect to generation service: ${errorMessage}`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleGenerateSpecificAudio = async (sceneIdx: number, audioIdx: number) => {
+    if (!storyData || isGenerating) return;
+    const beat = storyData.beats[sceneIdx];
+    if (!beat || !beat.audio || !beat.audio[audioIdx]) return;
+
+    const audio = beat.audio[audioIdx];
+    if ((audio.type === 'dialogue' && !audio.text) || (audio.type !== 'dialogue' && !audio.description)) return;
+
+    setIsGenerating(true);
+
+    try {
+      if (audio.type === 'dialogue') {
+        const ttsResult = await generateSpeechTTS(audio.text!, audio.voice_id || "en-US-Standard-F", audio.delivery_style);
+        const exactDuration = await getExactAudioDuration(ttsResult.audioDataUrl);
+
+        const lastViseme = ttsResult.visemes?.[ttsResult.visemes.length - 1];
+        const backupDuration = lastViseme ? lastViseme.time + lastViseme.duration : 2.0;
+        const duration = exactDuration ?? (ttsResult.durationSeconds || backupDuration);
+
+        let stretchedVisemes = ttsResult.visemes;
+        if (duration && ttsResult.durationSeconds && stretchedVisemes && stretchedVisemes.length > 0) {
+          const ratio = duration / ttsResult.durationSeconds;
+          if (Math.abs(ratio - 1.0) > 0.05) {
+            stretchedVisemes = stretchedVisemes.map(v => ({
+              ...v, time: v.time * ratio, duration: v.duration * ratio
+            }));
+          }
+        }
+
+        let finalAudio = { ...audio };
+        finalAudio.audio_data_url = ttsResult.audioDataUrl;
+        finalAudio.visemes = stretchedVisemes;
+        finalAudio.duration_seconds = duration;
+        finalAudio.generation_cost = { cost: ttsResult.costEstimate, characters: ttsResult.billedCharacters };
+
+        setStoryData((prev) => {
+          if (!prev) return prev;
+          const newStory = { ...prev };
+          newStory.beats[sceneIdx].audio![audioIdx] = finalAudio;
+          saveStoryToStorage(newStory.title, newStory).catch(console.error);
+          return newStory;
+        });
+
+        // Give UI a tiny beat, then broadly alert the timeline that duration might have changed
+        setTimeout(() => {
+          setStoryData(prev => {
+            if (!prev) return prev;
+            // Simple state bump to trigger re-renders if duration expanded the track
+            return { ...prev, beats: [...prev.beats] };
+          });
+        }, 100);
+
+      } else {
+        const result = await executeSoundEffect({ prompt: audio.description! });
+        if (result.url) {
+          setStoryData((prev) => {
+            if (!prev) return prev;
+            const newStory = { ...prev };
+            newStory.beats[sceneIdx].audio![audioIdx] = {
+              ...audio,
+              audio_data_url: result.url
+            };
+            saveStoryToStorage(newStory.title, newStory).catch(console.error);
+            return newStory;
+          });
+        } else if (result.error) {
+          console.error(`[BLOCKED] SFX generation failed: ${result.error}`);
+        }
+      }
+    } catch (err) {
+      console.error("Audio generation failed:", err);
     } finally {
       setIsGenerating(false);
     }
@@ -1824,20 +1955,34 @@ export default function Home() {
           try {
             const ttsResults = await Promise.all(dialogueToGenerate.map(async (audio) => {
               if (abortRef.current) return { audio, ttsResult: null, exactDuration: null };
-              const ttsResult = await generateSpeechTTS(audio.text!, audio.voice_id || "en-US-Standard-F", audio.delivery_style);
+
+              let finalVoiceId = audio.voice_id;
+              if (!finalVoiceId && audio.actor_id && storyData) {
+                const ALL_NATIVE_VOICE_IDS = [
+                  "en-US-Journey-D", "en-US-Journey-F", "en-US-Journey-O",
+                  "en-US-Standard-A", "en-US-Standard-B", "en-US-Standard-C"
+                ];
+                const actorIdx = storyData.actors_detected.findIndex(a => a.id === audio.actor_id);
+                if (actorIdx >= 0) {
+                  finalVoiceId = ALL_NATIVE_VOICE_IDS[actorIdx % ALL_NATIVE_VOICE_IDS.length];
+                }
+              }
+              finalVoiceId = finalVoiceId || "en-US-Standard-F";
+
+              const ttsResult = await generateSpeechTTS(audio.text!, finalVoiceId, audio.delivery_style);
               const exactDuration = await getExactAudioDuration(ttsResult.audioDataUrl);
-              return { audio, ttsResult, exactDuration };
+              return { audio, ttsResult, exactDuration, finalVoiceId };
             }));
-            
+
             let cumulativeTime = 0;
             // First, find the latest end time of any existing audio to start after it
             updatedAudio.forEach(a => {
-               if (a.start_time !== undefined && a.duration_seconds) {
-                   cumulativeTime = Math.max(cumulativeTime, a.start_time + a.duration_seconds);
-               } 
+              if (a.start_time !== undefined && a.duration_seconds) {
+                cumulativeTime = Math.max(cumulativeTime, a.start_time + a.duration_seconds);
+              }
             });
 
-            ttsResults.forEach(({ audio, ttsResult, exactDuration }) => {
+            ttsResults.forEach(({ audio, ttsResult, exactDuration, finalVoiceId }) => {
               if (!ttsResult) return;
               const idx = updatedAudio.indexOf(audio);
               if (idx !== -1) {
@@ -1845,31 +1990,32 @@ export default function Home() {
                 const lastViseme = ttsResult.visemes?.[ttsResult.visemes.length - 1];
                 const backupDuration = lastViseme ? lastViseme.time + lastViseme.duration : 2.0;
                 const duration = exactDuration ?? (ttsResult.durationSeconds || backupDuration);
-                
+
                 let stretchedVisemes = ttsResult.visemes;
                 if (duration && ttsResult.durationSeconds && stretchedVisemes && stretchedVisemes.length > 0) {
-                    const ratio = duration / ttsResult.durationSeconds;
-                    if (Math.abs(ratio - 1.0) > 0.05) {
-                        stretchedVisemes = stretchedVisemes.map(v => ({
-                            ...v,
-                            time: v.time * ratio,
-                            duration: v.duration * ratio
-                        }));
-                    }
+                  const ratio = duration / ttsResult.durationSeconds;
+                  if (Math.abs(ratio - 1.0) > 0.05) {
+                    stretchedVisemes = stretchedVisemes.map(v => ({
+                      ...v,
+                      time: v.time * ratio,
+                      duration: v.duration * ratio
+                    }));
+                  }
                 }
 
                 updatedAudio[idx] = {
                   ...updatedAudio[idx],
+                  voice_id: finalVoiceId,
                   audio_data_url: ttsResult.audioDataUrl,
                   visemes: stretchedVisemes,
                   start_time: updatedAudio[idx].start_time ?? cumulativeTime,
                   duration_seconds: duration,
                   generation_cost: { cost: ttsResult.costEstimate, characters: ttsResult.billedCharacters },
                 };
-                
+
                 // Advance cumulative time for the NEXT generated line so they take turns by default
                 if (updatedAudio[idx].start_time === cumulativeTime) {
-                    cumulativeTime += duration + 0.2; // 0.2s pause between lines
+                  cumulativeTime += duration + 0.2; // 0.2s pause between lines
                 }
               }
             });
@@ -2117,8 +2263,9 @@ export default function Home() {
       const newActions = [...currentBeat.actions, {
         actor_id: actorId,
         motion: "idle",
-        style: "normal",
-        duration_seconds: 2,
+        style: "neutral",
+        start_time: 0,
+        duration_seconds: 5.0,
       }];
       const nextBeat = { ...currentBeat, actions: newActions };
       const previousCompiledScene = selectedSceneIndex > 0
@@ -2130,36 +2277,35 @@ export default function Home() {
     });
   };
 
-  const handleUpdateCamera = (key: string, value: unknown) => {
+  const handleAddCamera = () => {
     setStoryData(prev => {
       if (!prev) return prev;
       const newBeats = [...prev.beats];
       const currentBeat = newBeats[selectedSceneIndex];
-      const updatedBeat = {
-        ...currentBeat,
-        camera: { ...(currentBeat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 }), [key]: value }
-      };
-      const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
-      const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
-      newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
+      const newCameras = [...(currentBeat.cameras || [])];
+      
+      // Calculate start time based on previous cameras
+      const lastCam = newCameras[newCameras.length - 1];
+      const startTime = lastCam ? (lastCam.start_time || 0) + (lastCam.duration ?? 2.0) : 0;
+      
+      newCameras.push({
+        start_time: startTime,
+        zoom: 1,
+        x: 960,
+        y: 540,
+        rotation: 0
+      });
+
+      const nextBeat = { ...currentBeat, cameras: newCameras };
+      const previousCompiledScene = selectedSceneIndex > 0
+        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+        : null;
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
       return { ...prev, beats: newBeats };
     });
   };
 
-  const handleClearCameraTarget = () => {
-    setStoryData(prev => {
-      if (!prev) return prev;
-      const newBeats = [...prev.beats];
-      const currentBeat = newBeats[selectedSceneIndex];
-      const currentCam = currentBeat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 };
-      const { target_x, target_y, target_zoom, target_actor_id, ...rest } = currentCam;
-      const updatedBeat = { ...currentBeat, camera: rest };
-      const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
-      const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
-      newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
-      return { ...prev, beats: newBeats };
-    });
-  };
 
   const handleUpdateAction = (update: ActionUpdate) => {
     if (selectedActionIndex === null) return;
@@ -2217,20 +2363,44 @@ export default function Home() {
   };
 
   const handleDeleteAction = () => {
-    if (selectedActionIndex === null) return;
     setStoryData(prev => {
       if (!prev) return prev;
       const newBeats = [...prev.beats];
       const currentBeat = newBeats[selectedSceneIndex];
-      const newActions = [...currentBeat.actions];
-      newActions.splice(selectedActionIndex, 1);
-      const nextBeat = { ...currentBeat, actions: newActions };
-      const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
-      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-      return { ...prev, beats: newBeats };
+
+      if (selectedCameraIndex !== null && currentBeat.cameras) {
+        const newCameras = [...currentBeat.cameras];
+        newCameras.splice(selectedCameraIndex, 1);
+        const nextBeat = { ...currentBeat, cameras: newCameras };
+        const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+        const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+        newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+        setSelectedCameraIndex(null);
+        return { ...prev, beats: newBeats };
+      }
+
+      if (selectedAudioIndex !== null && currentBeat.audio) {
+        const newAudio = [...currentBeat.audio];
+        newAudio.splice(selectedAudioIndex, 1);
+        const nextBeat = { ...currentBeat, audio: newAudio };
+        newBeats[selectedSceneIndex] = nextBeat;
+        setSelectedAudioIndex(null);
+        return { ...prev, beats: newBeats };
+      }
+
+      if (selectedActionIndex !== null && currentBeat.actions) {
+        const newActions = [...currentBeat.actions];
+        newActions.splice(selectedActionIndex, 1);
+        const nextBeat = { ...currentBeat, actions: newActions };
+        const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+        const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+        newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+        setSelectedActionIndex(null);
+        return { ...prev, beats: newBeats };
+      }
+
+      return prev;
     });
-    setSelectedActionIndex(null);
   };
 
   const handleUpdateCollisionBehavior = (value: "halt" | "slide" | "bounce") => {
@@ -2442,7 +2612,7 @@ export default function Home() {
       const beat = newBeats[selectedSceneIndex];
       if (!beat) return prev;
 
-      const currentCamera = beat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 };
+      const currentCamera = beat.cameras?.[0] || { zoom: 1, x: 960, y: 540, rotation: 0 };
       let newCamera = { ...currentCamera };
 
       if (cameraUpdate.isEndKeyframe) {
@@ -2456,7 +2626,7 @@ export default function Home() {
         newCamera.rotation = cameraUpdate.rotation;
       }
 
-      const updatedBeat = { ...beat, camera: newCamera };
+      const updatedBeat = { ...beat, cameras: [newCamera, ...(beat.cameras?.slice(1) || [])] };
       const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
       const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
       newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
@@ -2601,10 +2771,24 @@ export default function Home() {
       formData.append("height", String(resolution.height));
 
       let frameSerial = 1;
+      let globalTimeOffset = 0;
+      const audioTracks: { url: string; startTime: number; id: string }[] = [];
 
       for (let sceneOffset = 0; sceneOffset < beatsToExport.length; sceneOffset += 1) {
         const beat = beatsToExport[sceneOffset];
         const compiledScene = beat.compiled_scene!;
+
+        if (beat.audio) {
+          beat.audio.forEach((track, i) => {
+             if (track.audio_data_url) {
+                audioTracks.push({
+                   url: track.audio_data_url,
+                   startTime: globalTimeOffset + (track.start_time ?? 0),
+                   id: `t${sceneOffset}_${i}`
+                });
+             }
+          });
+        }
 
         setExportProgress(`Rendering Scene ${beat.scene_number}...`);
         const durationPromise = waitForExportTimelineReady();
@@ -2632,7 +2816,25 @@ export default function Home() {
           formData.append("frames", pngBlob, frameName);
           frameSerial += 1;
         }
+
+        globalTimeOffset += sceneDuration;
       }
+
+      setExportProgress("Packaging audio tracks...");
+      const audioMetadata: { filename: string; start: number }[] = [];
+      for (let i = 0; i < audioTracks.length; i++) {
+        const track = audioTracks[i];
+        try {
+          const r = await fetch(track.url);
+          const blob = await r.blob();
+          const filename = `audio_${track.id}.mp3`;
+          formData.append("audio_files", blob, filename);
+          audioMetadata.push({ filename, start: track.startTime });
+        } catch (e) {
+          console.error("Failed to package audio track", e);
+        }
+      }
+      formData.append("audio_metadata", JSON.stringify(audioMetadata));
 
       setExportProgress(`Encoding MP4 (${resolution.label})...`);
 
@@ -2912,8 +3114,9 @@ export default function Home() {
                                       const newActions = [...currentBeat.actions, {
                                         actor_id: actor.id,
                                         motion: "idle",
-                                        style: "normal",
-                                        duration_seconds: 2,
+                                        style: "neutral",
+                                        start_time: 0,
+                                        duration_seconds: 5.0,
                                       }];
                                       const nextBeat = { ...currentBeat, actions: newActions };
                                       const previousCompiledScene = selectedSceneIndex > 0
@@ -3058,7 +3261,7 @@ export default function Home() {
 
           {/* Left Panel: Director's Prompt & Comic Timeline */}
           <Panel defaultSize={30} minSize={20}>
-            <div className="w-full h-full flex flex-col bg-white/40 dark:bg-[#0a0a0a]/40 backdrop-blur-sm transition-colors duration-300">
+            <div className="w-full h-full flex flex-col bg-white/40 dark:bg-[#111]/40 backdrop-blur-sm transition-colors duration-300">
               <section className="flex-1 flex flex-col px-6 py-8 pb-0 overflow-hidden">
                 <h2 className="text-sm font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest mb-4 flex items-center gap-2.5">
                   <Sparkles size={16} className="text-cyan-500 dark:text-cyan-400" /> Director&apos;s Prompt
@@ -3235,7 +3438,7 @@ export default function Home() {
                                       <div className="relative">
                                         <Mountain size={12} />
                                         <div className="absolute -top-0.5 -right-0.5 w-[5px] h-[5px] bg-emerald-500 rounded-full"></div>
-                                      </div>
+                                    </div>
                                     ) : (
                                       <Mountain size={12} />
                                     )}
@@ -3572,7 +3775,7 @@ export default function Home() {
                                       // Live: show spinning log while running
                                       <div className="p-3 bg-neutral-950 font-mono text-[10px] text-emerald-400 h-28 overflow-y-auto flex flex-col gap-0.5 rounded-b-xl shadow-inner relative custom-scrollbar">
                                         <div className="absolute top-2 right-2">
-                                          <Loader2 size={12} className="animate-spin text-emerald-500 opacity-50" />
+                                          <Loader2 size={12} className="animate-spin" />
                                         </div>
                                         {animatingLogs.map((log, i) => (
                                           <div key={i} className="animate-in fade-in slide-in-from-bottom-1">
@@ -3864,7 +4067,7 @@ export default function Home() {
                     selectedActionIndex={selectedActionIndex}
                     selectedActorId={selectedActorId}
                     selectedAudioIndex={selectedAudioIndex}
-                    isCameraSelected={isCameraSelected}
+                    selectedCameraIndex={selectedCameraIndex}
                     selectedKeyframe={selectedKeyframe}
                     timelineRef={timelineRef}
                     tracksRef={tracksRef}
@@ -3880,8 +4083,8 @@ export default function Home() {
                     onSetDraggingPlayhead={setIsDraggingPlayhead}
                     onSelectAction={(idx) => { setSelectedActionIndex(idx); setSelectedAudioIndex(null); }}
                     onSelectActor={setSelectedActorId}
-                    onSelectAudio={(idx) => { setSelectedAudioIndex(idx); setSelectedActionIndex(null); setIsCameraSelected(false); }}
-                    onSelectCamera={(selected) => { setIsCameraSelected(selected); if (selected) setSelectedAudioIndex(null); }}
+                    onSelectAudio={(idx) => { setSelectedAudioIndex(idx); setSelectedActionIndex(null); setSelectedCameraIndex(null); }}
+                    onSelectCamera={(idx) => { setSelectedCameraIndex(idx); if (idx !== null) { setSelectedAudioIndex(null); setSelectedActionIndex(null); } }}
                     onSelectKeyframe={(kf) => { setSelectedKeyframe(kf); setSelectedAudioIndex(null); }}
                     onSetIsPlaying={setIsPlaying}
                     onSetPlayheadPos={setPlayheadPos}
@@ -3890,7 +4093,45 @@ export default function Home() {
                     onPillMouseDown={handlePillMouseDown}
                     onCameraPillMouseDown={handleCameraPillMouseDown}
                     onDialoguePillMouseDown={handleDialoguePillMouseDown}
-                    onAddAction={handleAddAction}
+                    onAddCamera={handleAddCamera}
+                    onAddAction={(actorId) => {
+                      if (!storyData) return;
+                      const newStory = { ...storyData };
+                      const beat = newStory.beats[selectedSceneIndex];
+                      const newAction: any = {
+                        actor_id: actorId,
+                        motion: "idle",
+                        start_time: 0,
+                        duration_seconds: 4.0 // Changed default duration
+                      };
+                      if (!beat.actions) beat.actions = [];
+                      beat.actions.push(newAction);
+                      setStoryData(newStory);
+                      saveStoryToStorage(newStory.title, newStory).catch(console.error);
+                      setSelectedActionIndex(beat.actions.length - 1);
+                      setSelectedActorId(actorId);
+                    }}
+                    onAddAudio={(actorId) => {
+                      if (!storyData) return;
+                      const newStory = { ...storyData };
+                      const beat = newStory.beats[selectedSceneIndex];
+                      if (!beat.audio) beat.audio = [];
+                      
+                      // Default to first available voice or Journey-D
+                      const firstVoiceId = storyData.actors_detected.find(a => a.id === actorId)?.attributes?.[0] === 'male' ? 'en-US-Journey-D' : 'en-US-Journey-F';
+                      
+                      beat.audio.push({
+                        type: 'dialogue',
+                        actor_id: actorId,
+                        text: 'New dialogue line',
+                        start_time: 0,
+                        voice_id: firstVoiceId
+                      });
+                      setStoryData(newStory);
+                      saveStoryToStorage(newStory.title, newStory).catch(console.error);
+                      setSelectedAudioIndex(beat.audio.length - 1);
+                      setSelectedActorId(actorId);
+                    }}
                   />
                 </Panel>
               </PanelGroup>
@@ -3909,23 +4150,33 @@ export default function Home() {
               selectedActionIndex={selectedActionIndex}
               selectedActorId={selectedActorId}
               selectedAudioIndex={selectedAudioIndex}
-              isCameraSelected={isCameraSelected}
+              selectedCameraIndex={selectedCameraIndex}
               selectedKeyframe={selectedKeyframe}
               actorReferences={actorReferences}
               onSelectKeyframe={(kf) => { setSelectedKeyframe(kf); setSelectedAudioIndex(null); }}
               onSelectAction={(idx) => { setSelectedActionIndex(idx); setSelectedAudioIndex(null); }}
               onSelectActor={setSelectedActorId}
-              onUpdateCamera={handleUpdateCamera}
-              onClearCameraTarget={handleClearCameraTarget}
+              onUpdateCamera={(key, value) => {
+                setStoryData(prev => {
+                  if (!prev || selectedCameraIndex === null) return prev;
+                  const newBeats = [...prev.beats];
+                  const beat = { ...newBeats[selectedSceneIndex] };
+                  if (!beat.cameras) return prev;
+                  const newCams = [...beat.cameras];
+                  newCams[selectedCameraIndex] = { ...newCams[selectedCameraIndex], [key]: value };
+                  newBeats[selectedSceneIndex] = { ...beat, cameras: newCams };
+                  return { ...prev, beats: newBeats };
+                });
+              }}
               onUpdateAction={handleUpdateAction}
-              onUpdateAudio={(update) => {
+              onUpdateAudio={(idx, update) => {
                 setStoryData(prev => {
                   if (!prev || selectedAudioIndex === null) return prev;
                   const newBeats = [...prev.beats];
                   const beat = { ...newBeats[selectedSceneIndex] };
                   if (!beat.audio) return prev;
                   const newAudio = [...beat.audio];
-                  newAudio[selectedAudioIndex] = { ...newAudio[selectedAudioIndex], ...update };
+                  newAudio[idx] = { ...newAudio[idx], ...update };
                   beat.audio = newAudio;
                   newBeats[selectedSceneIndex] = beat;
                   return { ...prev, beats: newBeats };
@@ -3933,6 +4184,8 @@ export default function Home() {
               }}
               onDeleteAction={handleDeleteAction}
               onUpdateCollisionBehavior={handleUpdateCollisionBehavior}
+              onGenerateAudio={(audioIdx) => handleGenerateSpecificAudio(selectedSceneIndex, audioIdx)}
+              isGeneratingAudio={isGenerating}
             />
           </Panel>
         </PanelGroup>

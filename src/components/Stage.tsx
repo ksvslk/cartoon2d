@@ -650,11 +650,11 @@ export default function Stage({
             });
 
             const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
-            if (cameraGroup && beat.camera) {
-                const rawCx = beat.camera.x ?? (stageW / 2);
-                const rawCy = beat.camera.y ?? (stageH / 2);
-                const rawZoom = beat.camera.zoom ?? 1;
-                const rot = beat.camera.rotation ?? 0;
+            if (cameraGroup && beat.cameras?.[0]) {
+                const rawCx = beat.cameras[0].x ?? (stageW / 2);
+                const rawCy = beat.cameras[0].y ?? (stageH / 2);
+                const rawZoom = beat.cameras[0].zoom ?? 1;
+                const rot = beat.cameras[0].rotation ?? 0;
                 // Sanitize: clamp camera to prevent stored extreme values from hiding everything
                 const cx = Math.max(-3000, Math.min(3000, isFinite(rawCx) ? rawCx : stageW / 2));
                 const cy = Math.max(-3000, Math.min(3000, isFinite(rawCy) ? rawCy : stageH / 2));
@@ -700,10 +700,11 @@ export default function Stage({
             onPlayheadUpdateRef.current?.(tl.time());
 
             // ── Camera Tracking Update ──
-            if (beat.camera?.target_actor_id && containerRef.current) {
+            if (beat.cameras?.[0]?.target_actor_id && containerRef.current) {
                 const domSvg = containerRef.current.querySelector("svg");
                 const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
-                const targetActorGroup = domSvg?.querySelector<SVGGElement>(`#actor_group_${beat.camera.target_actor_id}`);
+                const rect = containerRef.current.getBoundingClientRect();
+                const targetActorGroup = domSvg?.querySelector<SVGGElement>(`#actor_group_${beat.cameras[0].target_actor_id}`);
                 
                 if (cameraGroup && targetActorGroup) {
                     const actorX = gsap.getProperty(targetActorGroup, "x") as number;
@@ -1009,7 +1010,7 @@ export default function Stage({
         if (!actorIdToDrag) return;
 
         if (actorIdToDrag === 'camera') {
-            const currentCamera = beatRef.current?.camera ?? { zoom: 1, x: stageW/2, y: stageH/2, rotation: 0 };
+            const currentCamera = beatRef.current?.cameras?.[0] ?? { start_time: 0, zoom: 1, x: stageW/2, y: stageH/2, rotation: 0 } as any;
             
             // Snap playhead to start or end for accurate interpolation preview
             const isEditingEnd = selectedKeyframeRef.current === 'end' || (selectedKeyframeRef.current !== 'start' && playheadTimeRef.current > 0.1);
@@ -1245,14 +1246,19 @@ export default function Stage({
 
         if (commitChanges) {
             if (dragState.actorId === 'camera') {
-                const currentCamera = beatRef.current?.camera ?? { zoom: 1, x: stageW/2, y: stageH/2, rotation: 0 };
+                const currentCamera = beatRef.current?.cameras?.[0] ?? { start_time: 0, zoom: 1, x: stageW/2, y: stageH/2, rotation: 0 } as any;
                 const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
                 let finalRotation = currentCamera.rotation ?? 0;
                 
-                if (dragState.mode === 'camera_rotate' && cameraGroup) {
-                     finalRotation = gsap.getProperty(cameraGroup, "rotation") as number;
+                // Read current zoom scale from DOM attribute
+                const transformStr = cameraGroup?.getAttribute("transform") || "";
+                let finalZoom = currentCamera.zoom ?? 1;
+                const matchZoom = transformStr.match(/scale\(([^)]+)\)/);
+                if (matchZoom && matchZoom[1]) {
+                    finalZoom = parseFloat(matchZoom[1]);
                 }
-                
+
+                // Default handle logic (write to end keyframes if editing end/tweening)
                 const isEditingEnd = selectedKeyframeRef.current === 'end' || (selectedKeyframeRef.current !== 'start' && playheadTimeRef.current > 0.1);
                 const zoomToUse = isEditingEnd ? (currentCamera.target_zoom ?? currentCamera.zoom ?? 1) : (currentCamera.zoom ?? 1);
 
@@ -1313,7 +1319,7 @@ export default function Stage({
             // Read active zoom from local accumulator if active to prevent React tearing
             let currentZoom = wheelAccumulatorRef.current.timer 
                 ? wheelAccumulatorRef.current.zoom 
-                : (isEditingEnd ? (beatRef.current.camera?.target_zoom ?? beatRef.current.camera?.zoom ?? 1) : (beatRef.current.camera?.zoom ?? 1));
+                : (isEditingEnd ? (beatRef.current.cameras?.[0]?.target_zoom ?? beatRef.current.cameras?.[0]?.zoom ?? 1) : (beatRef.current.cameras?.[0]?.zoom ?? 1));
 
             // Hybrid sizing for Trackpad vs Physical Wheel. Trackpad deltaY is small (2-10). Wheel is large (100).
             const isTrackpad = Math.abs(e.deltaY) < 50; 
@@ -1341,9 +1347,9 @@ export default function Stage({
             wheelAccumulatorRef.current.timer = setTimeout(() => {
                 wheelAccumulatorRef.current.timer = null;
                 stagePropsOnCameraChange.current?.({
-                    x: isEditingEnd ? (beatRef.current?.camera?.target_x ?? beatRef.current?.camera?.x ?? stageW / 2) : (beatRef.current?.camera?.x ?? stageW / 2),
-                    y: isEditingEnd ? (beatRef.current?.camera?.target_y ?? beatRef.current?.camera?.y ?? stageH / 2) : (beatRef.current?.camera?.y ?? stageH / 2),
-                    rotation: beatRef.current?.camera?.rotation ?? 0,
+                    x: isEditingEnd ? (beatRef.current?.cameras?.[0]?.target_x ?? beatRef.current?.cameras?.[0]?.x ?? stageW / 2) : (beatRef.current?.cameras?.[0]?.x ?? stageW / 2),
+                    y: isEditingEnd ? (beatRef.current?.cameras?.[0]?.target_y ?? beatRef.current?.cameras?.[0]?.y ?? stageH / 2) : (beatRef.current?.cameras?.[0]?.y ?? stageH / 2),
+                    rotation: beatRef.current?.cameras?.[0]?.rotation ?? 0,
                     zoom: Number(newZoom.toFixed(2)),
                     isEndKeyframe: isEditingEnd
                 });

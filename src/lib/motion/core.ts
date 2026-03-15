@@ -647,42 +647,58 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
       });
     }
 
-    if (beat.camera && (beat.camera.x !== undefined || beat.camera.y !== undefined || beat.camera.zoom !== undefined || beat.camera.target_x !== undefined || beat.camera.target_y !== undefined || beat.camera.target_zoom !== undefined)) {
+    if (beat.cameras && beat.cameras.length > 0) {
       const cameraGroup = container.querySelector<SVGGElement>("#__camera_layer");
       if (cameraGroup) {
         // Assume landscape for compiled scene resolution playback logic internally inside builder
         const { width: stageW, height: stageH } = getStageDims("landscape");
-        
-        const startX = clampCam(beat.camera.x ?? (stageW / 2), stageW / 2);
-        const startY = clampCam(beat.camera.y ?? (stageH / 2), stageH / 2);
-        const startZoom = clampZoom(beat.camera.zoom ?? 1);
-        const startRotation = beat.camera.rotation ?? 0;
-
-        const tgtX = clampCam(beat.camera.target_x ?? startX, startX);
-        const tgtY = clampCam(beat.camera.target_y ?? startY, startY);
-        const tgtZoom = clampZoom(beat.camera.target_zoom ?? startZoom, startZoom);
-        const tgtRotation = beat.camera.rotation ?? startRotation; // Assuming no target rotation for now
-
-        // Use fixed transformOrigin at stage center — GSAP cannot interpolate transformOrigin strings
+        const clampCam = (val: number | undefined, center: number) => val === undefined ? center : val;
+        const clampZoom = (val: number | undefined) => Math.max(0.1, val ?? 1);
         const originX = stageW / 2;
         const originY = stageH / 2;
-        tl.fromTo(cameraGroup, {
-            x: originX - startX,
-            y: originY - startY,
-            scaleX: startZoom,
-            scaleY: startZoom,
-            rotation: startRotation,
-            transformOrigin: `${originX}px ${originY}px`
-        }, {
-            x: originX - tgtX,
-            y: originY - tgtY,
-            scaleX: tgtZoom,
-            scaleY: tgtZoom,
-            rotation: tgtRotation,
-            transformOrigin: `${originX}px ${originY}px`,
-            duration: tl.duration(),
-            ease: "power1.inOut"
-        }, 0);
+
+        const sortedCameras = [...beat.cameras].sort((a, b) => (a.start_time || 0) - (b.start_time || 0));
+
+        for (let i = 0; i < sortedCameras.length; i++) {
+          const cam = sortedCameras[i];
+          const startTime = cam.start_time || 0;
+          const duration = cam.duration || Math.max(0.1, tl.duration() - startTime);
+          
+          const startX = clampCam(cam.x, originX);
+          const startY = clampCam(cam.y, originY);
+          const startZoom = clampZoom(cam.zoom);
+          const startRotation = cam.rotation ?? 0;
+
+          const tgtX = clampCam(cam.target_x ?? cam.x, originX);
+          const tgtY = clampCam(cam.target_y ?? cam.y, originY);
+          const tgtZoom = clampZoom(cam.target_zoom ?? cam.zoom);
+          const tgtRotation = startRotation; // Assuming no target rotation for now
+
+          const initProps = {
+             x: originX - startX,
+             y: originY - startY,
+             scaleX: startZoom,
+             scaleY: startZoom,
+             rotation: startRotation,
+             transformOrigin: `${originX}px ${originY}px`
+          };
+
+          // Interpolate to target if it differs
+          if (tgtX !== startX || tgtY !== startY || tgtZoom !== startZoom || tgtRotation !== startRotation) {
+            tl.fromTo(cameraGroup, initProps, {
+                x: originX - tgtX,
+                y: originY - tgtY,
+                scaleX: tgtZoom,
+                scaleY: tgtZoom,
+                rotation: tgtRotation,
+                duration: duration,
+                ease: "power1.inOut",
+                immediateRender: false
+            }, startTime);
+          } else {
+            tl.set(cameraGroup, initProps, startTime);
+          }
+        }
       }
     }
 
@@ -766,25 +782,7 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
     syncPlaybackActors(actorsList);
   };
 
-  if (beat.camera && (beat.camera.target_x !== undefined || beat.camera.target_y !== undefined || beat.camera.target_zoom !== undefined)) {
-    const cameraGroup = container.querySelector<SVGGElement>("#__camera_layer");
-    if (cameraGroup) {
-      const { width: stageW, height: stageH } = getStageDims("landscape");
-      const tgtX = clampCam(beat.camera.target_x ?? beat.camera.x ?? (stageW / 2), stageW / 2);
-      const tgtY = clampCam(beat.camera.target_y ?? beat.camera.y ?? (stageH / 2), stageH / 2);
-      const tgtZoom = clampZoom(beat.camera.target_zoom ?? beat.camera.zoom ?? 1);
 
-      tl.to(cameraGroup, {
-          x: (stageW / 2) - tgtX,
-          y: (stageH / 2) - tgtY,
-          scaleX: tgtZoom,
-          scaleY: tgtZoom,
-          transformOrigin: `${tgtX}px ${tgtY}px`,
-          duration: tl.duration(),
-          ease: "power1.inOut"
-      }, 0);
-    }
-  }
 
   console.log(`[timeline] Built — duration: ${tl.duration().toFixed(2)}s, tweens: ${tl.getChildren().length}`);
   return tl;

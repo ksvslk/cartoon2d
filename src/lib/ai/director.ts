@@ -58,7 +58,7 @@ CRITICAL: Your response MUST contain TWO things:
       "audio": [
         {
           "type": "sfx | dialogue | music",
-          "actor_id": "string (optional, for dialogue)",
+          "actor_id": "string (REQUIRED for dialogue, MUST exactly match the actor's id in actors_detected)",
           "text": "string (optional, exact words if dialogue)",
           "delivery_style": "string (optional, e.g. 'shouting angrily', 'whispering', 'cheerful')",
           "description": "string (optional, sound description if sfx/music)"
@@ -107,7 +107,8 @@ CRITICAL: Your response MUST contain TWO things:
 - KEEP THE DRAWING SIMPLE ENOUGH TO VECTORIZE: Prefer a limited number of large flat shapes and clear color regions over noisy texture, hatch marks, tiny fragments, or decorative micro-details.
 - ${compositionInstruction}
 - DO NOT include any text, speech bubbles, or onomatopoeia (e.g., "BANG!", "CRASH!") in the images. These are handled by the audio/narrative data.
-- DIALOGUE REQUIREMENT (CRITICAL): If the user's prompt includes characters speaking, talking, or having a conversation, you MUST explicitly create an entry in the \`audio\` array for EVERY spoken line with \`"type": "dialogue"\`, their exact spoken \`"text"\`, their emotional \`"delivery_style"\`, and the correct \`"actor_id"\`. If you omit the audio array, they will have no voice! Do not skip this!
+- DIALOGUE REQUIREMENT (CRITICAL): If the user's prompt includes characters speaking, talking, or having a conversation, you MUST explicitly create an entry in the \`audio\` array for EVERY spoken line with \`"type": "dialogue"\`, their exact spoken \`"text"\`, their emotional \`"delivery_style"\`, and the strictly accurate \`"actor_id"\` exactly matching the ID from \`actors_detected\`. If you omit the audio array, they will have no voice! Do not skip this!
+- TIMELINE SPACING (CRITICAL): Ensure dialogue tracks naturally alternate logic. Space out long dialogue exchanges across different scenes if needed to avoid overcrowding.
 - Output each image immediately after the JSON.
 - Keep actions as simple semantic verbs.
 - actors_detected must list ALL characters.

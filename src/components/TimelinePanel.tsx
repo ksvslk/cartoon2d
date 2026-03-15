@@ -33,7 +33,7 @@ export interface TimelinePanelProps {
   selectedActionIndex: number | null;
   selectedActorId: string | null;
   selectedAudioIndex: number | null;
-  isCameraSelected: boolean;
+  selectedCameraIndex: number | null;
   selectedKeyframe: "start" | "end" | null;
 
   // Refs
@@ -58,7 +58,7 @@ export interface TimelinePanelProps {
   onSelectAction: (actionIndex: number | null) => void;
   onSelectActor: (actorId: string | null) => void;
   onSelectAudio: (index: number | null) => void;
-  onSelectCamera: (selected: boolean) => void;
+  onSelectCamera: (idx: number | null) => void;
   onSelectKeyframe: (keyframe: "start" | "end" | null) => void;
 
   // Playhead
@@ -69,9 +69,11 @@ export interface TimelinePanelProps {
   // Track actions
   onLayerMove: (actorId: string, direction: -1 | 1) => void;
   onPillMouseDown: (e: React.MouseEvent, actionIndex: number, actorId: string, startTime: number, duration: number, mode: "move" | "resize") => void;
-  onCameraPillMouseDown: (e: React.MouseEvent, mode: "move" | "resize") => void;
+  onCameraPillMouseDown: (e: React.MouseEvent, index: number, mode: "move" | "resize") => void;
   onDialoguePillMouseDown: (e: React.MouseEvent, actorId: string, audioIndex: number, startTime: number, duration: number, mode: "move" | "resize") => void;
   onAddAction: (actorId: string) => void;
+  onAddAudio: (actorId: string) => void;
+  onAddCamera: () => void;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -98,7 +100,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
     selectedActionIndex,
     selectedActorId,
     selectedAudioIndex,
-    isCameraSelected,
+    selectedCameraIndex,
     selectedKeyframe,
     timelineRef,
     tracksRef,
@@ -125,14 +127,16 @@ export default function TimelinePanel(props: TimelinePanelProps) {
     onCameraPillMouseDown,
     onDialoguePillMouseDown,
     onAddAction,
+    onAddAudio,
+    onAddCamera,
   } = props;
 
   const beat = selectedBeat;
 
   // Display duration: fixed visual scale so pills don't always fill 100%
   // Takes the max of all layer durations with 30% buffer, minimum 3s
-  const cameraDuration = beat?.camera?.duration ?? totalDuration;
-  const maxContentDuration = Math.max(totalDuration, cameraDuration);
+  let finalDuration = beat?.cameras?.[0]?.duration ?? totalDuration;
+  const maxContentDuration = Math.max(totalDuration, finalDuration);
   const displayDuration = Math.max(Math.ceil(maxContentDuration * 1.3), 3);
 
   return (
@@ -361,7 +365,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                           <div
                             key={binding.id}
                             className="absolute inset-y-1.5 rounded bg-repeating-gradient opacity-50 dark:opacity-30 pointer-events-auto cursor-pointer"
-                            onClick={() => { onSelectAction(null); onSelectActor(null); onSelectCamera(false); }}
+                            onClick={() => { onSelectAction(null); onSelectActor(null); onSelectCamera(null); }}
                             style={{
                               left,
                               width,
@@ -390,80 +394,105 @@ export default function TimelinePanel(props: TimelinePanelProps) {
 
                 {/* Camera Layer */}
                 <div 
-                  className={`h-9 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track transition-colors cursor-pointer ${isCameraSelected ? 'bg-amber-50 dark:bg-amber-900/10' : 'hover:bg-neutral-50 dark:hover:bg-neutral-900/50'}`}
+                  className={`h-9 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track transition-colors cursor-pointer ${selectedCameraIndex !== null ? 'bg-amber-50 dark:bg-amber-900/10' : 'hover:bg-neutral-50 dark:hover:bg-neutral-900/50'}`}
                   onClick={() => {
-                    onSelectCamera(true);
+                    onSelectCamera(0);
                     onSelectAction(null);
                     onSelectActor(null);
                     onSelectKeyframe(null);
                   }}
                 >
-                  <div className={`w-48 h-full flex items-center gap-2 px-4 border-r border-neutral-200 dark:border-neutral-800/60 shrink-0 transition-colors z-30 sticky left-0 ${isCameraSelected ? 'bg-amber-100 dark:bg-amber-900/20' : 'bg-white dark:bg-[#0f0f0f]'}`}>
+                  <div className={`w-48 h-full flex items-center gap-2 px-4 border-r border-neutral-200 dark:border-neutral-800/60 shrink-0 transition-colors z-30 sticky left-0 ${selectedCameraIndex !== null ? 'bg-amber-100 dark:bg-amber-900/20' : 'bg-white dark:bg-[#0f0f0f]'}`}>
                     <svg viewBox="0 0 24 24" className="w-3 h-3 text-neutral-400 dark:text-neutral-500 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
-                    <span className={`text-[10px] font-medium truncate ${isCameraSelected ? 'text-amber-700 dark:text-amber-500' : 'text-neutral-500 dark:text-neutral-500'}`}>Camera</span>
+                    <span className={`text-[10px] font-medium truncate ${selectedCameraIndex !== null ? 'text-amber-700 dark:text-amber-500' : 'text-neutral-500 dark:text-neutral-500'}`}>Camera</span>
+                    
+                    <button
+                      className="w-5 h-5 rounded hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center shrink-0 opacity-0 group-hover/track:opacity-100 transition-opacity ml-auto disabled:opacity-30 disabled:cursor-not-allowed"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAddCamera();
+                      }}
+                      title="Add Camera Pill"
+                    >
+                      <svg viewBox="0 0 24 24" className="w-[14px] h-[14px] text-neutral-500 dark:text-neutral-400" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19" />
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
+                    </button>
                   </div>
                   <div className="flex-1 h-full relative overflow-visible pointer-events-none px-1.5">
-                    <div
-                      className={`absolute inset-y-2 rounded flex items-center px-2 transition-all z-10 pointer-events-auto border group/campill cursor-grab active:cursor-grabbing ${isCameraSelected ? 'bg-amber-100/80 dark:bg-amber-900/40 border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 shadow-sm' : 'bg-neutral-100 dark:bg-neutral-800/60 border-neutral-200 dark:border-neutral-700 text-neutral-500 dark:text-neutral-400'}`}
-                      style={{ left: '0%', width: `${displayDuration > 0 ? ((beat?.camera?.duration ?? totalDuration) / displayDuration) * 100 : 100}%` }}
-                      onMouseDown={(e) => {
-                        if (e.button !== 0) return;
-                        e.stopPropagation();
-                        onSelectCamera(true);
-                        onSelectAction(null);
-                        onSelectActor(null);
-                        onSelectKeyframe(null);
-                        onCameraPillMouseDown(e, 'move');
-                      }}
-                    >
-                      {/* Start Keyframe Diamond */}
-                      <div 
-                        className="absolute -left-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rotate-45 flex items-center justify-center group-hover/campill:scale-110 transition-transform z-20 cursor-pointer" 
-                        title="Jump to Start"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSetIsPlaying(false);
-                          onSetPlayheadPos(0);
-                          onPlayheadUpdate(0);
-                          onSelectKeyframe('start');
-                        }}
-                      >
-                        <div className={`w-2.5 h-2.5 outline outline-2 ${isCameraSelected && selectedKeyframe === 'start' ? 'outline-amber-400 bg-amber-100 dark:bg-amber-900 shadow-[0_0_8px_rgba(245,158,11,0.8)]' : isCameraSelected ? 'outline-amber-500 bg-white dark:bg-neutral-900' : 'outline-neutral-400 dark:outline-neutral-500 bg-white dark:bg-neutral-800 group-hover/campill:outline-amber-500 dark:group-hover/campill:outline-amber-400'}`} />
-                      </div>
+                    {(beat?.cameras || []).map((cam, i) => {
+                      const startSec = cam.start_time || 0;
+                      const cDur = cam.duration ?? (totalDuration - startSec);
+                      
+                      const leftPct = displayDuration > 0 ? (startSec / displayDuration) * 100 : 0;
+                      const widthPct = displayDuration > 0 ? (cDur / displayDuration) * 100 : 100;
 
-                      <span className="text-[10px] font-mono font-medium truncate pl-2 mx-auto select-none opacity-80 pointer-events-none">
-                        {beat.camera && (beat.camera.target_x !== undefined || beat.camera.target_actor_id) ? "Cinematic Pan / Follow" : "Static Camera"}
-                      </span>
+                      return (
+                        <div
+                          key={`camera-pill-${i}`}
+                          className={`absolute inset-y-2 rounded flex items-center px-2 transition-all z-10 pointer-events-auto border group/campill cursor-grab active:cursor-grabbing ${selectedCameraIndex === i ? 'bg-amber-100/80 dark:bg-amber-900/40 border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 shadow-sm' : 'bg-neutral-100 dark:bg-neutral-800/60 border-neutral-200 dark:border-neutral-700 text-neutral-500 dark:text-neutral-400'}`}
+                          style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                          onMouseDown={(e) => {
+                            if (e.button !== 0) return;
+                            e.stopPropagation();
+                            onSelectCamera(i);
+                            onSelectAction(null);
+                            onSelectActor(null);
+                            onSelectKeyframe(null);
+                            onCameraPillMouseDown(e, i, 'move');
+                          }}
+                        >
+                          {/* Start Keyframe Diamond */}
+                          <div 
+                            className="absolute -left-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rotate-45 flex items-center justify-center group-hover/campill:scale-110 transition-transform z-20 cursor-pointer" 
+                            title="Jump to Start"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSetIsPlaying(false);
+                              onSetPlayheadPos(displayDuration > 0 ? (startSec / displayDuration) * 100 : 0);
+                              onPlayheadUpdate(startSec);
+                              onSelectKeyframe('start');
+                            }}
+                          >
+                            <div className={`w-2.5 h-2.5 outline outline-2 ${selectedCameraIndex === i && selectedKeyframe === 'start' ? 'outline-amber-400 bg-amber-100 dark:bg-amber-900 shadow-[0_0_8px_rgba(245,158,11,0.8)]' : selectedCameraIndex === i ? 'outline-amber-500 bg-white dark:bg-neutral-900' : 'outline-neutral-400 dark:outline-neutral-500 bg-white dark:bg-neutral-800 group-hover/campill:outline-amber-500 dark:group-hover/campill:outline-amber-400'}`} />
+                          </div>
 
-                      {/* End Keyframe Diamond */}
-                      <div 
-                        className="absolute -right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rotate-45 flex items-center justify-center group-hover/campill:scale-110 transition-transform z-20 cursor-pointer" 
-                        title="Jump to End"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSetIsPlaying(false);
-                          const newTime = totalDuration > 0 ? totalDuration : Math.max(beat.compiled_scene?.duration_seconds || 1, 1);
-                          onSetPlayheadPos(displayDuration > 0 ? (totalDuration / displayDuration) * 100 : 100);
-                          onPlayheadUpdate(newTime);
-                          onSelectKeyframe('end');
-                        }}
-                      >
-                        <div className={`w-2.5 h-2.5 outline outline-2 ${isCameraSelected && selectedKeyframe === 'end' ? 'outline-amber-400 bg-amber-100 dark:bg-amber-900 shadow-[0_0_8px_rgba(245,158,11,0.8)]' : isCameraSelected ? 'outline-amber-500 bg-white dark:bg-neutral-900' : 'outline-neutral-400 dark:outline-neutral-500 bg-white dark:bg-neutral-800 group-hover/campill:outline-amber-500 dark:group-hover/campill:outline-amber-400'}`} />
-                      </div>
+                          <span className="text-[10px] font-mono font-medium truncate pl-2 mx-auto select-none opacity-80 pointer-events-none">
+                            {(cam.target_x !== undefined || cam.target_actor_id) ? "Cinematic Pan / Follow" : "Static Camera"}
+                          </span>
 
-                      {/* Right edge resize handle */}
-                      <div 
-                        className="absolute -right-3.5 top-0 bottom-0 w-3 cursor-col-resize z-30 flex items-center justify-center opacity-0 group-hover/campill:opacity-100 transition-opacity pointer-events-auto"
-                        onMouseDown={(e) => {
-                          if (e.button !== 0) return;
-                          e.stopPropagation();
-                          onCameraPillMouseDown(e, 'resize');
-                        }}
-                        title="Drag to resize scene duration"
-                      >
-                        <div className="w-[3px] h-3 bg-amber-500/80 rounded-full" />
-                      </div>
-                    </div>
+                          {/* End Keyframe Diamond */}
+                          <div 
+                            className="absolute -right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rotate-45 flex items-center justify-center group-hover/campill:scale-110 transition-transform z-20 cursor-pointer" 
+                            title="Jump to End"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSetIsPlaying(false);
+                              const newTime = startSec + cDur;
+                              onSetPlayheadPos(displayDuration > 0 ? (newTime / displayDuration) * 100 : 100);
+                              onPlayheadUpdate(newTime);
+                              onSelectKeyframe('end');
+                            }}
+                          >
+                            <div className={`w-2.5 h-2.5 outline outline-2 ${selectedCameraIndex === i && selectedKeyframe === 'end' ? 'outline-amber-400 bg-amber-100 dark:bg-amber-900 shadow-[0_0_8px_rgba(245,158,11,0.8)]' : selectedCameraIndex === i ? 'outline-amber-500 bg-white dark:bg-neutral-900' : 'outline-neutral-400 dark:outline-neutral-500 bg-white dark:bg-neutral-800 group-hover/campill:outline-amber-500 dark:group-hover/campill:outline-amber-400'}`} />
+                          </div>
+
+                          {/* Right edge resize handle */}
+                          <div 
+                            className="absolute -right-3.5 top-0 bottom-0 w-3 cursor-col-resize z-30 flex items-center justify-center opacity-0 group-hover/campill:opacity-100 transition-opacity pointer-events-auto"
+                            onMouseDown={(e) => {
+                              if (e.button !== 0) return;
+                              e.stopPropagation();
+                              onCameraPillMouseDown(e, i, 'resize');
+                            }}
+                            title="Drag to resize scene duration"
+                          >
+                            <div className="w-[3px] h-3 bg-amber-500/80 rounded-full" />
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                   {/* Spacer to match actor row's Add Action button width */}
                   <div className="w-10 shrink-0" />
@@ -607,7 +636,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                                   onPillMouseDown(e, binding.source_action_index, actorId, binding.start_time, binding.duration_seconds, 'move');
                                 }}
                                 onClick={() => {
-                                  onSelectCamera(false);
+                                  onSelectCamera(null);
                                   onSelectAction(binding.source_action_index);
                                   onSelectActor(actorId);
                                   onSelectKeyframe(null);
@@ -620,7 +649,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                                   onClick={(e) => e.stopPropagation()}
                                   onMouseDown={(e) => {
                                     e.stopPropagation();
-                                    onSelectCamera(false);
+                                    onSelectCamera(null);
                                     onSetIsPlaying(false);
                                     onSelectAction(binding.source_action_index);
                                     onSelectActor(actorId);
@@ -644,7 +673,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                                   onClick={(e) => e.stopPropagation()}
                                   onMouseDown={(e) => {
                                     e.stopPropagation();
-                                    onSelectCamera(false);
+                                    onSelectCamera(null);
                                     onSetIsPlaying(false);
                                     onSelectAction(binding.source_action_index);
                                     onSelectActor(actorId);
@@ -676,7 +705,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                         </div>
                         
                         <button 
-                          className="w-10 flex flex-col items-center justify-center shrink-0 border-l border-neutral-200 dark:border-neutral-800/40 bg-neutral-50/50 hover:bg-neutral-100 dark:bg-neutral-900/30 dark:hover:bg-neutral-800/50 transition-colors opacity-0 group-hover/track:opacity-100 z-30"
+                          className="w-10 flex flex-col items-center justify-center shrink-0 border-l border-neutral-200 dark:border-neutral-800/40 bg-neutral-50/50 hover:bg-neutral-100 dark:bg-neutral-800/50 transition-colors opacity-0 group-hover/track:opacity-100 z-30"
                           title={`Add action for ${actorData?.name || actorId}`}
                           onClick={() => onAddAction(actorId)}
                         >
@@ -685,7 +714,6 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                       </div>
                       
                       {/* Dialogue Tracking Row */}
-                      {beat.audio && beat.audio.some(a => a.type === 'dialogue' && a.actor_id === actorId) && (
                         <div className="h-8 flex shrink-0 group/voicetrack hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors border-t border-dashed border-neutral-200 dark:border-neutral-800/40 relative z-10 bg-amber-50/20 dark:bg-amber-900/5">
                           {/* Left Panel */}
                           <div className="w-48 h-full flex flex-col justify-center px-4 border-r border-neutral-200 dark:border-neutral-800/60 shrink-0">
@@ -744,7 +772,6 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                           {/* Right Placeholder Spacer to match above */}
                           <div className="w-10 shrink-0 border-l border-neutral-200 dark:border-neutral-800/40 bg-neutral-50/30 dark:bg-neutral-900/10 pointer-events-none" />
                         </div>
-                      )}
                     </div>
                   );
                 })}

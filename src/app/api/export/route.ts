@@ -51,6 +51,14 @@ export async function POST(request: NextRequest) {
       const width = Number(formData.get("width") || 1920);
       const height = Number(formData.get("height") || 1080);
       const frameFiles = formData.getAll("frames").filter((value): value is File => value instanceof File);
+      const audioFiles = formData.getAll("audio_files").filter((value): value is File => value instanceof File);
+      const audioMetadataStr = String(formData.get("audio_metadata") || "[]");
+      let audioMetadata: { filename: string; start: number }[] = [];
+      try {
+         audioMetadata = JSON.parse(audioMetadataStr);
+      } catch (e) {
+         console.warn("Failed to parse audio metadata", e);
+      }
 
       if (frameFiles.length === 0) {
         return NextResponse.json({ error: "No PNG frames were provided for export." }, { status: 400 });
@@ -60,26 +68,56 @@ export async function POST(request: NextRequest) {
         const bytes = Buffer.from(await frameFile.arrayBuffer());
         await writeFile(join(tempDir, frameFile.name), bytes);
       }
+      for (const audioFile of audioFiles) {
+        const bytes = Buffer.from(await audioFile.arrayBuffer());
+        await writeFile(join(tempDir, audioFile.name), bytes);
+      }
 
       outputPath = join(tempDir, fileName);
 
-      await runFfmpeg(
-        [
-          "-y",
-          "-framerate", String(fps),
-          "-i", "frame-%06d.png",
-          "-r", String(fps),
-          "-fps_mode", "cfr",
-          "-vf", `scale=${width}:${height}:flags=lanczos,format=yuv420p`,
-          "-c:v", "libx264",
-          "-preset", "slow",
-          "-crf", "10",
-          "-pix_fmt", "yuv420p",
-          "-movflags", "+faststart",
-          outputPath,
-        ],
-        tempDir,
+      const ffmpegArgs = [
+        "-y",
+        "-framerate", String(fps),
+        "-i", "frame-%06d.png",
+      ];
+
+      for (const meta of audioMetadata) {
+         ffmpegArgs.push("-i", meta.filename);
+      }
+
+      ffmpegArgs.push(
+        "-r", String(fps),
+        "-fps_mode", "cfr",
+        "-vf", `scale=${width}:${height}:flags=lanczos,format=yuv420p`,
+        "-c:v", "libx264",
+        "-preset", "slow",
+        "-crf", "10",
+        "-pix_fmt", "yuv420p"
       );
+
+      if (audioMetadata.length > 0) {
+         const filterParts: string[] = [];
+         for (let i = 0; i < audioMetadata.length; i++) {
+            const meta = audioMetadata[i];
+            const delayMs = Math.round(meta.start * 1000);
+            filterParts.push(`[${i+1}:a]adelay=${delayMs}|${delayMs}[a${i}]`);
+         }
+         const mixInputs = audioMetadata.map((_, i) => `[a${i}]`).join("");
+         filterParts.push(`${mixInputs}amix=inputs=${audioMetadata.length}:duration=longest:dropout_transition=2[aout]`);
+         
+         ffmpegArgs.push(
+            "-filter_complex", filterParts.join(";"),
+            "-map", "0:v",
+            "-map", "[aout]",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "48000"
+         );
+      }
+
+      ffmpegArgs.push("-movflags", "+faststart", outputPath);
+
+      await runFfmpeg(ffmpegArgs, tempDir);
     } else {
       return NextResponse.json(
         { error: "Unsupported export request. Expected multipart PNG frame upload." },
