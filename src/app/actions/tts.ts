@@ -41,7 +41,7 @@ function wordToVisemes(word: string): string[] {
   return filtered.length > 0 ? filtered : ["idle"];
 }
 
-export async function generateSpeechTTS(text: string, voiceName: string = "en-US-Journey-F", deliveryStyle?: string): Promise<TTSResponse> {
+export async function generateSpeechTTS(text: string, voiceName: string = "en-US-Studio-O", deliveryStyle?: string): Promise<TTSResponse> {
   const apiKey = process.env.GOOGLE_TTS_API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("Missing GOOGLE_TTS_API_KEY or GEMINI_API_KEY");
@@ -88,10 +88,10 @@ export async function generateSpeechTTS(text: string, voiceName: string = "en-US
     audioConfig: {
       audioEncoding: "MP3"
     },
-    enableTimepointing: ["SSML_MARK"]
+    enableTimePointing: ["SSML_MARK"]
   };
 
-  const url = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`;
+  const url = `https://texttospeech.googleapis.com/v1beta1/text:synthesize?key=${apiKey}`;
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
