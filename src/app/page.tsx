@@ -626,7 +626,7 @@ export default function Home() {
 
       // Run parallel GCP TTS generation
       const voicePromises = audioToGenerate.map(async (audio) => {
-          const ttsResult = await generateSpeechTTS(audio.text!, "en-US-Journey-F", audio.delivery_style);
+          const ttsResult = await generateSpeechTTS(audio.text!, "en-US-Studio-O", audio.delivery_style);
           return { audio, ttsResult };
       });
 
@@ -1690,7 +1690,7 @@ export default function Home() {
           addLog(`> Generating ${dialogueToGenerate.length} voice track${dialogueToGenerate.length > 1 ? 's' : ''}...`);
           try {
             const ttsResults = await Promise.all(dialogueToGenerate.map(async (audio) => {
-              const ttsResult = await generateSpeechTTS(audio.text!, "en-US-Journey-F", audio.delivery_style);
+              const ttsResult = await generateSpeechTTS(audio.text!, "en-US-Studio-O", audio.delivery_style);
               return { audio, ttsResult };
             }));
             ttsResults.forEach(({ audio, ttsResult }) => {
