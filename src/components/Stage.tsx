@@ -444,23 +444,16 @@ export default function Stage({
             const track = compiledScene?.instance_tracks.find(instanceTrack => instanceTrack.actor_id === actorId);
             const initialTransform = track?.transform_track[0];
             const actionData = beat.actions.find(a => a.actor_id === actorId);
-            // User's explicit placement takes priority over compiled animation data
-            const tX     = actionData?.spatial_transform?.x     ?? initialTransform?.x ?? (480 + actorIdx * 320);
-            const tY     = actionData?.spatial_transform?.y     ?? initialTransform?.y ?? 950;
-            const tScale = actionData?.spatial_transform?.scale ?? initialTransform?.scale ?? 0.5;
-
-            // Resolve facing from user's explicit flip_x first, then compiled track
-            const userFlipX = actionData?.spatial_transform?.flip_x;
-            const facingSign = userFlipX !== undefined
-                ? (userFlipX ? -1 : 1)
-                : initialFacingSignForTrack(track);
+            const tX     = initialTransform?.x ?? actionData?.spatial_transform?.x     ?? (480 + actorIdx * 320);
+            const tY     = initialTransform?.y ?? actionData?.spatial_transform?.y     ?? 950;
+            const tScale = initialTransform?.scale ?? actionData?.spatial_transform?.scale ?? 0.5;
 
             targetTransforms[actorId] = {
                 x: tX,
                 y: tY,
                 scale: tScale,
-                rotation: actionData?.spatial_transform?.rotation ?? initialTransform?.rotation,
-                facingSign,
+                rotation: initialTransform?.rotation ?? actionData?.spatial_transform?.rotation,
+                facingSign: initialFacingSignForTrack(track),
             };
 
             while (rigSvg.firstChild) {
@@ -706,8 +699,8 @@ export default function Stage({
             syncActorLayerOrder(tl.time());
             onPlayheadUpdateRef.current?.(tl.time());
 
-            // ── Camera Tracking Update (only during playback) ──
-            if (isPlayingRef.current && beat.camera?.target_actor_id && containerRef.current) {
+            // ── Camera Tracking Update ──
+            if (beat.camera?.target_actor_id && containerRef.current) {
                 const domSvg = containerRef.current.querySelector("svg");
                 const cameraGroup = domSvg?.querySelector<SVGGElement>("#__camera_layer");
                 const targetActorGroup = domSvg?.querySelector<SVGGElement>(`#actor_group_${beat.camera.target_actor_id}`);
@@ -724,6 +717,7 @@ export default function Stage({
                     gsap.set(cameraGroup, {
                         x: (stageW / 2) - worldActorX,
                         y: (stageH / 2) - worldActorY,
+                        transformOrigin: `${worldActorX}px ${worldActorY}px`
                     });
                 }
             }
@@ -1000,7 +994,14 @@ export default function Stage({
         if (actorIdToDrag === 'camera') {
             const currentCamera = beatRef.current?.camera ?? { zoom: 1, x: stageW/2, y: stageH/2, rotation: 0 };
             
+            // Snap playhead to start or end for accurate interpolation preview
             const isEditingEnd = selectedKeyframeRef.current === 'end' || (selectedKeyframeRef.current !== 'start' && playheadTimeRef.current > 0.1);
+            if (gsapTimelineRef.current) {
+                const duration = gsapTimelineRef.current.duration() || 2;
+                const snapTime = isEditingEnd ? duration : 0;
+                gsapTimelineRef.current.seek(snapTime, false);
+                onPlayheadUpdateRef.current?.(snapTime);
+            }
             
             const startX = isEditingEnd ? (currentCamera.target_x ?? currentCamera.x ?? (stageW/2)) : (currentCamera.x ?? (stageW/2));
             const startY = isEditingEnd ? (currentCamera.target_y ?? currentCamera.y ?? (stageH/2)) : (currentCamera.y ?? (stageH/2));
@@ -1134,11 +1135,10 @@ export default function Stage({
                 const newY = dragState.initialFeetY - dy;
                 
                 // Use gsap.to with overwrite to kill conflicting timeline tweens
-                // IMPORTANT: keep transformOrigin fixed at stage center to prevent
-                // objects jumping when zoomed (scale applied around changing origin)
                 gsap.to(cameraGroup, {
                     x: (stageW / 2) - newX,
                     y: (stageH / 2) - newY,
+                    transformOrigin: `${newX}px ${newY}px`,
                     duration: 0.1,
                     overwrite: "auto"
                 });

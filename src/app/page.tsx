@@ -743,20 +743,6 @@ export default function Home() {
       livePlayheadPosRef.current = 0;
       setPlayheadPos(0);
     }
-    // Recompile scene with latest spatial_transform data before playing,
-    // since we don't recompile on every drag/scale/rotate.
-    setStoryData(prev => {
-      if (!prev) return prev;
-      const newBeats = [...prev.beats];
-      const beat = newBeats[selectedSceneIndex];
-      if (!beat) return prev;
-      const previousCompiledScene = selectedSceneIndex > 0
-        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
-        : null;
-      const recompiled = compileBeatToScene(beat, availableRigs, previousCompiledScene, stageOrientation);
-      newBeats[selectedSceneIndex] = { ...beat, compiled_scene: recompiled };
-      return { ...prev, beats: newBeats };
-    });
     setIsPlaying(true);
   };
 
@@ -2156,8 +2142,12 @@ export default function Home() {
       };
 
       const nextBeat = { ...beat, actions: newActions };
-      // Skip recompilation — save data only. Recompile on play/refresh.
-      newBeats[selectedSceneIndex] = { ...nextBeat };
+      const previousCompiledScene = selectedSceneIndex > 0
+        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+        : null;
+      
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
       return { ...prev, beats: newBeats };
     });
   };
@@ -2207,8 +2197,11 @@ export default function Home() {
       };
 
       const nextBeat = { ...beat, actions: newActions };
-      // Skip recompilation — save data only. Recompile on play/refresh.
-      newBeats[selectedSceneIndex] = { ...nextBeat };
+      const previousCompiledScene = selectedSceneIndex > 0
+        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+        : null;
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
       return { ...prev, beats: newBeats };
     });
   };
@@ -2242,8 +2235,11 @@ export default function Home() {
       };
 
       const nextBeat = { ...beat, actions: newActions };
-      // Skip recompilation — save data only. Recompile on play/refresh.
-      newBeats[selectedSceneIndex] = { ...nextBeat };
+      const previousCompiledScene = selectedSceneIndex > 0
+        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+        : null;
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
       return { ...prev, beats: newBeats };
     });
   };
@@ -2275,10 +2271,9 @@ export default function Home() {
       }
       
       const updatedBeat = { ...beat, camera: newCamera };
-      // Camera changes don't affect actor transform tracks — skip full
-      // recompilation to prevent inferAutoTargetTransform / collision from
-      // modifying actor positions when only the camera moves.
-      newBeats[selectedSceneIndex] = { ...updatedBeat };
+      const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
+      const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
       return { ...prev, beats: newBeats };
     });
   }, [selectedSceneIndex]);
@@ -2356,8 +2351,12 @@ export default function Home() {
       };
 
       const nextBeat = { ...beat, actions: newActions };
-      // Skip recompilation — save data only. Recompile on play/refresh.
-      newBeats[selectedSceneIndex] = { ...nextBeat };
+      const previousCompiledScene = selectedSceneIndex > 0
+        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+        : null;
+      
+      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
       return { ...prev, beats: newBeats };
     });
   };
