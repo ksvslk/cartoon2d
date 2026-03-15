@@ -1000,14 +1000,7 @@ export default function Stage({
         if (actorIdToDrag === 'camera') {
             const currentCamera = beatRef.current?.camera ?? { zoom: 1, x: stageW/2, y: stageH/2, rotation: 0 };
             
-            // Snap playhead to start or end for accurate interpolation preview
             const isEditingEnd = selectedKeyframeRef.current === 'end' || (selectedKeyframeRef.current !== 'start' && playheadTimeRef.current > 0.1);
-            if (gsapTimelineRef.current) {
-                const duration = gsapTimelineRef.current.duration() || 2;
-                const snapTime = isEditingEnd ? duration : 0;
-                gsapTimelineRef.current.seek(snapTime, false);
-                onPlayheadUpdateRef.current?.(snapTime);
-            }
             
             const startX = isEditingEnd ? (currentCamera.target_x ?? currentCamera.x ?? (stageW/2)) : (currentCamera.x ?? (stageW/2));
             const startY = isEditingEnd ? (currentCamera.target_y ?? currentCamera.y ?? (stageH/2)) : (currentCamera.y ?? (stageH/2));
