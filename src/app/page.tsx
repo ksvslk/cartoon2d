@@ -743,6 +743,20 @@ export default function Home() {
       livePlayheadPosRef.current = 0;
       setPlayheadPos(0);
     }
+    // Recompile scene with latest spatial_transform data before playing,
+    // since we don't recompile on every drag/scale/rotate.
+    setStoryData(prev => {
+      if (!prev) return prev;
+      const newBeats = [...prev.beats];
+      const beat = newBeats[selectedSceneIndex];
+      if (!beat) return prev;
+      const previousCompiledScene = selectedSceneIndex > 0
+        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+        : null;
+      const recompiled = compileBeatToScene(beat, availableRigs, previousCompiledScene, stageOrientation);
+      newBeats[selectedSceneIndex] = { ...beat, compiled_scene: recompiled };
+      return { ...prev, beats: newBeats };
+    });
     setIsPlaying(true);
   };
 
