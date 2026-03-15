@@ -2142,12 +2142,8 @@ export default function Home() {
       };
 
       const nextBeat = { ...beat, actions: newActions };
-      const previousCompiledScene = selectedSceneIndex > 0
-        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
-        : null;
-      
-      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+      // Skip recompilation — save data only. Recompile on play/refresh.
+      newBeats[selectedSceneIndex] = { ...nextBeat };
       return { ...prev, beats: newBeats };
     });
   };
@@ -2197,11 +2193,8 @@ export default function Home() {
       };
 
       const nextBeat = { ...beat, actions: newActions };
-      const previousCompiledScene = selectedSceneIndex > 0
-        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
-        : null;
-      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+      // Skip recompilation — save data only. Recompile on play/refresh.
+      newBeats[selectedSceneIndex] = { ...nextBeat };
       return { ...prev, beats: newBeats };
     });
   };
@@ -2235,11 +2228,8 @@ export default function Home() {
       };
 
       const nextBeat = { ...beat, actions: newActions };
-      const previousCompiledScene = selectedSceneIndex > 0
-        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
-        : null;
-      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+      // Skip recompilation — save data only. Recompile on play/refresh.
+      newBeats[selectedSceneIndex] = { ...nextBeat };
       return { ...prev, beats: newBeats };
     });
   };
@@ -2352,12 +2342,8 @@ export default function Home() {
       };
 
       const nextBeat = { ...beat, actions: newActions };
-      const previousCompiledScene = selectedSceneIndex > 0
-        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
-        : null;
-      
-      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+      // Skip recompilation — save data only. Recompile on play/refresh.
+      newBeats[selectedSceneIndex] = { ...nextBeat };
       return { ...prev, beats: newBeats };
     });
   };
