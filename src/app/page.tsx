@@ -2271,9 +2271,10 @@ export default function Home() {
       }
       
       const updatedBeat = { ...beat, camera: newCamera };
-      const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
-      const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
-      newBeats[selectedSceneIndex] = { ...updatedBeat, compiled_scene: recompiled };
+      // Camera changes don't affect actor transform tracks — skip full
+      // recompilation to prevent inferAutoTargetTransform / collision from
+      // modifying actor positions when only the camera moves.
+      newBeats[selectedSceneIndex] = { ...updatedBeat };
       return { ...prev, beats: newBeats };
     });
   }, [selectedSceneIndex]);
