@@ -511,29 +511,45 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
           const lastViseme = audioItem.visemes[audioItem.visemes.length - 1];
           const audioEnd = lastViseme.time + lastViseme.duration;
           
-          tl.to(audioEl, {
-            currentTime: audioEnd,
-            duration: audioEnd,
-            ease: "none",
-            onStart: () => { if (!tl.paused()) audioEl?.play().catch(() => {}) },
-            onInterrupt: () => { audioEl?.pause() },
+          // Play audio naturally — don't scrub currentTime (causes garbled sound)
+          tl.add(() => {
+            if (!tl.paused()) {
+              audioEl!.currentTime = 0;
+              audioEl!.play().catch(() => {});
+            }
           }, 0);
+          tl.add(() => {
+            audioEl?.pause();
+          }, audioEnd);
 
           // Build SVG Mouth Visibility Keyframes based on phoneme timings
-          const mouthGroups = ["A", "E", "I", "O", "U", "M", "idle"].map(v => `#mouth_${v}`);
-          const actorSelector = `#actor_group_${actorId}`;
+          const mouthVisemes = ["A", "E", "I", "O", "U", "M", "idle"];
+          const actorGroup = container.querySelector(`#actor_group_${actorId}`);
           
-          audioItem.visemes.forEach(vKeyframe => {
-             const targetMouth = `#mouth_${vKeyframe.viseme}`;
-             mouthGroups.forEach(m => {
-                 tl.set(`${actorSelector} ${m}`, { autoAlpha: m === targetMouth ? 1 : 0 }, vKeyframe.time);
-             });
-          });
-          
-          // Reset mouth to idle when finished speaking
-          mouthGroups.forEach(m => {
-             tl.set(`${actorSelector} ${m}`, { autoAlpha: m === `#mouth_idle` ? 1 : 0 }, audioEnd);
-          });
+          if (actorGroup) {
+            // Initially hide all mouths except idle
+            mouthVisemes.forEach(v => {
+              const el = actorGroup.querySelector(`#mouth_${v}`) as SVGElement | null;
+              if (el) el.style.display = v === "idle" ? "inline" : "none";
+            });
+
+            audioItem.visemes.forEach(vKeyframe => {
+              tl.add(() => {
+                mouthVisemes.forEach(v => {
+                  const el = actorGroup.querySelector(`#mouth_${v}`) as SVGElement | null;
+                  if (el) el.style.display = v === vKeyframe.viseme ? "inline" : "none";
+                });
+              }, vKeyframe.time);
+            });
+            
+            // Reset mouth to idle when finished speaking
+            tl.add(() => {
+              mouthVisemes.forEach(v => {
+                const el = actorGroup.querySelector(`#mouth_${v}`) as SVGElement | null;
+                if (el) el.style.display = v === "idle" ? "inline" : "none";
+              });
+            }, audioEnd);
+          }
         } else {
           // SFX / Music — play audio synced to timeline without visemes
           // Estimate audio duration from the element or use a default
