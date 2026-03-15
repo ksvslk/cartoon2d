@@ -752,6 +752,23 @@ export default function Home() {
     setPlayheadPos(0);
     setSelectedActionIndex(null);
     setSelectedActorId(null);
+
+    // Auto-compile if the selected beat has no compiled_scene
+    if (storyData?.beats[selectedSceneIndex] && !storyData.beats[selectedSceneIndex].compiled_scene) {
+      setStoryData(prev => {
+        if (!prev) return prev;
+        const newBeats = [...prev.beats];
+        const beat = newBeats[selectedSceneIndex];
+        if (!beat || beat.compiled_scene) return prev;
+        const previousCompiledScene = selectedSceneIndex > 0
+          ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+          : null;
+        const recompiled = compileBeatToScene(beat, availableRigs, previousCompiledScene, stageOrientation);
+        newBeats[selectedSceneIndex] = { ...beat, compiled_scene: recompiled };
+        console.log('[auto-compile] Compiled missing scene data for scene', selectedSceneIndex + 1);
+        return { ...prev, beats: newBeats };
+      });
+    }
   }, [selectedSceneIndex]);
 
   const handleClipPreviewToggle = useCallback(() => {
