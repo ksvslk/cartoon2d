@@ -444,16 +444,23 @@ export default function Stage({
             const track = compiledScene?.instance_tracks.find(instanceTrack => instanceTrack.actor_id === actorId);
             const initialTransform = track?.transform_track[0];
             const actionData = beat.actions.find(a => a.actor_id === actorId);
-            const tX     = initialTransform?.x ?? actionData?.spatial_transform?.x     ?? (480 + actorIdx * 320);
-            const tY     = initialTransform?.y ?? actionData?.spatial_transform?.y     ?? 950;
-            const tScale = initialTransform?.scale ?? actionData?.spatial_transform?.scale ?? 0.5;
+            // User's explicit placement takes priority over compiled animation data
+            const tX     = actionData?.spatial_transform?.x     ?? initialTransform?.x ?? (480 + actorIdx * 320);
+            const tY     = actionData?.spatial_transform?.y     ?? initialTransform?.y ?? 950;
+            const tScale = actionData?.spatial_transform?.scale ?? initialTransform?.scale ?? 0.5;
+
+            // Resolve facing from user's explicit flip_x first, then compiled track
+            const userFlipX = actionData?.spatial_transform?.flip_x;
+            const facingSign = userFlipX !== undefined
+                ? (userFlipX ? -1 : 1)
+                : initialFacingSignForTrack(track);
 
             targetTransforms[actorId] = {
                 x: tX,
                 y: tY,
                 scale: tScale,
-                rotation: initialTransform?.rotation ?? actionData?.spatial_transform?.rotation,
-                facingSign: initialFacingSignForTrack(track),
+                rotation: actionData?.spatial_transform?.rotation ?? initialTransform?.rotation,
+                facingSign,
             };
 
             while (rigSvg.firstChild) {
