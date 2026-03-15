@@ -563,13 +563,25 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
                 console.log(`[LipSync] Feeding Jaw Bone rotations to IK engine for '${actorId}': ${jawNode.id}`);
 
                 audioItem.visemes.forEach((vKeyframe, idx) => {
-                  const isOpenMouth = ["A", "E", "O", "U"].includes(vKeyframe.viseme);
-                  const targetAngle = isOpenMouth ? 12 : (vKeyframe.viseme === "idle" ? 0 : 5);
+                  let targetAngle = 0;
+                  switch (vKeyframe.viseme) {
+                    case "A": targetAngle = 18; break; // Wide open
+                    case "O": targetAngle = 14; break; // Round open
+                    case "E": targetAngle = 10; break; // Slightly open, spread
+                    case "U": targetAngle = 8; break;  // Round, slightly open
+                    case "I": targetAngle = 5; break;  // Barely open
+                    case "M": 
+                    case "idle": 
+                    default: targetAngle = 0; break;   // Closed
+                  }
+                  
+                  // Make duration tight to the viseme, max 0.1s so it's snappy
+                  const dur = Math.min(0.1, Math.max(0.05, vKeyframe.duration * 0.8));
                   
                   tl.to(ikActorForJaw.playbackState.speechRotations!, { 
                       [jawNode.id]: targetAngle, 
-                      duration: 0.1, 
-                      ease: "power1.out",
+                      duration: dur, 
+                      ease: "power2.out",
                       overwrite: false
                   }, startTime + vKeyframe.time);
                 });

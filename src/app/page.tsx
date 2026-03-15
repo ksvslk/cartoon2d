@@ -55,6 +55,23 @@ import {
   findReusableActorClip,
 } from "@/lib/utils/story_helpers";
 
+async function getExactAudioDuration(dataUrl: string): Promise<number | null> {
+  if (typeof window === "undefined") return null;
+  try {
+    const response = await fetch(dataUrl);
+    const arrayBuffer = await response.arrayBuffer();
+    
+    // Use an offline AudioContext so it doesn't require user interaction or hold audio devices
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    
+    return audioBuffer.duration;
+  } catch (err) {
+    console.error(`[Audio Duration] Failed to exact decode track:`, err);
+    return null;
+  }
+}
+
 function renderCompileLogLine(line: string, key: string | number) {
   const kind = classifyCompileLogLine(line);
   const badgeClass =
@@ -711,7 +728,8 @@ export default function Home() {
       const voicePromises = audioToGenerate.map(async (audio) => {
         const voiceId = audio.voice_id || "en-US-Standard-F";
         const ttsResult = await generateSpeechTTS(audio.text!, voiceId, audio.delivery_style);
-        return { audio, ttsResult };
+        const exactDuration = await getExactAudioDuration(ttsResult.audioDataUrl);
+        return { audio, ttsResult, exactDuration };
       });
 
       const results = await Promise.all(voicePromises);
@@ -725,12 +743,29 @@ export default function Home() {
           console.log(`[TTS Client Debug Raw Data]:`, { words: matchingResult.ttsResult.debugWords, timepoints: matchingResult.ttsResult.debugTimepoints });
           const lastViseme = matchingResult.ttsResult.visemes?.[matchingResult.ttsResult.visemes.length - 1];
           const backupDuration = lastViseme ? lastViseme.time + lastViseme.duration : 2.0;
+          const exactDur = matchingResult.exactDuration ?? (matchingResult.ttsResult.durationSeconds || backupDuration);
+
+          let stretchedVisemes = matchingResult.ttsResult.visemes;
+
+          // If the backend had to estimate duration (e.g. Journey voices with no timepoints), 
+          // stretch the visemes to perfectly span the true decoded browser audio length.
+          if (exactDur && matchingResult.ttsResult.durationSeconds && stretchedVisemes && stretchedVisemes.length > 0) {
+              const ratio = exactDur / matchingResult.ttsResult.durationSeconds;
+              // Only stretch if the estimate is off by more than 5%
+              if (Math.abs(ratio - 1.0) > 0.05) {
+                  stretchedVisemes = stretchedVisemes.map(v => ({
+                      ...v,
+                      time: v.time * ratio,
+                      duration: v.duration * ratio
+                  }));
+              }
+          }
 
           return {
             ...audio,
             audio_data_url: matchingResult.ttsResult.audioDataUrl,
-            visemes: matchingResult.ttsResult.visemes,
-            duration_seconds: matchingResult.ttsResult.durationSeconds || backupDuration,
+            visemes: stretchedVisemes,
+            duration_seconds: exactDur,
             generation_cost: {
               cost: matchingResult.ttsResult.costEstimate,
               characters: matchingResult.ttsResult.billedCharacters
@@ -1788,9 +1823,10 @@ export default function Home() {
           addLog(`> Generating ${dialogueToGenerate.length} voice track${dialogueToGenerate.length > 1 ? 's' : ''}...`);
           try {
             const ttsResults = await Promise.all(dialogueToGenerate.map(async (audio) => {
-              if (abortRef.current) return { audio, ttsResult: null };
+              if (abortRef.current) return { audio, ttsResult: null, exactDuration: null };
               const ttsResult = await generateSpeechTTS(audio.text!, audio.voice_id || "en-US-Standard-F", audio.delivery_style);
-              return { audio, ttsResult };
+              const exactDuration = await getExactAudioDuration(ttsResult.audioDataUrl);
+              return { audio, ttsResult, exactDuration };
             }));
             
             let cumulativeTime = 0;
@@ -1801,19 +1837,31 @@ export default function Home() {
                } 
             });
 
-            ttsResults.forEach(({ audio, ttsResult }) => {
+            ttsResults.forEach(({ audio, ttsResult, exactDuration }) => {
               if (!ttsResult) return;
               const idx = updatedAudio.indexOf(audio);
               if (idx !== -1) {
                 // Use the server-provided accurate duration if available, fallback to viseme estimation
                 const lastViseme = ttsResult.visemes?.[ttsResult.visemes.length - 1];
                 const backupDuration = lastViseme ? lastViseme.time + lastViseme.duration : 2.0;
-                const duration = ttsResult.durationSeconds || backupDuration;
+                const duration = exactDuration ?? (ttsResult.durationSeconds || backupDuration);
                 
+                let stretchedVisemes = ttsResult.visemes;
+                if (duration && ttsResult.durationSeconds && stretchedVisemes && stretchedVisemes.length > 0) {
+                    const ratio = duration / ttsResult.durationSeconds;
+                    if (Math.abs(ratio - 1.0) > 0.05) {
+                        stretchedVisemes = stretchedVisemes.map(v => ({
+                            ...v,
+                            time: v.time * ratio,
+                            duration: v.duration * ratio
+                        }));
+                    }
+                }
+
                 updatedAudio[idx] = {
                   ...updatedAudio[idx],
                   audio_data_url: ttsResult.audioDataUrl,
-                  visemes: ttsResult.visemes,
+                  visemes: stretchedVisemes,
                   start_time: updatedAudio[idx].start_time ?? cumulativeTime,
                   duration_seconds: duration,
                   generation_cost: { cost: ttsResult.costEstimate, characters: ttsResult.billedCharacters },
