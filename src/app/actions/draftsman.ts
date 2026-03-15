@@ -871,6 +871,9 @@ export async function processDraftsmanPrompt(
             return [
                 `      { "id": "${prefix}root", "pivot": { "x": 500, "y": 520 }, "zIndex": 10, "kind": "root", "side": "center", "massClass": "heavy" }`,
                 `      { "id": "${prefix}core", "pivot": { "x": 500, "y": 520 }, "socket": { "x": 500, "y": 520 }, "parent": "${prefix}root", "rotationLimit": [-45, 45], "zIndex": 20, "kind": "body", "side": "center", "massClass": "medium" }`,
+                `      { "id": "head", "parent": "neck", "pivot": { "x": 100, "y": 70 } }`,
+                `      { "id": "jaw", "parent": "head", "pivot": { "x": 95, "y": 90 } }`,
+                `      { "id": "eye_l", "parent": "head", "pivot": { "x": 90, "y": 65 } }`,
             ];
         })
         .join(",\n");
@@ -891,7 +894,7 @@ CRITICAL REQUIREMENTS:
    Requested view containers:
 ${requestedViewGuide}
    Generate ONLY these requested views: ${requestedViews.join(", ")}.
-   Make the first requested view visible (\`display="inline"\`), all others \`display="none"\`.
+   Make the first requested view visible (\`display="inline"\`), all others \`display="none"\`).
    Each view's bones MUST use this prefix exact format:
 ${requestedViewPrefixGuide}
 3. **Skeleton-First IK Ragdoll (CRITICAL)**: You are building a functional, unbroken IK skeletal ragdoll. The art is just skin over that skeleton.
@@ -902,6 +905,13 @@ ${requestedViewPrefixGuide}
    - **SOCKET = PIVOT overlap test**: The \`socket\` {x,y} of a child bone must be INSIDE the parent's drawn geometry (not on its edge). The child's art must extend past the socket point deeply into the parent.
    - Any external masses (dresses, cloaks, long hair, large props) MUST be drawn as secondary, overlapping panels anchored to the skeleton (e.g. pinned at the waist or neck) so they can swing freely without breaking the underlying ragdoll.
    - Group related parts logically (e.g. \`arm_lower\` inside \`arm_upper\`).
+   - **Standard Bone Chains (CRITICAL)**:
+      1. **Spine:** \`root\` -> \`pelvis\` -> \`torso\` -> \`chest\` -> \`neck\`.
+      2. **Tail:** \`tail_base\` -> \`tail_mid\` -> \`tail_tip\`.
+      3. **Wings:** \`wing_shoulder\` -> \`wing_upper\` -> \`wing_lower\` -> \`wing_hand\`.
+      4. **Head & Jaw:** The \`head\` bone should be a child of \`neck\`. Ensure there is a **clearly defined \`jaw\` bone** (or similar, like \`lower_head\`, \`mandible\`) that is a child of the \`head\` bone. The pivot of the \`jaw\` must be placed at the anatomical hinge of the mouth (near the back of the mouth/cheek area) so that rotating it down naturally opens the mouth.
+      5. **Arm:** \`shoulder\` -> \`upper_arm\` -> \`lower_arm\` -> \`hand\`.
+      6. **Leg:** \`hip\` -> \`upper_leg\` -> \`lower_leg\` -> \`foot\`.
 4. **Hierarchy & Z-Index Layering (CRITICAL)**: SVG renders strictly back-to-front. 
    - Furthest background limbs MUST appear first in the \`<g>\` block. Foreground limbs MUST appear last.
    - Mirror that exact overlap ordering in the JSON rig using the \`zIndex\` field (Lower \`zIndex\` = back, higher \`zIndex\` = front).
@@ -911,6 +921,11 @@ ${requestedViewPrefixGuide}
    - These 7 visemes must be fully separate drawn variations of the mouth (open wide for A, narrow/round for O, closed lips for M).
    - You MUST include \`<g id="emotions">\` with distinct facial expressions: \`emotion_neutral\`, \`happy\`, \`sad\`, \`angry\`, \`surprised\`. 
    - Leave \`mouth_idle\` and \`emotion_neutral\` visible (\`display="inline"\`), and explicitly hide all others (\`display="none"\`).
+   - For example:
+        Viseme IDs MUST exactly match: \`mouth_idle\`, \`mouth_A\`, \`mouth_E\`, \`mouth_I\`, \`mouth_O\`, \`mouth_U\`, \`mouth_M\`.
+        Wrap these inside a single parent group (e.g. \`<g id="mouth_shapes">\`).
+        The default state should have \`mouth_idle\` visible, and the others hidden using \`display="none"\`.
+        IMPORTANT: These viseme SVGs must be bound to either the \`head\` bone or the \`jaw\` bone depending on what moves them. Alternatively, if providing a \`jaw\` bone that moves the actual physical lower portion of the character's head, you MUST still provide these static mouth viseme shapes as a fallback, but they can be bound to the \`head\` bone.
 6. **The JSON Rig Metadata (CRITICAL)**: Define explicit {x, y} coordinates for EVERY \`pivot\` point allowing smooth rotation.
    - \`socket\`: EXPLICITLY specify the preferred attachment point {x,y} within the parent. Missing sockets break animation! Every bone with a parent MUST have a \`socket\`.
    - \`rotationLimit\`: EXPLICITLY provide \`[minDegrees, maxDegrees]\` bounds for biological joints to prevent them from bending backwards. e.g., knees bend backward \`[0, 130]\`, elbows bend forward \`[-130, 0]\`, heads usually \`[-45, 45]\`.

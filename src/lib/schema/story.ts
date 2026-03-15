@@ -29,6 +29,9 @@ export const AudioSchema = z.object({
     text: z.string().optional().describe("If type is dialogue, the exact words spoken."),
     description: z.string().optional().describe("If type is sfx or music, a description of the sound (e.g., 'birds chirping in park')"),
     delivery_style: z.string().optional().describe("If type is dialogue, the emotional delivery or acting style (e.g. 'shouting angrily', 'whispering softly', 'cheerful')."),
+    voice_id: z.string().optional().describe("Google Cloud TTS voice name, e.g. 'en-US-Standard-F'. Falls back to project default if not set."),
+    start_time: z.number().default(0).describe("Timeline start time in seconds for this audio cue."),
+    duration_seconds: z.number().optional().describe("Duration of the generated audio in seconds."),
     // The following fields are populated by the TTS generator, not the initial AI director
     audio_data_url: z.string().optional().describe("Base64 string of the generated audio."),
     visemes: z.array(z.object({

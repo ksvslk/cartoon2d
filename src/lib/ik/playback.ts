@@ -19,6 +19,7 @@ type ActorPlaybackState = {
   durationSeconds: number;
   currentIntent?: RigMotionIntent;
   currentGoals?: EvaluatedMotionGoals;
+  speechRotations?: Record<string, number>;
 };
 
 export type IKPlaybackActor = {
@@ -145,13 +146,25 @@ export function syncPlaybackActors(actors: IKPlaybackActor[]): void {
     if (!intent) {
       viewState.currentPose = undefined;
       viewState.appliedIntent = undefined;
-      const restLayout = solvePoseFromGoals(viewState.graph, {
+      
+      const restGoals: EvaluatedMotionGoals = {
         normalizedTime: 0,
         effectorTargets: [],
         axialRotations: {},
         activePins: [],
         activeContacts: [],
-      }, viewState.restPose);
+      };
+      
+      if (actor.playbackState.speechRotations) {
+        Object.entries(actor.playbackState.speechRotations).forEach(([boneId, angle]) => {
+          const nodeId = viewState.nodeIdByBoneId.get(boneId);
+          if (nodeId) {
+            restGoals.axialRotations[nodeId] = angle;
+          }
+        });
+      }
+      
+      const restLayout = solvePoseFromGoals(viewState.graph, restGoals, viewState.restPose);
       applyPoseToSvg(actor.actorGroup, viewState.graph, restLayout.layout, viewId);
       return;
     }
@@ -166,6 +179,17 @@ export function syncPlaybackActors(actors: IKPlaybackActor[]): void {
       viewState.graph,
       actor.playbackState.clipTimeSeconds,
     );
+    
+    // Inject any active speech-driven rotations smoothly into the IK solver constraints
+    if (actor.playbackState.speechRotations) {
+      Object.entries(actor.playbackState.speechRotations).forEach(([boneId, angle]) => {
+        const nodeId = viewState.nodeIdByBoneId.get(boneId);
+        if (nodeId) {
+          goals.axialRotations[nodeId] = (goals.axialRotations[nodeId] || 0) + angle;
+        }
+      });
+    }
+
     actor.playbackState.currentGoals = goals;
     
     const solved = solvePoseFromGoals(

@@ -763,7 +763,17 @@ export default function Stage({
             posCtx.revert();
             masterCtxRef.current = null;
             if (ambientCtxRef.current)   { ambientCtxRef.current.revert(); ambientCtxRef.current  = null; }
-            if (gsapTimelineRef.current) { gsapTimelineRef.current.kill(); gsapTimelineRef.current = null; }
+            if (gsapTimelineRef.current) {
+                const audioEls = (gsapTimelineRef.current as any).audioElements;
+                if (audioEls) {
+                    audioEls.forEach((el: HTMLAudioElement) => {
+                        el.pause();
+                        el.currentTime = 0;
+                    });
+                }
+                gsapTimelineRef.current.kill();
+                gsapTimelineRef.current = null;
+            }
             actorLayerOrderRef.current = "";
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -793,6 +803,13 @@ export default function Stage({
             }
             // Also kill any timeline and ambient that might live outside the context
             if (gsapTimelineRef.current) {
+                const audioEls = (gsapTimelineRef.current as any).audioElements;
+                if (audioEls) {
+                    audioEls.forEach((el: HTMLAudioElement) => {
+                        el.pause();
+                        el.currentTime = 0;
+                    });
+                }
                 gsapTimelineRef.current.kill();
                 gsapTimelineRef.current = null;
             }
@@ -1372,6 +1389,10 @@ export default function Stage({
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseLeave}
+                onClick={() => {
+                   const jaws = document.querySelectorAll('[id$="jaw"]');
+                   jaws.forEach(jaw => console.log("[DEBUG MASK]", jaw.id, jaw.getAttribute('transform'), jaw.getAttribute('style')));
+                }}
                 // Native wheel effect manages zooming instead of react passive wheel to block page scrolls
             />
         </div>

@@ -508,54 +508,119 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
         if (audioItem.type === 'dialogue' && audioItem.actor_id && audioItem.visemes && audioItem.visemes.length > 0) {
           // Dialogue with lip-sync visemes
           const actorId = audioItem.actor_id;
+          const startTime = audioItem.start_time ?? 0;
           const lastViseme = audioItem.visemes[audioItem.visemes.length - 1];
-          const audioEnd = lastViseme.time + lastViseme.duration;
+          const audioEnd = startTime + lastViseme.time + lastViseme.duration;
           
           // Play audio naturally — don't scrub currentTime (causes garbled sound)
+          // To ensure it stops when the timeline pauses, we check the global tl.isActive()
           tl.add(() => {
-            if (!tl.paused()) {
+            if (tl.isActive() && !tl.paused()) {
               audioEl!.currentTime = 0;
               audioEl!.play().catch(() => {});
             }
-          }, 0);
+          }, startTime);
+          
           tl.add(() => {
             audioEl?.pause();
           }, audioEnd);
+          
+          // Attach audio element to timeline so external controls can pause it
+          if (!(tl as any).audioElements) (tl as any).audioElements = [];
+          (tl as any).audioElements.push(audioEl);
 
           // Build SVG Mouth Visibility Keyframes based on phoneme timings
           const mouthVisemes = ["A", "E", "I", "O", "U", "M", "idle"];
-          const actorGroup = container.querySelector(`#actor_group_${actorId}`);
+          const actorGroup = container.querySelector(actorId.startsWith("scene") ? `#${actorId}` : `#actor_group_${actorId}`);
           
           if (actorGroup) {
-            // Initially hide all mouths except idle
-            mouthVisemes.forEach(v => {
-              const el = actorGroup.querySelector(`#mouth_${v}`) as SVGElement | null;
-              if (el) el.style.display = v === "idle" ? "inline" : "none";
-            });
+            // Physical jaw movement for bone rigs
+            const jawNode = actorGroup.querySelector(`[id$="jaw"]`) as SVGElement | null;
+            const hasExplicitVisemes = actorGroup.querySelector(`[id$="mouth_A"]`) !== null;
+            const forceJawMotion = audioItem.delivery_style?.toLowerCase().includes('jaw');
 
-            audioItem.visemes.forEach(vKeyframe => {
-              tl.add(() => {
-                mouthVisemes.forEach(v => {
-                  const el = actorGroup.querySelector(`#mouth_${v}`) as SVGElement | null;
-                  if (el) el.style.display = v === vKeyframe.viseme ? "inline" : "none";
-                });
-              }, vKeyframe.time);
-            });
-            
-            // Reset mouth to idle when finished speaking
-            tl.add(() => {
+            if (jawNode && (!hasExplicitVisemes || forceJawMotion)) {
+              // Jaw exists: Hide ALL SVG mouths during speech
               mouthVisemes.forEach(v => {
-                const el = actorGroup.querySelector(`#mouth_${v}`) as SVGElement | null;
-                if (el) el.style.display = v === "idle" ? "inline" : "none";
+                const el = actorGroup.querySelector(`[id$="mouth_${v}"]`) as SVGElement | null;
+                // We use set for strict display toggling
+                if (el) {
+                    tl.set(el, { display: "none" }, startTime);
+                    // Restore idle mouth after speech
+                    if (v === "idle") tl.set(el, { display: "inline" }, audioEnd);
+                }
               });
-            }, audioEnd);
+
+              // Take over jaw by feeding rotations natively into the IK engine's state
+              const ikActorForJaw = ikActors.get(actorId);
+
+              if (ikActorForJaw && jawNode.id) {
+                if (!ikActorForJaw.playbackState.speechRotations) {
+                  ikActorForJaw.playbackState.speechRotations = {};
+                }
+                ikActorForJaw.playbackState.speechRotations[jawNode.id] = 0;
+                
+                console.log(`[LipSync] Feeding Jaw Bone rotations to IK engine for '${actorId}': ${jawNode.id}`);
+
+                audioItem.visemes.forEach((vKeyframe, idx) => {
+                  const isOpenMouth = ["A", "E", "O", "U"].includes(vKeyframe.viseme);
+                  const targetAngle = isOpenMouth ? 12 : (vKeyframe.viseme === "idle" ? 0 : 5);
+                  
+                  tl.to(ikActorForJaw.playbackState.speechRotations!, { 
+                      [jawNode.id]: targetAngle, 
+                      duration: 0.1, 
+                      ease: "power1.out",
+                      overwrite: false
+                  }, startTime + vKeyframe.time);
+                });
+                
+                tl.to(ikActorForJaw.playbackState.speechRotations!, { 
+                    [jawNode.id]: 0, 
+                    duration: 0.2, 
+                    ease: "power1.out",
+                    overwrite: false
+                }, audioEnd);
+              } else {
+                 // Fallback if jaw node didn't resolve to an IK actor correctly
+                 console.warn(`[LipSync] Could not resolve IK Actor for jaw bone '${jawNode.id}'. Skipping jaw animation.`);
+              }
+
+            } else {
+              // No Jaw: Use SVG viseme swapping
+              
+              // Ensure we start from a clean state at startTime
+              mouthVisemes.forEach(v => {
+                const el = actorGroup.querySelector(`[id$="mouth_${v}"]`) as SVGElement | null;
+                if (el) tl.set(el, { display: v === "idle" ? "inline" : "none" }, startTime);
+              });
+
+              audioItem.visemes.forEach((vKeyframe, idx) => {
+                const kTime = startTime + vKeyframe.time;
+                const prevViseme = idx === 0 ? "idle" : audioItem.visemes![idx-1].viseme;
+                const currViseme = vKeyframe.viseme;
+                
+                if (prevViseme !== currViseme) {
+                    const prevEl = actorGroup.querySelector(`[id$="mouth_${prevViseme}"]`) as SVGElement | null;
+                    const currEl = actorGroup.querySelector(`[id$="mouth_${currViseme}"]`) as SVGElement | null;
+                    
+                    if (prevEl) tl.set(prevEl, { display: "none" }, kTime);
+                    if (currEl) tl.set(currEl, { display: "inline" }, kTime);
+                }
+              });
+              
+              const lastViseme = audioItem.visemes![audioItem.visemes!.length - 1]?.viseme || "idle";
+              if (lastViseme !== "idle") {
+                 const prevEl = actorGroup.querySelector(`[id$="mouth_${lastViseme}"]`) as SVGElement | null;
+                 const idleEl = actorGroup.querySelector(`[id$="mouth_idle"]`) as SVGElement | null;
+                 if (prevEl) tl.set(prevEl, { display: "none" }, audioEnd);
+                 if (idleEl) tl.set(idleEl, { display: "inline" }, audioEnd);
+              }
+            }
           }
         } else {
           // SFX / Music — play audio synced to timeline without visemes
-          // Estimate audio duration from the element or use a default
-          const estimatedDuration = 3; // seconds, audio will naturally end
           tl.add(() => {
-            if (!tl.paused()) {
+            if (tl.isActive() && !tl.paused()) {
               audioEl!.currentTime = 0;
               audioEl!.play().catch(() => {});
             }
@@ -563,6 +628,9 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
           tl.add(() => {
             audioEl?.pause();
           }, tl.duration());
+          
+          if (!(tl as any).audioElements) (tl as any).audioElements = [];
+          (tl as any).audioElements.push(audioEl);
         }
       });
     }

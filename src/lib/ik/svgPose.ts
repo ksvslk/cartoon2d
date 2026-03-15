@@ -47,6 +47,7 @@ export function applyPoseToSvg(scopeRoot: ParentNode, graph: PoseGraph, layout: 
   graph.nodes.forEach((node) => {
     const binding = activeView ? node.bindings[activeView] : node.activeBinding;
     if (!binding?.pivot) return;
+    
     const group = scopeRoot.querySelector(`[id="${binding.boneId}"]`) as SVGGElement | null;
     if (!group) return;
 

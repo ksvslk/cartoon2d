@@ -103,6 +103,15 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
 
+  const abortRef = useRef(false);
+
+  const handleCancelAll = useCallback(() => {
+    abortRef.current = true;
+    setIsGenerating(false);
+    setAnimatingSceneIndex(null);
+    setAnimatingLogs(prev => [...prev, "❌ All active operations cancelled by user."]);
+  }, []);
+
   // Actor Identity State (projectId -> actorId -> base64Image)
   const [actorReferences, setActorReferences] = useState<Record<string, string>>({});
 
@@ -131,7 +140,7 @@ export default function Home() {
   const [draftingBackgroundSceneIndex, setDraftingBackgroundSceneIndex] = useState<number | null>(null);
   const [isDraftingBackground, setIsDraftingBackground] = useState(false);
   const [draftBackgroundError, setDraftBackgroundError] = useState<string | null>(null);
-  
+
   const [generatingAudioIndex, setGeneratingAudioIndex] = useState<number | null>(null);
 
   // Auto-Animate Macro State
@@ -169,6 +178,7 @@ export default function Home() {
   const [selectedActionIndex, setSelectedActionIndex] = useState<number | null>(null);
   const [selectedKeyframe, setSelectedKeyframe] = useState<'start' | 'end' | null>(null);
   const [selectedActorId, setSelectedActorId] = useState<string | null>(null);
+  const [selectedAudioIndex, setSelectedAudioIndex] = useState<number | null>(null);
   const [isCameraSelected, setIsCameraSelected] = useState<boolean>(false);
   const [scenePreviewIndex, setScenePreviewIndex] = useState<number | null>(null);
   const [loopPlayback, setLoopPlayback] = useState(false);
@@ -186,7 +196,7 @@ export default function Home() {
   const isPlayingRef = useRef(isPlaying);
   const livePlayheadPosRef = useRef(0);
   const lastPlayheadUiSyncAtRef = useRef(0);
-  
+
   // Timeline Pill Drag State
   const dragPillRef = useRef<{
     idx: number;
@@ -195,6 +205,7 @@ export default function Home() {
     startX: number;
     initialDelay: number;
     initialDuration: number;
+    isDialogue?: boolean;
   } | null>(null);
   const [showObstacleDebug, setShowObstacleDebug] = useState(false);
   const [stageOrientation, setStageOrientation] = useState<StageOrientation>("landscape");
@@ -268,7 +279,7 @@ export default function Home() {
       acc.tokens += imageCost?.tokens || 0;
       acc.cost += beat.compile_report?.scene_cost_estimate || 0;
       acc.tokens += beat.compile_report?.total_tokens || 0;
-      
+
       const audioCost = beat.audio?.reduce((sum, a) => sum + (a.generation_cost?.cost || 0), 0) || 0;
       const audioChars = beat.audio?.reduce((sum, a) => sum + (a.generation_cost?.characters || 0), 0) || 0;
       acc.cost += audioCost;
@@ -571,6 +582,78 @@ export default function Home() {
     window.addEventListener('mouseup', handleWindowMouseUp);
   }, [totalDuration, selectedSceneIndex, storyData, availableRigs, stageOrientation]);
 
+  const handleDialoguePillMouseDown = useCallback((e: React.MouseEvent, actorId: string, audioIndex: number, startTime: number, duration: number, mode: 'move' | 'resize') => {
+    e.stopPropagation();
+    e.preventDefault();
+    setIsPlaying(false);
+
+    const capturedDisplayDuration = displayDuration;
+
+    const pillEl = mode === 'resize'
+      ? (e.currentTarget as HTMLElement).parentElement as HTMLElement
+      : e.currentTarget as HTMLElement;
+    pillEl.style.transition = 'none';
+
+    const parentWidthPx = Math.max(1, pillEl.parentElement?.clientWidth ?? 400);
+
+    dragPillRef.current = { idx: audioIndex, actorId, mode, startX: e.clientX, initialDelay: startTime, initialDuration: duration, isDialogue: true };
+
+    let finalValue = mode === 'resize' ? duration : startTime;
+
+    const handleWindowMouseMove = (eMouse: MouseEvent) => {
+      if (!dragPillRef.current) return;
+      const deltaX = eMouse.clientX - dragPillRef.current.startX;
+      const deltaSec = (deltaX / parentWidthPx) * capturedDisplayDuration;
+
+      if (mode === 'resize') {
+        const newDuration = Math.max(0.1, dragPillRef.current.initialDuration + deltaSec);
+        finalValue = newDuration;
+        pillEl.style.width = `${(newDuration / capturedDisplayDuration) * 100}%`;
+      } else { // mode === 'move'
+        const newStart = Math.max(0, dragPillRef.current.initialDelay + deltaSec);
+        finalValue = newStart;
+        pillEl.style.left = `${(newStart / capturedDisplayDuration) * 100}%`;
+      }
+    };
+
+    const handleWindowMouseUp = () => {
+      dragPillRef.current = null;
+      pillEl.style.transition = '';
+      window.removeEventListener('mousemove', handleWindowMouseMove);
+      window.removeEventListener('mouseup', handleWindowMouseUp);
+      setFrozenDisplayDuration(null);
+
+      setSelectedAudioIndex(audioIndex);
+      setSelectedActionIndex(null);
+      setSelectedActorId(actorId);
+      setIsCameraSelected(false);
+      setSelectedKeyframe(null);
+
+      setStoryData(prev => {
+        if (!prev) return prev;
+        const newBeats = [...prev.beats];
+        const currentBeat = newBeats[selectedSceneIndex];
+        if (!currentBeat || !currentBeat.audio) return prev;
+
+        const newAudio = [...currentBeat.audio];
+        const audioItem = { ...newAudio[audioIndex] };
+
+        if (mode === 'resize') {
+          audioItem.duration_seconds = finalValue;
+        } else {
+          audioItem.start_time = finalValue;
+        }
+
+        newAudio[audioIndex] = audioItem;
+        newBeats[selectedSceneIndex] = { ...currentBeat, audio: newAudio };
+        return { ...prev, beats: newBeats };
+      });
+    };
+
+    window.addEventListener('mousemove', handleWindowMouseMove);
+    window.addEventListener('mouseup', handleWindowMouseUp);
+  }, [selectedSceneIndex, displayDuration, storyData]);
+
   const currentTimeSeconds = (playheadPos / 100) * displayDuration;
   const currentFrame = Math.round(currentTimeSeconds * fps);
   const totalFrames = Math.max(1, Math.min(Math.round(totalDuration * fps), 216000));
@@ -585,10 +668,10 @@ export default function Home() {
       if (!timelineRef.current) return;
       const rect = timelineRef.current.getBoundingClientRect();
       const scrollLeft = timelineRef.current.scrollLeft;
-      
+
       const sidebarWidth = 192; // 'w-48' is 192px
       const innerWidth = timelineRef.current.scrollWidth - sidebarWidth;
-      
+
       let newX = (e.clientX - rect.left + scrollLeft) - sidebarWidth;
       newX = Math.max(0, Math.min(newX, innerWidth));
       const newPercent = (newX / innerWidth) * 100;
@@ -615,8 +698,8 @@ export default function Home() {
       setGeneratingAudioIndex(sceneIndex);
       const beat = storyData.beats[sceneIndex];
       const prevAudio = beat.audio || [];
-      
-      const audioToGenerate = prevAudio.filter(a => a.type === 'dialogue' && a.text && !a.audio_data_url);
+
+      const audioToGenerate = prevAudio.filter(a => a.type === 'dialogue' && a.text && (!a.audio_data_url || !a.visemes || a.visemes.length === 0));
       if (audioToGenerate.length === 0) {
         setGeneratingAudioIndex(null);
         return;
@@ -626,27 +709,35 @@ export default function Home() {
 
       // Run parallel GCP TTS generation
       const voicePromises = audioToGenerate.map(async (audio) => {
-          const ttsResult = await generateSpeechTTS(audio.text!, "en-US-Standard-F", audio.delivery_style);
-          return { audio, ttsResult };
+        const voiceId = audio.voice_id || "en-US-Standard-F";
+        const ttsResult = await generateSpeechTTS(audio.text!, voiceId, audio.delivery_style);
+        return { audio, ttsResult };
       });
 
       const results = await Promise.all(voicePromises);
-      
+
       // Merge results back into the beat's audio array
       const newAudio = prevAudio.map(audio => {
-         const matchingResult = results.find(r => r.audio === audio);
-         if (matchingResult) {
-            return {
-               ...audio,
-               audio_data_url: matchingResult.ttsResult.audioDataUrl,
-               visemes: matchingResult.ttsResult.visemes,
-               generation_cost: {
-                   cost: matchingResult.ttsResult.costEstimate,
-                   characters: matchingResult.ttsResult.billedCharacters
-               }
-            };
-         }
-         return audio;
+        const matchingResult = results.find(r => r.audio === audio);
+        if (matchingResult) {
+          console.log(`[TTS Client] Received visemes for track:`, matchingResult.ttsResult.visemes?.length || 0);
+          console.log(`[TTS Client Debug] Words:`, matchingResult.ttsResult.debugWords?.length, `Timepoints:`, matchingResult.ttsResult.debugTimepoints?.length);
+          console.log(`[TTS Client Debug Raw Data]:`, { words: matchingResult.ttsResult.debugWords, timepoints: matchingResult.ttsResult.debugTimepoints });
+          const lastViseme = matchingResult.ttsResult.visemes?.[matchingResult.ttsResult.visemes.length - 1];
+          const backupDuration = lastViseme ? lastViseme.time + lastViseme.duration : 2.0;
+
+          return {
+            ...audio,
+            audio_data_url: matchingResult.ttsResult.audioDataUrl,
+            visemes: matchingResult.ttsResult.visemes,
+            duration_seconds: matchingResult.ttsResult.durationSeconds || backupDuration,
+            generation_cost: {
+              cost: matchingResult.ttsResult.costEstimate,
+              characters: matchingResult.ttsResult.billedCharacters
+            }
+          };
+        }
+        return audio;
       });
 
       // Generate SFX/music audio for items without audio_data_url
@@ -676,7 +767,7 @@ export default function Home() {
         newBeats[sceneIndex] = { ...beat, audio: newAudio };
         return { ...prev, beats: newBeats };
       });
-      
+
     } catch (err: any) {
       console.error("[TTS ERROR]", err);
     } finally {
@@ -1038,7 +1129,7 @@ export default function Home() {
     if (selectedActorId === actorId) {
       setSelectedActorId(null);
     }
-    
+
     setConfirmDeleteActorId(null);
   };
 
@@ -1066,6 +1157,7 @@ export default function Home() {
     // ... existing function remains unchanged
     if (!prompt.trim()) return;
 
+    abortRef.current = false;
     setIsGenerating(true);
     setError(null);
 
@@ -1087,6 +1179,7 @@ export default function Home() {
     try {
       const stream = await processScenePromptStream(prompt, contextBeats, { singleBeat: generateMode === 'single', orientation: stageOrientation }, actorReferences);
       for await (const chunk of stream) {
+        if (abortRef.current) break;
         if (chunk.type === 'error') {
           setError(chunk.error);
           break;
@@ -1228,6 +1321,7 @@ export default function Home() {
   const handleInsertScene = async (insertIndex: number) => {
     if (!insertPrompt.trim() || isGenerating) return;
 
+    abortRef.current = false;
     setIsGenerating(true);
     setError(null);
 
@@ -1248,6 +1342,7 @@ export default function Home() {
     try {
       const stream = await processScenePromptStream(insertPrompt, contextBeats, { singleBeat: true, orientation: stageOrientation }, actorReferences);
       for await (const chunk of stream) {
+        if (abortRef.current) break;
         if (chunk.type === 'error') {
           setError(chunk.error);
           break;
@@ -1348,6 +1443,7 @@ export default function Home() {
       return next;
     });
 
+    abortRef.current = false;
     setAnimatingSceneIndex(index);
     setAnimatingLogs(["Initializing automation macro..."]);
     setSelectedSceneIndex(index);
@@ -1412,7 +1508,7 @@ export default function Home() {
 
     try {
       // 1. Generate Background if missing
-      if (!workingBeat.drafted_background && workingBeat.image_data) {
+      if (!abortRef.current && !workingBeat.drafted_background && workingBeat.image_data) {
         addLog("> Starting Set Designer AI...");
         addLog("> Extracting 3-layer parallax environment...");
 
@@ -1437,6 +1533,7 @@ export default function Home() {
       const actorIdsInScene = new Set(workingBeat.actions.map(a => a.actor_id));
       const sceneRigs: Record<string, DraftsmanData> = {};
       for (const actorId of Array.from(actorIdsInScene)) {
+        if (abortRef.current) break;
         const actor = storyData.actors_detected.find(a => a.id === actorId);
         if (actor) {
           const actorActions = workingBeat.actions.filter(a => a.actor_id === actorId);
@@ -1572,6 +1669,7 @@ export default function Home() {
             let nextRig = actorRig;
 
             for (const actorAction of actorActions) {
+              if (abortRef.current) break;
               const motionKey = normalizeMotionKey(actorAction.motion);
               const transformOnlyPolicy = inferTransformOnlyPlaybackPolicy(nextRig, motionKey);
               if (transformOnlyPolicy.prefer) {
@@ -1680,7 +1778,7 @@ export default function Home() {
 
       // ── TTS & SFX Audio Generation ───────────────────────────────────────────
       const audioItems = workingBeat.audio || [];
-      const dialogueToGenerate = audioItems.filter(a => a.type === 'dialogue' && a.text && !a.audio_data_url);
+      const dialogueToGenerate = audioItems.filter(a => a.type === 'dialogue' && a.text && (!a.audio_data_url || !a.visemes || a.visemes.length === 0));
       const sfxToGenerate = audioItems.filter(a => (a.type === 'sfx' || a.type === 'music') && a.description && !a.audio_data_url);
 
       if (dialogueToGenerate.length > 0 || sfxToGenerate.length > 0) {
@@ -1690,18 +1788,41 @@ export default function Home() {
           addLog(`> Generating ${dialogueToGenerate.length} voice track${dialogueToGenerate.length > 1 ? 's' : ''}...`);
           try {
             const ttsResults = await Promise.all(dialogueToGenerate.map(async (audio) => {
-              const ttsResult = await generateSpeechTTS(audio.text!, "en-US-Standard-F", audio.delivery_style);
+              if (abortRef.current) return { audio, ttsResult: null };
+              const ttsResult = await generateSpeechTTS(audio.text!, audio.voice_id || "en-US-Standard-F", audio.delivery_style);
               return { audio, ttsResult };
             }));
+            
+            let cumulativeTime = 0;
+            // First, find the latest end time of any existing audio to start after it
+            updatedAudio.forEach(a => {
+               if (a.start_time !== undefined && a.duration_seconds) {
+                   cumulativeTime = Math.max(cumulativeTime, a.start_time + a.duration_seconds);
+               } 
+            });
+
             ttsResults.forEach(({ audio, ttsResult }) => {
+              if (!ttsResult) return;
               const idx = updatedAudio.indexOf(audio);
               if (idx !== -1) {
+                // Use the server-provided accurate duration if available, fallback to viseme estimation
+                const lastViseme = ttsResult.visemes?.[ttsResult.visemes.length - 1];
+                const backupDuration = lastViseme ? lastViseme.time + lastViseme.duration : 2.0;
+                const duration = ttsResult.durationSeconds || backupDuration;
+                
                 updatedAudio[idx] = {
                   ...updatedAudio[idx],
                   audio_data_url: ttsResult.audioDataUrl,
                   visemes: ttsResult.visemes,
+                  start_time: updatedAudio[idx].start_time ?? cumulativeTime,
+                  duration_seconds: duration,
                   generation_cost: { cost: ttsResult.costEstimate, characters: ttsResult.billedCharacters },
                 };
+                
+                // Advance cumulative time for the NEXT generated line so they take turns by default
+                if (updatedAudio[idx].start_time === cumulativeTime) {
+                    cumulativeTime += duration + 0.2; // 0.2s pause between lines
+                }
               }
             });
             addLog(`✓ Generated ${ttsResults.length} voice track${ttsResults.length > 1 ? 's' : ''}.`);
@@ -1849,14 +1970,14 @@ export default function Home() {
     }
     const beat = storyData.beats[selectedSceneIndex];
     if (!beat) { setSelectedActionIndex(null); return; }
-    
+
     let targetIdx: number | null = null;
     const compiledTrack = beat.compiled_scene?.instance_tracks.find(track => track.actor_id === actorId);
-    
+
     if (compiledTrack?.clip_bindings.length) {
       // Find the clip binding active at the current playhead time
-      const activeBinding = compiledTrack.clip_bindings.find(b => 
-        currentTimeSeconds >= b.start_time && 
+      const activeBinding = compiledTrack.clip_bindings.find(b =>
+        currentTimeSeconds >= b.start_time &&
         currentTimeSeconds <= (b.start_time + b.duration_seconds)
       );
       if (activeBinding) {
@@ -1875,7 +1996,7 @@ export default function Home() {
       const idx = beat.actions.findIndex(a => a.actor_id === actorId);
       targetIdx = idx >= 0 ? idx : null;
     }
-    
+
     setSelectedActionIndex(targetIdx);
   };
 
@@ -1920,19 +2041,19 @@ export default function Home() {
 
       const currentBeat = { ...beat, actions: newActions };
       const previousCompiledScene = selectedSceneIndex > 0
-          ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
-          : null;
+        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+        : null;
       const recompiled = compileBeatToScene(currentBeat, availableRigs, previousCompiledScene, stageOrientation);
-      
+
       // Also forcefully overwrite the compiled tracks Z-index to match so the UI sorts immediately
       if (recompiled) {
-         recompiled.instance_tracks = recompiled.instance_tracks.map(track => {
-             const trackZ = zMap[track.actor_id] ?? 10;
-             return {
-                 ...track,
-                 transform_track: track.transform_track.map(t => ({ ...t, z_index: trackZ }))
-             };
-         });
+        recompiled.instance_tracks = recompiled.instance_tracks.map(track => {
+          const trackZ = zMap[track.actor_id] ?? 10;
+          return {
+            ...track,
+            transform_track: track.transform_track.map(t => ({ ...t, z_index: trackZ }))
+          };
+        });
       }
 
       newBeats[selectedSceneIndex] = { ...currentBeat, compiled_scene: recompiled };
@@ -2104,30 +2225,30 @@ export default function Home() {
       const targetedAction = newActions[targetActionIndex];
       const actionDelay = targetedAction.animation_overrides?.delay ?? 0;
       const actionDuration = targetedAction.duration_seconds || 2;
-      
+
       const isMovementMotion = motionNeedsTarget(targetedAction.motion);
-      
+
       const newSpatialTransform = {
         ...(targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
       };
-      let newTargetSpatialTransform = targetedAction.target_spatial_transform 
-         ? { ...targetedAction.target_spatial_transform } 
-         : undefined;
+      let newTargetSpatialTransform = targetedAction.target_spatial_transform
+        ? { ...targetedAction.target_spatial_transform }
+        : undefined;
 
       const editStart = selectedKeyframe === 'start' || !selectedKeyframe;
       const editEnd = selectedKeyframe === 'end' || !selectedKeyframe;
 
       if (selectedKeyframe === 'start' && isMovementMotion && !newTargetSpatialTransform) {
-         const oldScale = newSpatialTransform.scale;
-         const duration = targetedAction.duration_seconds || 2;
-         const travel = Math.max(220, Math.round(duration * 180));
-         const stageW = 1920;
-         const preferredDirection = (newSpatialTransform.x ?? 960) <= stageW / 2 ? 1 : -1;
-         newTargetSpatialTransform = { 
-           x: (newSpatialTransform.x ?? 960) + travel * preferredDirection, 
-           y: newSpatialTransform.y, 
-           scale: oldScale 
-         };
+        const oldScale = newSpatialTransform.scale;
+        const duration = targetedAction.duration_seconds || 2;
+        const travel = Math.max(220, Math.round(duration * 180));
+        const stageW = 1920;
+        const preferredDirection = (newSpatialTransform.x ?? 960) <= stageW / 2 ? 1 : -1;
+        newTargetSpatialTransform = {
+          x: (newSpatialTransform.x ?? 960) + travel * preferredDirection,
+          y: newSpatialTransform.y,
+          scale: oldScale
+        };
       }
 
       const oldBaseScale = newSpatialTransform.scale;
@@ -2139,16 +2260,16 @@ export default function Home() {
 
       if (editEnd && isMovementMotion) {
         if (selectedKeyframe === 'end' && !newTargetSpatialTransform) {
-           const fallbackTarget = targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
-           newTargetSpatialTransform = { ...fallbackTarget };
+          const fallbackTarget = targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
+          newTargetSpatialTransform = { ...fallbackTarget };
         }
-        
+
         if (newTargetSpatialTransform) {
-           if (selectedKeyframe === 'end') {
-              newTargetSpatialTransform.scale = Math.max(0.1, Math.min(3.0, (newTargetSpatialTransform.scale ?? oldBaseScale) * scaleRatio));
-           } else {
-              newTargetSpatialTransform.scale = Math.max(0.1, Math.min(3.0, (newTargetSpatialTransform.scale ?? oldBaseScale) * (newBaseScale / oldBaseScale)));
-           }
+          if (selectedKeyframe === 'end') {
+            newTargetSpatialTransform.scale = Math.max(0.1, Math.min(3.0, (newTargetSpatialTransform.scale ?? oldBaseScale) * scaleRatio));
+          } else {
+            newTargetSpatialTransform.scale = Math.max(0.1, Math.min(3.0, (newTargetSpatialTransform.scale ?? oldBaseScale) * (newBaseScale / oldBaseScale)));
+          }
         }
       }
 
@@ -2162,7 +2283,7 @@ export default function Home() {
       const previousCompiledScene = selectedSceneIndex > 0
         ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
         : null;
-      
+
       const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
       newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
       return { ...prev, beats: newBeats };
@@ -2272,21 +2393,21 @@ export default function Home() {
       const newBeats = [...prev.beats];
       const beat = newBeats[selectedSceneIndex];
       if (!beat) return prev;
-      
+
       const currentCamera = beat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 };
       let newCamera = { ...currentCamera };
-      
+
       if (cameraUpdate.isEndKeyframe) {
-          newCamera.target_x = clampedX;
-          newCamera.target_y = clampedY;
-          newCamera.target_zoom = clampedZoom;
+        newCamera.target_x = clampedX;
+        newCamera.target_y = clampedY;
+        newCamera.target_zoom = clampedZoom;
       } else {
-          newCamera.x = clampedX;
-          newCamera.y = clampedY;
-          newCamera.zoom = clampedZoom;
-          newCamera.rotation = cameraUpdate.rotation;
+        newCamera.x = clampedX;
+        newCamera.y = clampedY;
+        newCamera.zoom = clampedZoom;
+        newCamera.rotation = cameraUpdate.rotation;
       }
-      
+
       const updatedBeat = { ...beat, camera: newCamera };
       const previousCompiledScene = selectedSceneIndex > 0 ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null : null;
       const recompiled = compileBeatToScene(updatedBeat, availableRigs, previousCompiledScene, stageOrientation);
@@ -2313,31 +2434,31 @@ export default function Home() {
       const targetedAction = newActions[targetActionIndex];
       const actionDelay = targetedAction.animation_overrides?.delay ?? 0;
       const actionDuration = targetedAction.duration_seconds || 2;
-      
+
       const isMovementMotion = motionNeedsTarget(targetedAction.motion);
-      
+
       const newSpatialTransform = {
         ...(targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 }),
       };
-      let newTargetSpatialTransform = targetedAction.target_spatial_transform 
-         ? { ...targetedAction.target_spatial_transform } 
-         : undefined;
+      let newTargetSpatialTransform = targetedAction.target_spatial_transform
+        ? { ...targetedAction.target_spatial_transform }
+        : undefined;
 
       const editStart = selectedKeyframe === 'start' || !selectedKeyframe;
       const editEnd = selectedKeyframe === 'end' || !selectedKeyframe;
 
       // 1. If explicit 'start' edit, and no target, bake the target so it doesn't move.
       if (selectedKeyframe === 'start' && isMovementMotion && !newTargetSpatialTransform) {
-         const oldX = newSpatialTransform.x;
-         const duration = targetedAction.duration_seconds || 2;
-         const travel = Math.max(220, Math.round(duration * 180));
-         const stageW = 1920;
-         const preferredDirection = oldX <= stageW / 2 ? 1 : -1;
-         newTargetSpatialTransform = { 
-           x: oldX + travel * preferredDirection, 
-           y: newSpatialTransform.y, 
-           scale: newSpatialTransform.scale 
-         };
+        const oldX = newSpatialTransform.x;
+        const duration = targetedAction.duration_seconds || 2;
+        const travel = Math.max(220, Math.round(duration * 180));
+        const stageW = 1920;
+        const preferredDirection = oldX <= stageW / 2 ? 1 : -1;
+        newTargetSpatialTransform = {
+          x: oldX + travel * preferredDirection,
+          y: newSpatialTransform.y,
+          scale: newSpatialTransform.scale
+        };
       }
 
       // 2. Apply Start edit
@@ -2350,14 +2471,14 @@ export default function Home() {
       if (editEnd && isMovementMotion) {
         // If explicit 'end' edit and no target, we must initialize it to edit it independently
         if (selectedKeyframe === 'end' && !newTargetSpatialTransform) {
-           const fallbackTarget = targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
-           newTargetSpatialTransform = { ...fallbackTarget };
+          const fallbackTarget = targetedAction.spatial_transform || { x: 960, y: 950, scale: 0.5, z_index: 10 };
+          newTargetSpatialTransform = { ...fallbackTarget };
         }
-        
+
         // Only apply dx/dy to target if it exists. (If it doesn't exist, editStart moved the base, which moves the implicit target).
         if (newTargetSpatialTransform) {
-           newTargetSpatialTransform.x = Math.round((newTargetSpatialTransform.x ?? 960) + dx);
-           newTargetSpatialTransform.y = Math.round((newTargetSpatialTransform.y ?? 950) + dy);
+          newTargetSpatialTransform.x = Math.round((newTargetSpatialTransform.x ?? 960) + dx);
+          newTargetSpatialTransform.y = Math.round((newTargetSpatialTransform.y ?? 950) + dy);
         }
       }
 
@@ -2371,7 +2492,7 @@ export default function Home() {
       const previousCompiledScene = selectedSceneIndex > 0
         ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
         : null;
-      
+
       const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
       newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
       return { ...prev, beats: newBeats };
@@ -2760,15 +2881,15 @@ export default function Home() {
                                 >
                                   <Plus size={14} />
                                 </button>
-                                
+
                                 {/* Delete Actor Button */}
                                 <button
                                   onClick={(e) => handleDeleteActor(actor.id, e)}
                                   className={`p-1.5 rounded transition-all group-hover:opacity-100 ${
                                     confirmDeleteActorId === actor.id
                                       ? "text-red-500 bg-red-100 dark:bg-red-950/30 opacity-100 cursor-pointer"
-                                      : "text-neutral-400 hover:text-red-500 opacity-0 bg-transparent hover:bg-red-50 dark:hover:bg-red-950/20"
-                                  }`}
+                                      : "text-neutral-400 hover:text-red-500 opacity-0 bg-transparent hover:bg-red-50 dark:hover:bg-950/20"
+                                    }`}
                                   title={confirmDeleteActorId === actor.id ? "Click again to delete" : "Delete Actor"}
                                 >
                                   <Trash2 size={14} />
@@ -2932,6 +3053,15 @@ export default function Home() {
                           <><span>{generateMode === 'single' ? 'Generate Scene' : 'Generate Sequence'}</span><Send size={14} /></>
                         )}
                       </button>
+                      {(isGenerating || animatingSceneIndex !== null) && (
+                        <button
+                          onClick={handleCancelAll}
+                          className="bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 border border-red-500/30 px-4 py-2 rounded-lg transition-all duration-300 shadow-md font-medium text-sm flex items-center justify-center min-w-[3rem]"
+                          title="Cancel All Ongoing AI Operations"
+                        >
+                          ✕
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -3165,18 +3295,18 @@ export default function Home() {
 
                               {/* Audio generation cost badge */}
                               {(() => {
-                                  const audioCost = beat.audio?.reduce((sum, a) => sum + (a.generation_cost?.cost || 0), 0) || 0;
-                                  const audioChars = beat.audio?.reduce((sum, a) => sum + (a.generation_cost?.characters || 0), 0) || 0;
-                                  if (audioCost > 0) {
-                                      return (
-                                        <div className="px-3 py-1 bg-neutral-50 dark:bg-[#0a0a0a] border-t border-neutral-100 dark:border-neutral-800/50 flex items-center gap-2 text-[9px] font-mono text-neutral-400 dark:text-neutral-600">
-                                          <span className="text-neutral-500 dark:text-neutral-500">Cloud TTS gen:</span>
-                                          <span className="text-emerald-600 dark:text-emerald-500 font-semibold">~${audioCost.toFixed(5)}</span>
-                                          <span className="text-neutral-400 dark:text-neutral-600">{audioChars.toLocaleString()} characters</span>
-                                        </div>
-                                      );
-                                  }
-                                  return null;
+                                const audioCost = beat.audio?.reduce((sum, a) => sum + (a.generation_cost?.cost || 0), 0) || 0;
+                                const audioChars = beat.audio?.reduce((sum, a) => sum + (a.generation_cost?.characters || 0), 0) || 0;
+                                if (audioCost > 0) {
+                                  return (
+                                    <div className="px-3 py-1 bg-neutral-50 dark:bg-[#0a0a0a] border-t border-neutral-100 dark:border-neutral-800/50 flex items-center gap-2 text-[9px] font-mono text-neutral-400 dark:text-neutral-600">
+                                      <span className="text-neutral-500 dark:text-neutral-500">Cloud TTS gen:</span>
+                                      <span className="text-emerald-600 dark:text-emerald-500 font-semibold">~${audioCost.toFixed(5)}</span>
+                                      <span className="text-neutral-400 dark:text-neutral-600">{audioChars.toLocaleString()} characters</span>
+                                    </div>
+                                  );
+                                }
+                                return null;
                               })()}
 
                               {/* Narrative + metadata */}
@@ -3226,6 +3356,67 @@ export default function Home() {
                                           });
                                         }}
                                       />
+                                      {audio.type === 'dialogue' && (
+                                        <select
+                                            className="bg-transparent border-none outline-none text-[8.5px] cursor-pointer ml-1 text-amber-900/60 hover:text-amber-900 dark:text-amber-400/60 dark:hover:text-amber-400"
+                                            value={audio.voice_id || 'en-US-Standard-F'}
+                                            onClick={(e) => e.stopPropagation()}
+                                            onChange={(e) => {
+                                              const val = e.target.value;
+                                              setStoryData(prev => {
+                                                if (!prev) return prev;
+                                                const newBeats = [...prev.beats];
+                                                const newAudio = [...newBeats[index].audio];
+                                                newAudio[i] = { ...newAudio[i], voice_id: val as any };
+                                                newBeats[index] = { ...newBeats[index], audio: newAudio };
+                                                return { ...prev, beats: newBeats };
+                                              });
+                                            }}
+                                        >
+                                           <optgroup label="English (US)">
+                                             <option value="en-US-Standard-F">Standard Female</option>
+                                             <option value="en-US-Standard-D">Standard Male</option>
+                                             <option value="en-US-Studio-O">Studio Female</option>
+                                             <option value="en-US-Studio-Q">Studio Male</option>
+                                             <option value="en-US-Journey-F">Journey Female</option>
+                                             <option value="en-US-Journey-D">Journey Male</option>
+                                           </optgroup>
+                                           <optgroup label="English (UK)">
+                                             <option value="en-GB-Standard-A">Standard Female</option>
+                                             <option value="en-GB-Standard-B">Standard Male</option>
+                                             <option value="en-GB-Studio-B">Studio Male</option>
+                                             <option value="en-GB-Studio-C">Studio Female</option>
+                                           </optgroup>
+                                           <optgroup label="Spanish">
+                                             <option value="es-ES-Standard-C">ES Female</option>
+                                             <option value="es-ES-Standard-B">ES Male</option>
+                                             <option value="es-US-Studio-B">US-ES Male</option>
+                                           </optgroup>
+                                           <optgroup label="French">
+                                             <option value="fr-FR-Standard-A">FR Female</option>
+                                             <option value="fr-FR-Standard-D">FR Male</option>
+                                             <option value="fr-FR-Studio-A">Studio Female</option>
+                                             <option value="fr-FR-Studio-D">Studio Male</option>
+                                           </optgroup>
+                                           <optgroup label="German">
+                                             <option value="de-DE-Standard-A">DE Female</option>
+                                             <option value="de-DE-Standard-B">DE Male</option>
+                                             <option value="de-DE-Studio-B">Studio Male</option>
+                                             <option value="de-DE-Studio-C">Studio Female</option>
+                                           </optgroup>
+                                           <optgroup label="Japanese">
+                                             <option value="ja-JP-Standard-A">JP Female</option>
+                                             <option value="ja-JP-Standard-C">JP Male</option>
+                                           </optgroup>
+                                           <optgroup label="Estonian">
+                                             <option value="et-EE-Chirp3-HD-Aoede">Chirp F (Aoede)</option>
+                                             <option value="et-EE-Chirp3-HD-Achernar">Chirp F (Achernar)</option>
+                                             <option value="et-EE-Chirp3-HD-Achird">Chirp M (Achird)</option>
+                                             <option value="et-EE-Chirp3-HD-Alnilam">Chirp M (Alnilam)</option>
+                                             <option value="et-EE-Standard-A">Standard Male</option>
+                                           </optgroup>
+                                        </select>
+                                      )}
                                       <button
                                         className="opacity-0 group-hover/tag:opacity-100 ml-0.5 hover:text-red-500 transition-all"
                                         onClick={(e) => {
@@ -3287,6 +3478,7 @@ export default function Home() {
                                           actor_id: defaultActorId,
                                           text: "",
                                           delivery_style: "neutral",
+                                          start_time: 0,
                                         });
                                         newBeats[index] = { ...newBeats[index], audio: currentAudio };
                                         return { ...prev, beats: newBeats };
@@ -3307,6 +3499,7 @@ export default function Home() {
                                         currentAudio.push({
                                           type: "sfx" as const,
                                           description: "",
+                                          start_time: 0,
                                         });
                                         newBeats[index] = { ...newBeats[index], audio: currentAudio };
                                         return { ...prev, beats: newBeats };
@@ -3622,6 +3815,7 @@ export default function Home() {
                     showObstacleDebug={showObstacleDebug}
                     selectedActionIndex={selectedActionIndex}
                     selectedActorId={selectedActorId}
+                    selectedAudioIndex={selectedAudioIndex}
                     isCameraSelected={isCameraSelected}
                     selectedKeyframe={selectedKeyframe}
                     timelineRef={timelineRef}
@@ -3636,16 +3830,18 @@ export default function Home() {
                     onSetPlaybackScope={setPlaybackScope}
                     onToggleLoop={() => setLoopPlayback(prev => !prev)}
                     onSetDraggingPlayhead={setIsDraggingPlayhead}
-                    onSelectAction={setSelectedActionIndex}
+                    onSelectAction={(idx) => { setSelectedActionIndex(idx); setSelectedAudioIndex(null); }}
                     onSelectActor={setSelectedActorId}
-                    onSelectCamera={setIsCameraSelected}
-                    onSelectKeyframe={setSelectedKeyframe}
+                    onSelectAudio={(idx) => { setSelectedAudioIndex(idx); setSelectedActionIndex(null); setIsCameraSelected(false); }}
+                    onSelectCamera={(selected) => { setIsCameraSelected(selected); if (selected) setSelectedAudioIndex(null); }}
+                    onSelectKeyframe={(kf) => { setSelectedKeyframe(kf); setSelectedAudioIndex(null); }}
                     onSetIsPlaying={setIsPlaying}
                     onSetPlayheadPos={setPlayheadPos}
                     onPlayheadUpdate={handlePlayheadUpdate}
                     onLayerMove={handleLayerMove}
                     onPillMouseDown={handlePillMouseDown}
                     onCameraPillMouseDown={handleCameraPillMouseDown}
+                    onDialoguePillMouseDown={handleDialoguePillMouseDown}
                     onAddAction={handleAddAction}
                   />
                 </Panel>
@@ -3664,15 +3860,29 @@ export default function Home() {
               selectedSceneIndex={selectedSceneIndex}
               selectedActionIndex={selectedActionIndex}
               selectedActorId={selectedActorId}
+              selectedAudioIndex={selectedAudioIndex}
               isCameraSelected={isCameraSelected}
               selectedKeyframe={selectedKeyframe}
               actorReferences={actorReferences}
-              onSelectKeyframe={setSelectedKeyframe}
-              onSelectAction={setSelectedActionIndex}
+              onSelectKeyframe={(kf) => { setSelectedKeyframe(kf); setSelectedAudioIndex(null); }}
+              onSelectAction={(idx) => { setSelectedActionIndex(idx); setSelectedAudioIndex(null); }}
               onSelectActor={setSelectedActorId}
               onUpdateCamera={handleUpdateCamera}
               onClearCameraTarget={handleClearCameraTarget}
               onUpdateAction={handleUpdateAction}
+              onUpdateAudio={(update) => {
+                setStoryData(prev => {
+                  if (!prev || selectedAudioIndex === null) return prev;
+                  const newBeats = [...prev.beats];
+                  const beat = { ...newBeats[selectedSceneIndex] };
+                  if (!beat.audio) return prev;
+                  const newAudio = [...beat.audio];
+                  newAudio[selectedAudioIndex] = { ...newAudio[selectedAudioIndex], ...update };
+                  beat.audio = newAudio;
+                  newBeats[selectedSceneIndex] = beat;
+                  return { ...prev, beats: newBeats };
+                });
+              }}
               onDeleteAction={handleDeleteAction}
               onUpdateCollisionBehavior={handleUpdateCollisionBehavior}
             />

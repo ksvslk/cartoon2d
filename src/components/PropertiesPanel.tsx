@@ -22,6 +22,7 @@ export interface PropertiesPanelProps {
   selectedSceneIndex: number;
   selectedActionIndex: number | null;
   selectedActorId: string | null;
+  selectedAudioIndex: number | null;
   isCameraSelected: boolean;
   selectedKeyframe: "start" | "end" | null;
   actorReferences: Record<string, string>;
@@ -37,6 +38,8 @@ export interface PropertiesPanelProps {
   onClearCameraTarget: () => void;
   /** Update an action field. Merges into the action at selectedActionIndex. */
   onUpdateAction: (update: ActionUpdate) => void;
+  /** Update an audio track field. Merges into the audio at selectedAudioIndex. */
+  onUpdateAudio: (update: Partial<StoryBeatData["audio"][0]>) => void;
   /** Delete the currently selected action. */
   onDeleteAction: () => void;
   /** Update collision behavior for the current action. */
@@ -50,6 +53,7 @@ export default function PropertiesPanel({
   selectedSceneIndex,
   selectedActionIndex,
   selectedActorId,
+  selectedAudioIndex,
   isCameraSelected,
   selectedKeyframe,
   actorReferences,
@@ -59,6 +63,7 @@ export default function PropertiesPanel({
   onUpdateCamera,
   onClearCameraTarget,
   onUpdateAction,
+  onUpdateAudio,
   onDeleteAction,
   onUpdateCollisionBehavior,
 }: PropertiesPanelProps) {
@@ -95,6 +100,82 @@ export default function PropertiesPanel({
   // ── Render ──
 
   const renderContent = () => {
+    // ── Audio Properties ──────
+    if (selectedAudioIndex !== null && beat.audio[selectedAudioIndex]) {
+      const audio = beat.audio[selectedAudioIndex];
+      const isSFX = audio.type !== "dialogue";
+      return (
+        <div className="flex flex-col gap-5 transition-opacity">
+          <div>
+            <div className="text-[10px] text-amber-600 dark:text-amber-500 font-bold mb-1 uppercase tracking-wider flex justify-between items-center">
+              <span>{isSFX ? "Sound Effect Track" : "Dialogue Track"}</span>
+              {audio.actor_id && <span className="text-cyan-600 dark:text-cyan-500">{audio.actor_id}</span>}
+            </div>
+            
+            <div className="mt-4 flex flex-col gap-3">
+              {/* Delivery Style / Prompt */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] text-neutral-400 font-mono tracking-widest uppercase">
+                  {isSFX ? "Sound Prompt" : "Delivery Style"}
+                </label>
+                <input
+                  type="text"
+                  value={isSFX ? (audio.description || "") : (audio.delivery_style || "")}
+                  onChange={(e) => onUpdateAudio(isSFX ? { description: e.target.value } : { delivery_style: e.target.value })}
+                  placeholder={isSFX ? "e.g. loud explosion" : "e.g. jaw, whisper, angry"}
+                  className="w-full bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 px-2 py-1.5 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-sm focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
+                />
+              </div>
+
+              {/* Spoken Text (Only for Dialogue) */}
+              {!isSFX && (
+                <div className="flex flex-col gap-1 mt-2">
+                  <label className="text-[9px] text-neutral-400 font-mono tracking-widest uppercase">Dialogue Text</label>
+                  <textarea
+                    value={audio.text || ""}
+                    onChange={(e) => onUpdateAudio({ text: e.target.value })}
+                    rows={3}
+                    placeholder="Words to speak out loud..."
+                    className="w-full bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 px-2 py-1.5 text-xs text-neutral-700 dark:text-neutral-300 shadow-sm focus:outline-none focus:ring-1 focus:ring-cyan-500/50 resize-none leading-relaxed"
+                  />
+                </div>
+              )}
+
+              {/* Timing */}
+              <div className="flex flex-col gap-1 mt-2">
+                <label className="text-[9px] text-neutral-400 font-mono tracking-widest uppercase">Start Delay (s)</label>
+                <input
+                  type="number"
+                  step={0.1}
+                  min={0}
+                  value={audio.start_time || 0}
+                  onChange={(e) => {
+                    const val = Math.max(0, parseFloat(e.target.value) || 0);
+                    onUpdateAudio({ start_time: val });
+                  }}
+                  className="w-32 bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700/50 px-2 py-1.5 text-xs text-neutral-700 dark:text-neutral-300 font-mono shadow-sm focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
+                />
+              </div>
+
+              {/* Readonly Generated Status */}
+              <div className="mt-4 p-2.5 rounded bg-neutral-50 dark:bg-neutral-900/30 border border-neutral-100 dark:border-neutral-800 flex flex-col gap-1.5">
+                <div className="flex items-center gap-2 text-[10px] text-neutral-500">
+                  <div className={`w-2 h-2 rounded-full ${audio.audio_data_url ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]'}`} />
+                  <span className="font-semibold uppercase tracking-wider">{audio.audio_data_url ? 'Generated API Track' : 'Awaiting Generation'}</span>
+                </div>
+                {audio.audio_data_url && (
+                  <div className="text-[10px] text-neutral-400 font-mono mt-1">
+                    Duration: {audio.duration_seconds?.toFixed(2)}s<br/>
+                    {!isSFX && `Visemes: ${audio.visemes?.length || 0}`}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     // ── Camera Properties ──────
     if (isCameraSelected) {
       const cam = beat.camera || { zoom: 1, x: 960, y: 540, rotation: 0 };

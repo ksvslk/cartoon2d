@@ -12,6 +12,8 @@ export interface TTSResponse {
   durationSeconds: number;
   costEstimate: number;
   billedCharacters: number;
+  debugTimepoints?: any[];
+  debugWords?: string[];
 }
 
 // A simple rule-based phonetic map to turn strings of characters into standard SVG Visemes
@@ -108,6 +110,8 @@ export async function generateSpeechTTS(text: string, voiceName: string = "en-US
   const base64Audio = data.audioContent;
   const timepoints = data.timepoints || []; // Array of { markName: string, timeSeconds: number }
 
+  console.log(`[TTS Backend] Raw GCP API timepoints received:`, timepoints.length, timepoints.slice(0, 3));
+
   const parsedVisemes: VisemeKeyframe[] = [];
   
   // We need to know the total duration. If not provided, we just estimate based on the last mark.
@@ -117,33 +121,45 @@ export async function generateSpeechTTS(text: string, voiceName: string = "en-US
   if (endMark) {
       totalDuration = endMark.timeSeconds;
   } else {
-      totalDuration = timepoints.length > 0 ? timepoints[timepoints.length - 1].timeSeconds + 0.5 : 1.0;
+      // If timepoints are completely stripped (e.g. Journey or Studio voices), we MUST estimate the audio duration natively.
+      // GCP TTS MP3s are typically encoded at 24kbps (3KB/s) or 32kbps (4KB/s). We can estimate from the base64 length.
+      // base64 length = 4/3 * binary length. So binary bytes = base64Audio.length * 0.75.
+      // At ~32kbps (4000 bytes/sec), duration in seconds is roughly bytes / 4000.
+      const estimatedBinaryBytes = base64Audio.length * 0.75;
+      totalDuration = timepoints.length > 0 ? timepoints[timepoints.length - 1].timeSeconds + 0.5 : Math.max(1.0, estimatedBinaryBytes / 4000.0);
   }
+
+  const hasTimepoints = timepoints.length > 0;
 
   // Iterate over words to calculate the viseme timings
   for (let i = 0; i < words.length; i++) {
-    const currentMarkStr = `word_${i}`;
-    const tpCurrent = timepoints.find((t: any) => t.markName === currentMarkStr);
-    if (!tpCurrent) continue;
-
-    const startSec = tpCurrent.timeSeconds;
-    
-    // Find next mark (either next word or end mark)
+    let startSec = 0;
     let nextStartSec = totalDuration;
-    if (i + 1 < words.length) {
-      const tpNext = timepoints.find((t: any) => t.markName === `word_${i+1}`);
-      if (tpNext) {
-          nextStartSec = tpNext.timeSeconds;
+
+    if (hasTimepoints) {
+      const currentMarkStr = `word_${i}`;
+      const tpCurrent = timepoints.find((t: any) => t.markName === currentMarkStr);
+      if (!tpCurrent) continue;
+
+      startSec = tpCurrent.timeSeconds;
+      
+      // Find next mark (either next word or end mark)
+      if (i + 1 < words.length) {
+        const tpNext = timepoints.find((t: any) => t.markName === `word_${i+1}`);
+        nextStartSec = tpNext ? tpNext.timeSeconds : (endMark ? endMark.timeSeconds : totalDuration);
       } else if (endMark) {
-          nextStartSec = endMark.timeSeconds;
-      }
-    } else if (endMark) {
         nextStartSec = endMark.timeSeconds;
+      }
+    } else {
+      // FALLBACK ESTIMATION: Journey voices drop SSML entirely. Distribute words evenly.
+      const wordEstDuration = totalDuration / words.length;
+      startSec = i * wordEstDuration;
+      nextStartSec = (i + 1) * wordEstDuration;
     }
 
     const wordDuration = nextStartSec - startSec;
     // Cap word duration if there is a long pause after it (say, comma or period)
-    const effectiveWordDuration = Math.min(wordDuration, 0.8); // Max 800ms per word talking
+    const effectiveWordDuration = Math.min(wordDuration, hasTimepoints ? 0.8 : 1.5); // Max 800ms per word talking
 
     const wordVisemes = wordToVisemes(words[i]);
     const visemeDuration = effectiveWordDuration / wordVisemes.length;
@@ -169,11 +185,15 @@ export async function generateSpeechTTS(text: string, voiceName: string = "en-US
   const billedCharacters = ssml.length;
   const costEstimate = billedCharacters * 0.000016; // $0.000016 per char for GCP Journey voices
 
+  console.log(`[TTS Backend] Generated ${parsedVisemes.length} visemes for text: "${text.substring(0, 30)}..."`);
+
   return {
     audioDataUrl: `data:audio/mp3;base64,${base64Audio}`,
     visemes: parsedVisemes,
     durationSeconds: totalDuration,
     costEstimate,
-    billedCharacters
+    billedCharacters,
+    debugTimepoints: timepoints,
+    debugWords: words
   };
 }

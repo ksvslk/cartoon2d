@@ -32,6 +32,7 @@ export interface TimelinePanelProps {
   // Selection state
   selectedActionIndex: number | null;
   selectedActorId: string | null;
+  selectedAudioIndex: number | null;
   isCameraSelected: boolean;
   selectedKeyframe: "start" | "end" | null;
 
@@ -56,6 +57,7 @@ export interface TimelinePanelProps {
   // Selection handlers
   onSelectAction: (actionIndex: number | null) => void;
   onSelectActor: (actorId: string | null) => void;
+  onSelectAudio: (index: number | null) => void;
   onSelectCamera: (selected: boolean) => void;
   onSelectKeyframe: (keyframe: "start" | "end" | null) => void;
 
@@ -68,6 +70,7 @@ export interface TimelinePanelProps {
   onLayerMove: (actorId: string, direction: -1 | 1) => void;
   onPillMouseDown: (e: React.MouseEvent, actionIndex: number, actorId: string, startTime: number, duration: number, mode: "move" | "resize") => void;
   onCameraPillMouseDown: (e: React.MouseEvent, mode: "move" | "resize") => void;
+  onDialoguePillMouseDown: (e: React.MouseEvent, actorId: string, audioIndex: number, startTime: number, duration: number, mode: "move" | "resize") => void;
   onAddAction: (actorId: string) => void;
 }
 
@@ -94,6 +97,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
     showObstacleDebug,
     selectedActionIndex,
     selectedActorId,
+    selectedAudioIndex,
     isCameraSelected,
     selectedKeyframe,
     timelineRef,
@@ -110,6 +114,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
     onSetDraggingPlayhead,
     onSelectAction,
     onSelectActor,
+    onSelectAudio,
     onSelectCamera,
     onSelectKeyframe,
     onSetIsPlaying,
@@ -118,6 +123,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
     onLayerMove,
     onPillMouseDown,
     onCameraPillMouseDown,
+    onDialoguePillMouseDown,
     onAddAction,
   } = props;
 
@@ -542,136 +548,203 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                   const hasIdleClip = !!actorData?.drafted_rig?.rig_data.motion_clips?.idle;
 
                   return (
-                    <div key={`track-${actorId}`} className="h-9 border-b border-neutral-200 dark:border-neutral-800/40 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors">
-                      <div className="w-48 h-full flex items-center gap-2 px-3 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors group/trackheader relative z-20">
-                        <div className="w-5 h-5 rounded shrink-0 bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
-                          {actorReferences[actorId]
-                            ? <img src={actorReferences[actorId]} alt="" className="w-full h-full object-cover" />
-                            : <div className="w-full h-full flex items-center justify-center text-[8px] text-neutral-400">?</div>}
-                        </div>
-                        <span className="text-[10px] text-neutral-700 dark:text-neutral-300 font-medium truncate flex-1">{actorData?.name || actorId}</span>
-                        
-                        <div className="hidden group-hover/trackheader:flex items-center gap-0.5 absolute right-6 bg-white dark:bg-[#0f0f0f] px-1 shadow-sm rounded">
-                          <button 
-                            onClick={() => onLayerMove(actorId, -1)}
-                            className="text-neutral-400 hover:text-cyan-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded p-0.5 transition-colors" title="Bring Forward">
-                            <ChevronUp size={12}/>
-                          </button>
-                          <button 
-                            onClick={() => onLayerMove(actorId, 1)}
-                            className="text-neutral-400 hover:text-cyan-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded p-0.5 transition-colors" title="Send Backward">
-                            <ChevronDown size={12}/>
-                          </button>
-                        </div>
-
-                        {hasRig && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 ml-auto" title="Rig ready" />}
-                      </div>
-                      <div className="flex-1 h-full relative overflow-visible px-1.5">
-                        {hasIdleClip && (
-                          <div
-                            className="absolute inset-y-1.5 left-0 right-0 rounded"
-                            style={{ background: 'repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(99,102,241,0.08) 8px, rgba(99,102,241,0.08) 9px)', border: '1px solid rgba(99,102,241,0.15)' }}
-                          >
-                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-indigo-300 dark:text-indigo-700 select-none">idle ↻</span>
+                    <div key={`track-group-${actorId}`} className="flex flex-col border-b border-neutral-200 dark:border-neutral-800/40">
+                      {/* Main Motion Track */}
+                      <div className="h-9 flex shrink-0 group/track hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors relative z-20">
+                        <div className="w-48 h-full flex items-center gap-2 px-3 border-r border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#0f0f0f] shrink-0 transition-colors group/trackheader relative z-30">
+                          <div className="w-5 h-5 rounded shrink-0 bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                            {actorReferences[actorId]
+                              ? <img src={actorReferences[actorId]} alt="" className="w-full h-full object-cover" />
+                              : <div className="w-full h-full flex items-center justify-center text-[8px] text-neutral-400">?</div>}
                           </div>
-                        )}
+                          <span className="text-[10px] text-neutral-700 dark:text-neutral-300 font-medium truncate flex-1">{actorData?.name || actorId}</span>
+                          
+                          <div className="hidden group-hover/trackheader:flex items-center gap-0.5 absolute right-6 bg-white dark:bg-[#0f0f0f] px-1 shadow-sm rounded">
+                            <button 
+                              onClick={() => onLayerMove(actorId, -1)}
+                              className="text-neutral-400 hover:text-cyan-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded p-0.5 transition-colors" title="Bring Forward">
+                              <ChevronUp size={12}/>
+                            </button>
+                            <button 
+                              onClick={() => onLayerMove(actorId, 1)}
+                              className="text-neutral-400 hover:text-cyan-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded p-0.5 transition-colors" title="Send Backward">
+                              <ChevronDown size={12}/>
+                            </button>
+                          </div>
 
-                        {bindings.map((binding: ClipBinding) => {
-                          const clipStartPct = Math.min(100, ((binding.start_time || 0) / displayDuration) * 100);
-                          const clipWidthPct = Math.min(100 - clipStartPct, ((binding.duration_seconds || 2) / displayDuration) * 100);
-                          const isSelected = selectedActionIndex === binding.source_action_index;
-                          const isIdleMotion = ['idle', 'stare'].includes(binding.motion.toLowerCase());
-                          const bindingLabel = binding.clip_id === "base_object" ? `${binding.motion} • object` : binding.motion;
-                          return (
+                          {hasRig && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 ml-auto" title="Rig ready" />}
+                        </div>
+                        
+                        <div className="flex-1 h-full relative overflow-visible px-1.5">
+                          {hasIdleClip && (
                             <div
-                              key={binding.id}
-                              className={`absolute inset-y-2 rounded flex items-center px-2 cursor-pointer transition-all z-10 group/pill ${isSelected
-                                  ? 'bg-cyan-500/10 border border-cyan-400 text-cyan-800 dark:text-cyan-200 shadow-sm'
-                                  : isIdleMotion 
-                                    ? 'bg-neutral-100 dark:bg-neutral-700/50 border border-neutral-300 dark:border-neutral-600/50 hover:bg-neutral-200 dark:hover:bg-neutral-600/70 text-neutral-600 dark:text-neutral-300'
-                                    : 'bg-blue-100 dark:bg-blue-600/25 border border-blue-300 dark:border-blue-500/50 hover:bg-blue-200 dark:hover:bg-blue-600/35 text-blue-700 dark:text-blue-300'
-                                }`}
-                              style={{ left: `${clipStartPct}%`, width: `${clipWidthPct}%`, minWidth: '24px' }}
-                              onMouseDown={(e) => {
-                                if (e.button !== 0) return;
-                                onSelectKeyframe(null);
-                                onPillMouseDown(e, binding.source_action_index, actorId, binding.start_time, binding.duration_seconds, 'move');
-                              }}
-                              onClick={() => {
-                                onSelectCamera(false);
-                                onSelectAction(binding.source_action_index);
-                                onSelectActor(actorId);
-                                onSelectKeyframe(null);
-                                onSetPlayheadPos(displayDuration > 0 ? (binding.start_time / displayDuration) * 100 : 0);
-                              }}
+                              className="absolute inset-y-1.5 left-0 right-0 rounded"
+                              style={{ background: 'repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(99,102,241,0.08) 8px, rgba(99,102,241,0.08) 9px)', border: '1px solid rgba(99,102,241,0.15)' }}
                             >
-                              <div 
-                                className="absolute -left-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rotate-45 flex items-center justify-center group-hover/pill:scale-110 transition-transform z-20 cursor-pointer" 
-                                title="Select Start Keyframe"
-                                onClick={(e) => e.stopPropagation()}
-                                onMouseDown={(e) => {
-                                  e.stopPropagation();
-                                  onSelectCamera(false);
-                                  onSetIsPlaying(false);
-                                  onSelectAction(binding.source_action_index);
-                                  onSelectActor(actorId);
-                                  onSelectKeyframe('start');
-                                  const newTime = binding.start_time;
-                                  const newPos = displayDuration > 0 ? (newTime / displayDuration) * 100 : 0;
-                                  onSetPlayheadPos(newPos);
-                                  onPlayheadUpdate(newTime);
-                                }}
-                              >
-                                <div className={`w-2.5 h-2.5 outline outline-2 ${isSelected && selectedKeyframe === 'start' ? 'outline-cyan-400 bg-cyan-100 dark:bg-cyan-900 shadow-[0_0_8px_rgba(6,182,212,0.8)]' : isSelected ? 'outline-cyan-500 bg-white dark:bg-neutral-900' : 'outline-blue-400 dark:outline-blue-500 bg-white dark:bg-neutral-800 group-hover/pill:outline-blue-500 dark:group-hover/pill:outline-blue-400'}`} />
-                              </div>
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-indigo-300 dark:text-indigo-700 select-none">idle ↻</span>
+                            </div>
+                          )}
 
-                              <span className="text-[10px] font-mono font-medium truncate pl-2 user-select-none opacity-90 mx-auto pointer-events-none">{bindingLabel}</span>
-                              {binding.style && <span className="text-[9px] font-mono ml-1 truncate user-select-none opacity-70 pointer-events-none">({binding.style})</span>}
-                              
-                              {/* End Keyframe Node */}
-                              <div 
-                                className="absolute -right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rotate-45 flex items-center justify-center group-hover/pill:scale-110 transition-transform z-20 cursor-pointer" 
-                                title="Select End Keyframe"
-                                onClick={(e) => e.stopPropagation()}
-                                onMouseDown={(e) => {
-                                  e.stopPropagation();
-                                  onSelectCamera(false);
-                                  onSetIsPlaying(false);
-                                  onSelectAction(binding.source_action_index);
-                                  onSelectActor(actorId);
-                                  onSelectKeyframe('end');
-                                  const newTime = binding.start_time + binding.duration_seconds;
-                                  const newPos = displayDuration > 0 ? (newTime / displayDuration) * 100 : 0;
-                                  onSetPlayheadPos(newPos);
-                                  onPlayheadUpdate(newTime);
-                                }}
-                              >
-                                <div className={`w-2.5 h-2.5 outline outline-2 ${isSelected && selectedKeyframe === 'end' ? 'outline-cyan-400 bg-cyan-100 dark:bg-cyan-900 shadow-[0_0_8px_rgba(6,182,212,0.8)]' : isSelected ? 'outline-cyan-500 bg-white dark:bg-neutral-900' : 'outline-blue-400 dark:outline-blue-500 bg-white dark:bg-neutral-800 group-hover/pill:outline-blue-500 dark:group-hover/pill:outline-blue-400'}`} />
-                              </div>
-                              
-                              {/* Edge Grabber for Resizing Duration */}
-                              <div 
-                                className="absolute -right-3.5 top-0 bottom-0 w-3 cursor-col-resize z-30 flex items-center justify-center opacity-0 group-hover/pill:opacity-100 transition-opacity"
+                          {bindings.map((binding: ClipBinding) => {
+                            const clipStartPct = Math.min(100, ((binding.start_time || 0) / displayDuration) * 100);
+                            const clipWidthPct = Math.min(100 - clipStartPct, ((binding.duration_seconds || 2) / displayDuration) * 100);
+                            const isSelected = selectedActionIndex === binding.source_action_index;
+                            const isIdleMotion = ['idle', 'stare'].includes(binding.motion.toLowerCase());
+                            const bindingLabel = binding.clip_id === "base_object" ? `${binding.motion} • object` : binding.motion;
+                            return (
+                              <div
+                                key={binding.id}
+                                className={`absolute inset-y-2 rounded flex items-center px-2 cursor-pointer transition-all z-10 group/pill ${isSelected
+                                    ? 'bg-cyan-500/10 border border-cyan-400 text-cyan-800 dark:text-cyan-200 shadow-sm'
+                                    : isIdleMotion 
+                                      ? 'bg-neutral-100 dark:bg-neutral-700/50 border border-neutral-300 dark:border-neutral-600/50 hover:bg-neutral-200 dark:hover:bg-neutral-600/70 text-neutral-600 dark:text-neutral-300'
+                                      : 'bg-blue-100 dark:bg-blue-600/25 border border-blue-300 dark:border-blue-500/50 hover:bg-blue-200 dark:hover:bg-blue-600/35 text-blue-700 dark:text-blue-300'
+                                  }`}
+                                style={{ left: `${clipStartPct}%`, width: `${clipWidthPct}%`, minWidth: '24px' }}
                                 onMouseDown={(e) => {
                                   if (e.button !== 0) return;
-                                  e.stopPropagation();
-                                  onPillMouseDown(e, binding.source_action_index, actorId, binding.start_time, binding.duration_seconds, 'resize');
+                                  onSelectKeyframe(null);
+                                  onPillMouseDown(e, binding.source_action_index, actorId, binding.start_time, binding.duration_seconds, 'move');
                                 }}
-                                title="Drag to resize clip duration"
+                                onClick={() => {
+                                  onSelectCamera(false);
+                                  onSelectAction(binding.source_action_index);
+                                  onSelectActor(actorId);
+                                  onSelectKeyframe(null);
+                                  onSetPlayheadPos(displayDuration > 0 ? (binding.start_time / displayDuration) * 100 : 0);
+                                }}
                               >
-                                <div className="w-[3px] h-3 bg-cyan-500/80 rounded-full" />
+                                <div 
+                                  className="absolute -left-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rotate-45 flex items-center justify-center group-hover/pill:scale-110 transition-transform z-20 cursor-pointer" 
+                                  title="Select Start Keyframe"
+                                  onClick={(e) => e.stopPropagation()}
+                                  onMouseDown={(e) => {
+                                    e.stopPropagation();
+                                    onSelectCamera(false);
+                                    onSetIsPlaying(false);
+                                    onSelectAction(binding.source_action_index);
+                                    onSelectActor(actorId);
+                                    onSelectKeyframe('start');
+                                    const newTime = binding.start_time;
+                                    const newPos = displayDuration > 0 ? (newTime / displayDuration) * 100 : 0;
+                                    onSetPlayheadPos(newPos);
+                                    onPlayheadUpdate(newTime);
+                                  }}
+                                >
+                                  <div className={`w-2.5 h-2.5 outline outline-2 ${isSelected && selectedKeyframe === 'start' ? 'outline-cyan-400 bg-cyan-100 dark:bg-cyan-900 shadow-[0_0_8px_rgba(6,182,212,0.8)]' : isSelected ? 'outline-cyan-500 bg-white dark:bg-neutral-900' : 'outline-blue-400 dark:outline-blue-500 bg-white dark:bg-neutral-800 group-hover/pill:outline-blue-500 dark:group-hover/pill:outline-blue-400'}`} />
+                                </div>
+
+                                <span className="text-[10px] font-mono font-medium truncate pl-2 user-select-none opacity-90 mx-auto pointer-events-none">{bindingLabel}</span>
+                                {binding.style && <span className="text-[9px] font-mono ml-1 truncate user-select-none opacity-70 pointer-events-none">({binding.style})</span>}
+                                
+                                {/* End Keyframe Node */}
+                                <div 
+                                  className="absolute -right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rotate-45 flex items-center justify-center group-hover/pill:scale-110 transition-transform z-20 cursor-pointer" 
+                                  title="Select End Keyframe"
+                                  onClick={(e) => e.stopPropagation()}
+                                  onMouseDown={(e) => {
+                                    e.stopPropagation();
+                                    onSelectCamera(false);
+                                    onSetIsPlaying(false);
+                                    onSelectAction(binding.source_action_index);
+                                    onSelectActor(actorId);
+                                    onSelectKeyframe('end');
+                                    const newTime = binding.start_time + binding.duration_seconds;
+                                    const newPos = displayDuration > 0 ? (newTime / displayDuration) * 100 : 0;
+                                    onSetPlayheadPos(newPos);
+                                    onPlayheadUpdate(newTime);
+                                  }}
+                                >
+                                  <div className={`w-2.5 h-2.5 outline outline-2 ${isSelected && selectedKeyframe === 'end' ? 'outline-cyan-400 bg-cyan-100 dark:bg-cyan-900 shadow-[0_0_8px_rgba(6,182,212,0.8)]' : isSelected ? 'outline-cyan-500 bg-white dark:bg-neutral-900' : 'outline-blue-400 dark:outline-blue-500 bg-white dark:bg-neutral-800 group-hover/pill:outline-blue-500 dark:group-hover/pill:outline-blue-400'}`} />
+                                </div>
+                                
+                                {/* Edge Grabber for Resizing Duration */}
+                                <div 
+                                  className="absolute -right-3.5 top-0 bottom-0 w-3 cursor-col-resize z-30 flex items-center justify-center opacity-0 group-hover/pill:opacity-100 transition-opacity"
+                                  onMouseDown={(e) => {
+                                    if (e.button !== 0) return;
+                                    e.stopPropagation();
+                                    onPillMouseDown(e, binding.source_action_index, actorId, binding.start_time, binding.duration_seconds, 'resize');
+                                  }}
+                                  title="Drag to resize clip duration"
+                                >
+                                  <div className="w-[3px] h-3 bg-cyan-500/80 rounded-full" />
+                                </div>
                               </div>
-                            </div>
-                          );
-                        })}
+                            );
+                          })}
+                        </div>
+                        
+                        <button 
+                          className="w-10 flex flex-col items-center justify-center shrink-0 border-l border-neutral-200 dark:border-neutral-800/40 bg-neutral-50/50 hover:bg-neutral-100 dark:bg-neutral-900/30 dark:hover:bg-neutral-800/50 transition-colors opacity-0 group-hover/track:opacity-100 z-30"
+                          title={`Add action for ${actorData?.name || actorId}`}
+                          onClick={() => onAddAction(actorId)}
+                        >
+                          <span className="text-neutral-400 dark:text-neutral-500 font-mono text-base leading-none block pb-0.5">+</span>
+                        </button>
                       </div>
-                      <button 
-                        className="w-10 flex flex-col items-center justify-center shrink-0 border-l border-neutral-200 dark:border-neutral-800/40 bg-neutral-50/50 hover:bg-neutral-100 dark:bg-neutral-900/30 dark:hover:bg-neutral-800/50 transition-colors opacity-0 group-hover/track:opacity-100"
-                        title={`Add action for ${actorData?.name || actorId}`}
-                        onClick={() => onAddAction(actorId)}
-                      >
-                        <span className="text-neutral-400 dark:text-neutral-500 font-mono text-base leading-none block pb-0.5">+</span>
-                      </button>
+                      
+                      {/* Dialogue Tracking Row */}
+                      {beat.audio && beat.audio.some(a => a.type === 'dialogue' && a.actor_id === actorId) && (
+                        <div className="h-8 flex shrink-0 group/voicetrack hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors border-t border-dashed border-neutral-200 dark:border-neutral-800/40 relative z-10 bg-amber-50/20 dark:bg-amber-900/5">
+                          {/* Left Panel */}
+                          <div className="w-48 h-full flex flex-col justify-center px-4 border-r border-neutral-200 dark:border-neutral-800/60 shrink-0">
+                            <span className="text-[9px] text-amber-600/70 dark:text-amber-500/70 font-mono uppercase tracking-wider flex items-center gap-1.5"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg> Voice Track</span>
+                          </div>
+                          {/* Right Panel (Pills) */}
+                          <div className="flex-1 h-full relative overflow-visible px-1.5">
+                             {beat.audio.map((audio, audioIdx) => {
+                                if (audio.type !== 'dialogue' || audio.actor_id !== actorId) return null;
+                                
+                                const startTime = audio.start_time || 0;
+                                const durationSeconds = audio.duration_seconds || 2.0; 
+                                const isGenerated = !!audio.audio_data_url;
+                                
+                                console.log(`[Timeline Debug] Voice Track Render: "${audio.text}" at ${startTime}s for ${durationSeconds}s (Generated: ${isGenerated})`);
+                                
+                                const clipStartPct = displayDuration > 0 ? (startTime / displayDuration) * 100 : 0;
+                                const clipWidthPct = displayDuration > 0 ? (durationSeconds / displayDuration) * 100 : 10;
+                                
+                                return (
+                                  <div
+                                    key={`dialogue-${audioIdx}`}
+                                    className={`absolute top-1/2 -translate-y-1/2 h-5 rounded flex items-center px-2 cursor-pointer transition-all z-20 group/dialogue-pill pointer-events-auto border ${
+                                      selectedAudioIndex === audioIdx && selectedActorId === actorId
+                                        ? 'ring-2 ring-amber-500 shadow-md !z-30'
+                                        : 'shadow-sm'
+                                    }`}
+                                    style={{ 
+                                       left: `${clipStartPct}%`, 
+                                       width: `${clipWidthPct}%`, 
+                                       minWidth: '24px',
+                                       backgroundColor: isGenerated ? 'rgba(245, 158, 11, 0.15)' : 'rgba(245, 158, 11, 0.05)',
+                                       borderColor: isGenerated ? 'rgba(245, 158, 11, 0.4)' : 'rgba(245, 158, 11, 0.2)',
+                                       color: isGenerated ? 'rgba(217, 119, 6)' : 'rgba(217, 119, 6, 0.6)'
+                                    }}
+                                    onMouseDown={(e) => {
+                                      if (e.button !== 0) return;
+                                      onSelectKeyframe(null);
+                                      onDialoguePillMouseDown(e, actorId, audioIdx, startTime, durationSeconds, 'move');
+                                    }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onSelectActor(actorId);
+                                      onSelectAudio(audioIdx);
+                                      onSetPlayheadPos(displayDuration > 0 ? (startTime / displayDuration) * 100 : 0);
+                                    }}
+                                  >
+                                    {isGenerated && <div className="mr-1.5 shrink-0 opacity-80"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg></div>}
+                                    <span className="text-[9px] font-medium truncate pointer-events-none drop-shadow-sm flex-1 leading-none mt-px">
+                                      {audio.text || "Empty Dialogue"}
+                                    </span>
+                                  </div>
+                                );
+                             })}
+                          </div>
+                          {/* Right Placeholder Spacer to match above */}
+                          <div className="w-10 shrink-0 border-l border-neutral-200 dark:border-neutral-800/40 bg-neutral-50/30 dark:bg-neutral-900/10 pointer-events-none" />
+                        </div>
+                      )}
                     </div>
                   );
                 })}
