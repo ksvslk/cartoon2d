@@ -449,6 +449,20 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
         }
 
         if (isBaseObjectBinding) {
+          // base_object bindings use the transform track for position, but
+          // can still play IK bone animation from the compiled ik_playback
+          if (binding.ik_playback && ikActor) {
+            addCanonicalIKPlayback({
+              timeline: tl,
+              actor: ikActor,
+              clipView: binding.ik_playback.view ?? binding.view,
+              compiledIK: binding.ik_playback,
+              amp,
+              spd,
+              startDelay,
+              actionDuration,
+            });
+          }
           return;
         }
 

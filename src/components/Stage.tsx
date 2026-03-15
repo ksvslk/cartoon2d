@@ -717,7 +717,6 @@ export default function Stage({
                     gsap.set(cameraGroup, {
                         x: (stageW / 2) - worldActorX,
                         y: (stageH / 2) - worldActorY,
-                        transformOrigin: `${worldActorX}px ${worldActorY}px`
                     });
                 }
             }
@@ -1135,10 +1134,11 @@ export default function Stage({
                 const newY = dragState.initialFeetY - dy;
                 
                 // Use gsap.to with overwrite to kill conflicting timeline tweens
+                // IMPORTANT: keep transformOrigin fixed at stage center to prevent
+                // objects jumping when zoomed (scale applied around changing origin)
                 gsap.to(cameraGroup, {
                     x: (stageW / 2) - newX,
                     y: (stageH / 2) - newY,
-                    transformOrigin: `${newX}px ${newY}px`,
                     duration: 0.1,
                     overwrite: "auto"
                 });

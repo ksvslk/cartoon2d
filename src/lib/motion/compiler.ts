@@ -391,6 +391,11 @@ function blendRootMotionIntoTransformTrack(params: {
     const base = interpolateTransformTrackAtTime(baseTrack, time);
     if (!base) return undefined;
 
+    // Pin the start: at normalizedTime=0 use exact base position (no root motion).
+    // Ramp in root motion influence over the first 5% to prevent catmull-rom
+    // spline overshoot from creating "ghost" movement at animation start.
+    const rampIn = Math.min(1, normalizedTime / 0.05);
+
     const sample = {
       x: sampleWholeObjectAxis(motionSamples, normalizedTime, (motion) => motion.x),
       y: sampleWholeObjectAxis(motionSamples, normalizedTime, (motion) => motion.y),
@@ -398,10 +403,10 @@ function blendRootMotionIntoTransformTrack(params: {
       scale: sampleWholeObjectAxis(motionSamples, normalizedTime, (motion) => motion.scale),
     };
     const scale = Math.max(0.18, base.scale);
-    const localX = sample.x - reference.x;
-    const localY = sample.y - reference.y;
-    const localRotation = sample.rotation - reference.rotation;
-    const scaleMultiplier = Math.max(0.6, sample.scale / Math.max(0.01, reference.scale));
+    const localX = (sample.x - reference.x) * rampIn;
+    const localY = (sample.y - reference.y) * rampIn;
+    const localRotation = (sample.rotation - reference.rotation) * rampIn;
+    const scaleMultiplier = Math.max(0.6, 1 + ((sample.scale / Math.max(0.01, reference.scale)) - 1) * rampIn);
 
     return {
       ...clampSpatialTransformToStage({
@@ -662,14 +667,18 @@ export function compileBeatToScene(
     const startTime = action.animation_overrides?.delay ?? 0;
     const duration = action.duration_seconds || 2;
     const previousTransform = resolvePreviousTransform(actorId, previousScene);
+    // If another action for this actor already established a position, use that
+    // instead of stage-center defaults to prevent conflicting positions at t=0
+    const existingTrack = instanceTracks.get(actorId);
+    const existingStart = existingTrack?.transform_track[0];
     const startTransform: SpatialTransform = clampSpatialTransformToStage({
-      x: action.spatial_transform?.x ?? previousTransform?.x ?? stageW / 2,
-      y: action.spatial_transform?.y ?? previousTransform?.y ?? Math.round(stageH * 0.88),
-      scale: action.spatial_transform?.scale ?? previousTransform?.scale ?? 0.5,
-      rotation: action.spatial_transform?.rotation ?? previousTransform?.rotation,
-      flip_x: action.spatial_transform?.flip_x ?? previousTransform?.flip_x,
-      flip_y: action.spatial_transform?.flip_y ?? previousTransform?.flip_y,
-      z_index: action.spatial_transform?.z_index ?? previousTransform?.z_index ?? 10,
+      x: action.spatial_transform?.x ?? existingStart?.x ?? previousTransform?.x ?? stageW / 2,
+      y: action.spatial_transform?.y ?? existingStart?.y ?? previousTransform?.y ?? Math.round(stageH * 0.88),
+      scale: action.spatial_transform?.scale ?? existingStart?.scale ?? previousTransform?.scale ?? 0.5,
+      rotation: action.spatial_transform?.rotation ?? existingStart?.rotation ?? previousTransform?.rotation,
+      flip_x: action.spatial_transform?.flip_x ?? existingStart?.flip_x ?? previousTransform?.flip_x,
+      flip_y: action.spatial_transform?.flip_y ?? existingStart?.flip_y ?? previousTransform?.flip_y,
+      z_index: action.spatial_transform?.z_index ?? existingStart?.z_index ?? previousTransform?.z_index ?? 10,
     }, stageW, stageH);
     const inferredTarget = !action.target_spatial_transform
       ? inferAutoTargetTransform(motionKey, startTransform, duration, stageW)
