@@ -11,7 +11,7 @@ interface SoundEffectParams {
 
 export async function executeSoundEffect({ prompt, seconds = 3.0, steps = 50 }: SoundEffectParams): Promise<{ url?: string; error?: string }> {
   // Hardcoded for now per user
-  const COLAB_URL = "https://wei-vinous-avery.ngrok-free.dev/generate";
+  const COLAB_URL = "http://127.0.0.1:8001/generate"//"https://wei-vinous-avery.ngrok-free.dev/generate";
 
   console.log(`[SFX] Generating sound: '${prompt}'...`);
 
