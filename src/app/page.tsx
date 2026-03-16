@@ -117,6 +117,8 @@ export default function Home() {
 
   const [prompt, setPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationStartTime, setGenerationStartTime] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [storyData, setStoryData] = useState<StoryGenerationData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -126,9 +128,11 @@ export default function Home() {
   const handleCancelAll = useCallback(() => {
     abortRef.current = true;
     setIsGenerating(false);
+    setGenerationStartTime(null);
     setAnimatingSceneIndex(null);
     setAnimatingLogs(prev => [...prev, "❌ All active operations cancelled by user."]);
   }, []);
+
 
   // Actor Identity State (projectId -> actorId -> base64Image)
   const [actorReferences, setActorReferences] = useState<Record<string, string>>({});
@@ -164,6 +168,24 @@ export default function Home() {
   // Auto-Animate Macro State
   const [animatingSceneIndex, setAnimatingSceneIndex] = useState<number | null>(null);
   const [animatingLogs, setAnimatingLogs] = useState<string[]>([]);
+
+  // Ticking elapsed timer for generation & animation
+  useEffect(() => {
+    const isBusy = isGenerating || animatingSceneIndex !== null;
+    if (isBusy && !generationStartTime) {
+      setGenerationStartTime(Date.now());
+      setElapsedSeconds(0);
+    } else if (!isBusy && generationStartTime) {
+      setGenerationStartTime(null);
+    }
+    if (!isBusy) return;
+    const interval = setInterval(() => {
+      if (generationStartTime) {
+        setElapsedSeconds(Math.floor((Date.now() - generationStartTime) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isGenerating, animatingSceneIndex, generationStartTime]);
   // Persistent per-scene logs that survive after animation completes
   const [completedAnimLogs, setCompletedAnimLogs] = useState<Record<number, string[]>>({});
   const [dismissedCompileReports, setDismissedCompileReports] = useState<Record<number, boolean>>({});
@@ -3351,11 +3373,20 @@ export default function Home() {
                     <h2 className="text-sm font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest flex items-center gap-2.5">
                       <LayoutList size={16} className="text-blue-500 dark:text-blue-400" /> Storyboard Timeline
                     </h2>
-                    <div className="flex items-center gap-2 rounded-full border border-amber-200/70 bg-amber-50/80 px-3 py-1 text-[10px] font-mono text-amber-800 shadow-sm dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300">
-                      <span className="uppercase tracking-wider text-amber-600 dark:text-amber-400">Project</span>
-                      <span className="font-semibold">~${projectCostSummary.cost.toFixed(4)}</span>
-                      <span className="text-amber-500/80 dark:text-amber-400/80">{projectCostSummary.tokens.toLocaleString()} tokens</span>
-                      <span className="text-emerald-600 dark:text-emerald-400">{projectCostSummary.compiledScenes}/{storyData?.beats.length || 0} compiled</span>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <div className="flex items-center gap-2 rounded-full border border-amber-200/70 bg-amber-50/80 px-3 py-1 text-[10px] font-mono text-amber-800 shadow-sm dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300">
+                        <span className="uppercase tracking-wider text-amber-600 dark:text-amber-400">Project</span>
+                        <span className="font-semibold">~${projectCostSummary.cost.toFixed(4)}</span>
+                        <span className="text-amber-500/80 dark:text-amber-400/80">{projectCostSummary.tokens.toLocaleString()}</span>
+                        <span className="text-emerald-600 dark:text-emerald-400">{projectCostSummary.compiledScenes}/{storyData?.beats.length || 0}</span>
+                      </div>
+                      {(isGenerating || animatingSceneIndex !== null) && (
+                        <div className="flex items-center gap-1.5 rounded-full border border-cyan-300/60 bg-cyan-50/80 px-3 py-1 text-[10px] font-mono text-cyan-700 shadow-sm dark:border-cyan-700/50 dark:bg-cyan-950/30 dark:text-cyan-300 animate-pulse">
+                          <Loader2 size={10} className="animate-spin" />
+                          <span>{Math.floor(elapsedSeconds / 60)}:{(elapsedSeconds % 60).toString().padStart(2, '0')}</span>
+                          <span className="text-cyan-500/80 dark:text-cyan-400/70">{isGenerating ? 'generating' : 'animating'}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -3603,13 +3634,13 @@ export default function Home() {
                                 >
                                   {beat.narrative}
                                 </p>
-                                <div className="flex flex-wrap gap-1.5">
+                                <div className="flex flex-col gap-1.5">
                                   {beat.audio.map((audio, i) => (
-                                    <span key={`audio-${i}`} className={`group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[9px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
+                                    <div key={`audio-${i}`} className={`group/tag flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[9px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
                                       <Volume2 size={8} />
                                       {audio.type === 'dialogue' && (
                                         <select
-                                          className="bg-transparent border-none outline-none text-[8.5px] cursor-pointer font-semibold text-amber-800 dark:text-amber-300 max-w-[70px]"
+                                          className="bg-transparent border-none outline-none text-[8.5px] cursor-pointer font-semibold text-amber-800 dark:text-amber-300 max-w-[100px]"
                                           value={audio.actor_id || ''}
                                           onClick={(e) => e.stopPropagation()}
                                           onChange={(e) => {
@@ -3698,7 +3729,7 @@ export default function Home() {
                                         }}
                                         title="Remove this audio cue"
                                       >×</button>
-                                    </span>
+                                    </div>
                                   ))}
                                   {beat.actions.map((act, i) => (
                                     <span
