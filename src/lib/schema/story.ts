@@ -25,7 +25,7 @@ export const ActorSchema = z.object({
 
 export const AudioSchema = z.object({
     type: z.enum(["sfx", "dialogue", "music"]),
-    actor_id: z.string().optional().describe("Required if type is dialogue, MUST exactly match the ID of the speaking actor from actors_detected."),
+    actor_id: z.string().nullable().optional().describe("Required if type is dialogue, MUST exactly match the ID of the speaking actor from actors_detected."),
     text: z.string().optional().describe("If type is dialogue, the exact words spoken."),
     description: z.string().optional().describe("If type is sfx or music, a description of the sound (e.g., 'birds chirping in park')"),
     delivery_style: z.string().optional().describe("If type is dialogue, the emotional delivery or acting style (e.g. 'shouting angrily', 'whispering softly', 'cheerful')."),
