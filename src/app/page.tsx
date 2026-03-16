@@ -3494,22 +3494,18 @@ export default function Home() {
                 )}
 
                 <div className="mt-10 flex-1 flex flex-col min-h-0 overflow-hidden">
-                  <div className="mb-4 flex items-center justify-between gap-3 shrink-0">
-                    <h2 className="text-sm font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest flex items-center gap-2.5">
+                  <div className="mb-4 flex items-center gap-3 shrink-0">
+                    <h2 className="text-sm font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest flex items-center gap-2.5 whitespace-nowrap shrink-0">
                       <LayoutList size={16} className="text-blue-500 dark:text-blue-400" /> Storyboard
                     </h2>
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <div className="flex items-center gap-2 rounded-full border border-amber-200/70 bg-amber-50/80 px-3 py-1 text-[10px] font-mono text-amber-800 shadow-sm dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300 whitespace-nowrap shrink-0">
-                        <span className="uppercase tracking-wider text-amber-600 dark:text-amber-400">Project</span>
-                        <span className="font-semibold">~${projectCostSummary.cost.toFixed(4)}</span>
-                        <span className="text-emerald-600 dark:text-emerald-400">{projectCostSummary.compiledScenes}/{storyData?.beats.length || 0}</span>
-                      </div>
+                    <div className="flex items-center gap-2 ml-auto shrink-0">
+                      <span className="text-[9px] font-mono text-amber-600 dark:text-amber-400 whitespace-nowrap">~${projectCostSummary.cost.toFixed(4)}</span>
+                      <span className="text-[9px] font-mono text-emerald-600 dark:text-emerald-400 whitespace-nowrap">{projectCostSummary.compiledScenes}/{storyData?.beats.length || 0}</span>
                       {(isGenerating || animatingSceneIndex !== null) && (
-                        <div className="flex items-center gap-1.5 rounded-full border border-cyan-300/60 bg-cyan-50/80 px-3 py-1 text-[10px] font-mono text-cyan-700 shadow-sm dark:border-cyan-700/50 dark:bg-cyan-950/30 dark:text-cyan-300 animate-pulse">
-                          <Loader2 size={10} className="animate-spin" />
-                          <span>{Math.floor(elapsedSeconds / 60)}:{(elapsedSeconds % 60).toString().padStart(2, '0')}</span>
-                          <span className="text-cyan-500/80 dark:text-cyan-400/70">{isGenerating ? 'generating' : 'animating'}</span>
-                        </div>
+                        <span className="flex items-center gap-1 text-[9px] font-mono text-cyan-600 dark:text-cyan-400 whitespace-nowrap">
+                          <Loader2 size={9} className="animate-spin" />
+                          {Math.floor(elapsedSeconds / 60)}:{(elapsedSeconds % 60).toString().padStart(2, '0')} {isGenerating ? 'gen' : 'anim'}
+                        </span>
                       )}
                     </div>
                   </div>
