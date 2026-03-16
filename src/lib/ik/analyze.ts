@@ -91,12 +91,12 @@ function prefersDirectionalClamp(
 
 function defaultRotationSpan(node: RigIKNode, childCount: number): number {
   let span = !node.parent
-    ? 36
+    ? 30
     : childCount === 0
-      ? 88
+      ? 55
       : childCount === 1
-        ? 128
-        : 84;
+        ? 75
+        : 60;
 
   if (node.contactRole && node.contactRole !== "none") span *= 0.78;
   if (node.massClass === "heavy") span *= 0.72;

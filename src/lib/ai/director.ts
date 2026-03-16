@@ -1,6 +1,37 @@
 import { GoogleGenAI } from "@google/genai";
 import { StoryGenerationSchema, StoryGenerationData, StageOrientation, getStageDims } from "../schema/story";
 import { runGeminiRequestWithRetry } from "./retry";
+import { VOICE_POOL } from "../voices";
+
+/** Pick a voice for an actor based on attributes, avoiding duplicates within a scene. */
+function pickVoiceForActor(
+    actor: { species?: string; attributes?: string[]; visual_description?: string } | undefined,
+    alreadyUsed: string[],
+): string {
+    const attrs = (actor?.attributes ?? []).join(" ").toLowerCase()
+        + " " + (actor?.visual_description ?? "").toLowerCase()
+        + " " + (actor?.species ?? "").toLowerCase();
+
+    const isFemale = /\b(female|woman|girl|lady|she|her|queen|princess|mother|sister|aunt|grandma|grandmother|wife|daughter)\b/.test(attrs);
+    const isMale   = /\b(male|man|boy|guy|he|him|king|prince|father|brother|uncle|grandpa|grandfather|husband|son)\b/.test(attrs);
+    const isChild  = /\b(child|kid|boy|girl|baby|toddler|young|little)\b/.test(attrs);
+
+    // Filter to en-US voices for auto-assignment (safest default)
+    let candidates = VOICE_POOL.filter(v => v.lang === "en-US");
+
+    // Gender filter
+    if (isFemale && !isMale)       candidates = candidates.filter(v => v.gender === "female");
+    else if (isMale && !isFemale)  candidates = candidates.filter(v => v.gender === "male");
+
+    // Prefer higher-pitched (Standard) for children
+    if (isChild) candidates = candidates.filter(v => v.id.includes("Standard"));
+
+    // Exclude already-used voices
+    const unused = candidates.filter(v => !alreadyUsed.includes(v.id));
+    if (unused.length > 0) return unused[0].id;
+    if (candidates.length > 0) return candidates[0].id;
+    return "en-US-Standard-F";
+}
 
 // Ensure the API key exists in your environment or Next.js config
 const ai = new GoogleGenAI({
@@ -45,23 +76,26 @@ CRITICAL: Your response MUST contain TWO things:
     {
       "scene_number": 1,
       "narrative": "string - what happens in this scene",
-      "camera": {
-        "zoom": 1.0,
-        "x": 960,
-        "y": 540,
-        "rotation": 0,
-        "target_actor_id": "optional string - actor to track",
-        "target_x": "optional number - pan to x",
-        "target_y": "optional number - pan to y",
-        "target_zoom": "optional number - zoom to"
-      },
+      "cameras": [
+        {
+          "zoom": 1.0,
+          "x": 960,
+          "y": 540,
+          "rotation": 0,
+          "target_actor_id": "optional string - actor to track",
+          "target_x": "optional number - pan to x",
+          "target_y": "optional number - pan to y",
+          "target_zoom": "optional number - zoom to"
+        }
+      ],
       "audio": [
         {
           "type": "sfx | dialogue | music",
           "actor_id": "string (REQUIRED for dialogue, MUST exactly match the actor's id in actors_detected)",
           "text": "string (optional, exact words if dialogue)",
           "delivery_style": "string (optional, e.g. 'shouting angrily', 'whispering', 'cheerful')",
-          "description": "string (optional, sound description if sfx/music)"
+          "description": "string (optional, sound description if sfx/music)",
+          "start_time": 0.0
         }
       ],
       "actions": [
@@ -88,7 +122,7 @@ CRITICAL: Your response MUST contain TWO things:
           }
         }
       ],
-      "comic_panel_prompt": "string - optimized prompt describing this scene as a comic book panel"
+      "comic_panel_prompt": "string - MUST begin with a character identity block that repeats each actor's FULL visual_description verbatim, then describe the scene composition and background. Example: 'Alex, a man with short brown hair wearing a blue sweater, and Sarah, a woman with long blonde hair wearing a green cardigan, are seated at a cafe table. ...'"
     }
   ]
 }
@@ -97,6 +131,8 @@ CRITICAL: Your response MUST contain TWO things:
 ## Rules
 - Output the JSON object first as a text block.
 - Then, for EACH beat, generate a vivid, colorful flat 2D style illustration based on the comic_panel_prompt.
+- CHARACTER IDENTITY LOCK (CRITICAL): Every character MUST look EXACTLY the same across ALL generated panels — same hair color, hair style, skin tone, clothing colors, body proportions, and facial features. If Alex has short brown hair and a blue sweater in beat 1, he MUST have short brown hair and a blue sweater in beats 2 and 3. Do NOT change any character's appearance between panels. Treat the visual_description from actors_detected as a binding contract.
+- COMIC PANEL PROMPT MUST EMBED IDENTITY: Every comic_panel_prompt MUST begin by restating each character's full visual_description from actors_detected verbatim. Do not summarize or paraphrase — copy the exact appearance details. This is mandatory for cross-panel consistency.
 - EXTREME 2D FLATNESS REQUIRED: The art style MUST be composed of highly abstract, minimal vector-like solid color shapes. NO shading, NO gradients, NO 3D rendering, NO photorealism, NO drop shadows, NO floor shadows, NO cast shadows, NO lighting effects.
 - CHARACTER ANGLES: Draw characters from the most cinematically appropriate angle for the scene — front view for dialogue, side profile for walking, 3/4 view for natural depth. Keep angles consistent within a scene.
 - SUBJECT/BACKGROUND CONTRAST IS CRITICAL: The active characters must remain clearly readable against the background at a glance. Use strong silhouette separation, opposing value bands, simplified backdrops behind the subject, or subtle rim separation so tails, fins, limbs, and body edges never disappear into dark scenery.
@@ -108,6 +144,7 @@ CRITICAL: Your response MUST contain TWO things:
 - ${compositionInstruction}
 - DO NOT include any text, speech bubbles, or onomatopoeia (e.g., "BANG!", "CRASH!") in the images. These are handled by the audio/narrative data.
 - DIALOGUE REQUIREMENT (CRITICAL): If the user's prompt includes characters speaking, talking, or having a conversation, you MUST explicitly create an entry in the \`audio\` array for EVERY spoken line with \`"type": "dialogue"\`, their exact spoken \`"text"\`, their emotional \`"delivery_style"\`, and the strictly accurate \`"actor_id"\` exactly matching the ID from \`actors_detected\`. If you omit the audio array, they will have no voice! Do not skip this!
+- DIALOGUE TIMING (CRITICAL): Each dialogue entry MUST have a \`start_time\` in seconds that places it sequentially in the scene timeline. Estimate ~0.07 seconds per character of text to calculate duration. The first line starts at 0.0, the next line starts after the previous one finishes (previous start_time + estimated duration + 0.3s pause). Example for a 3-line exchange: line 1 at 0.0, line 2 at 2.5, line 3 at 4.8. Music and sfx entries typically start at 0.0 and run for the whole scene.
 - TIMELINE SPACING (CRITICAL): Ensure dialogue tracks naturally alternate logic. Space out long dialogue exchanges across different scenes if needed to avoid overcrowding.
 - Output each image immediately after the JSON.
 - Keep actions as simple semantic verbs.
@@ -116,6 +153,7 @@ CRITICAL: Your response MUST contain TWO things:
 - If a subject appears only lightly articulated or structurally simple, prefer transform-dominant actions, orientation changes, or restrained in-place motion instead of rich internal body mechanics.
 - Do not assign gestures, locomotion patterns, or expressive deformations that require anatomy or articulation not supported by the actor description.
 - THE CAMERA IS STATIC BY DEFAULT. Do NOT use target_actor_id, target_x, target_y, target_zoom or rotate unless the user's prompt explicitly requests a camera move, pan, zoom, or tracking shot.
+- CAMERA FOLLOW / ZOOM (when requested): If the user asks to "follow", "track", "zoom in on", or "show X then Y", use the cameras array to describe camera moves over time. Each entry is a sequential camera cut or move. Use target_actor_id to track an actor, target_zoom for zoom transitions, and multiple camera entries with different start_time values to cut between subjects. Example: zoom into actor-A (cameras[0]: zoom 1.0, target_zoom 2.0, target_actor_id "actor-A"), then cut to actor-B (cameras[1]: start_time 3.0, zoom 1.5, target_actor_id "actor-B").
 
 ## Spatial Transform Rules (CRITICAL — always include these in every action)
 - The stage is ${stageW}x${stageH} pixels. x=${stageW / 2} is center, x=${Math.round(stageW * 0.16)} is far-left, x=${Math.round(stageW * 0.83)} is far-right.
@@ -208,6 +246,55 @@ CRITICAL: Your response MUST contain TWO things:
         }
         try {
             const json = JSON.parse(jsonStr);
+
+            // ── Normalize AI output before Zod validation ──
+            if (json.beats && Array.isArray(json.beats)) {
+                const actors: Record<string, { species?: string; attributes?: string[] }> = {};
+                if (json.actors_detected && Array.isArray(json.actors_detected)) {
+                    for (const actor of json.actors_detected) {
+                        if (actor.id) actors[actor.id] = actor;
+                    }
+                }
+
+                for (const beat of json.beats) {
+                    // 1) Convert singular "camera" object → "cameras" array
+                    if (beat.camera && !beat.cameras) {
+                        beat.cameras = [beat.camera];
+                        delete beat.camera;
+                    }
+
+                    // 2) Auto-assign voice_id & sequential start_time for dialogue
+                    if (beat.audio && Array.isArray(beat.audio)) {
+                        let cumulativeTime = 0;
+                        const assignedVoices: Record<string, string> = {};
+
+                        for (const entry of beat.audio) {
+                            if (entry.type === 'dialogue' && entry.actor_id) {
+                                // Auto-assign voice based on actor attributes
+                                if (!entry.voice_id) {
+                                    if (!assignedVoices[entry.actor_id]) {
+                                        assignedVoices[entry.actor_id] = pickVoiceForActor(
+                                            actors[entry.actor_id],
+                                            Object.values(assignedVoices),
+                                        );
+                                    }
+                                    entry.voice_id = assignedVoices[entry.actor_id];
+                                }
+
+                                // Auto-assign sequential start_time if missing
+                                if (entry.start_time === undefined || entry.start_time === 0) {
+                                    entry.start_time = cumulativeTime;
+                                }
+                                const estDuration = entry.text
+                                    ? entry.text.length * 0.07
+                                    : 2.0;
+                                cumulativeTime = entry.start_time + estDuration + 0.3;
+                            }
+                        }
+                    }
+                }
+            }
+
             const validatedData = StoryGenerationSchema.parse(json);
             if (options?.singleBeat && validatedData.beats.length > 1) {
                 // Force exactly 1 beat if requested, to avoid endless loading UI for missing images

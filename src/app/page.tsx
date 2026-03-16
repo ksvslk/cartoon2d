@@ -13,6 +13,7 @@ import { generateMotionClipForRig, processDraftsmanPrompt, suggestRigViewsFromRa
 import { generateSpeechTTS } from "@/app/actions/tts";
 import { executeSoundEffect } from "@/app/actions/sfx";
 import { processSetDesignerPrompt } from "@/app/actions/set_designer";
+import { VOICE_POOL, VoiceEntry } from "@/lib/voices";
 import { DraftsmanData } from "@/lib/schema/rig";
 import { RigViewer } from "@/components/RigViewer";
 import { IKLab } from "@/components/IKLab";
@@ -187,8 +188,7 @@ export default function Home() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [sceneTimelineDurations, setSceneTimelineDurations] = useState<Record<number, number>>({});
 
-  // Generation Mode: 'sequence' | 'single'
-  const [generateMode, setGenerateMode] = useState<'sequence' | 'single'>('single');
+
 
   // Stage Selection State
   const [selectedSceneIndex, setSelectedSceneIndex] = useState<number>(0);
@@ -1267,7 +1267,7 @@ export default function Home() {
     }
 
     try {
-      const stream = await processScenePromptStream(prompt, contextBeats, { singleBeat: generateMode === 'single', orientation: stageOrientation }, actorReferences);
+      const stream = await processScenePromptStream(prompt, contextBeats, { singleBeat: true, orientation: stageOrientation }, actorReferences);
       for await (const chunk of stream) {
         if (abortRef.current) break;
         if (chunk.type === 'error') {
@@ -1673,24 +1673,43 @@ export default function Home() {
     };
 
     try {
-      // 1. Generate Background if missing
-      if (!abortRef.current && !workingBeat.drafted_background && workingBeat.image_data) {
-        addLog("> Starting Set Designer AI...");
-        addLog("> Extracting 3-layer parallax environment...");
+      // 1. Generate Background if missing — try reusing from a previous beat first
+      if (!abortRef.current && !workingBeat.drafted_background) {
+        // Check earlier beats for a reusable background
+        const reusableBg = storyData.beats
+          .slice(0, index)
+          .reverse()
+          .find(b => b.drafted_background);
 
-        apiCalls++;
-        const result = await processSetDesignerPrompt(workingBeat.image_data, workingBeat.narrative, stageOrientation);
+        if (reusableBg?.drafted_background) {
+          workingBeat = { ...workingBeat, drafted_background: reusableBg.drafted_background };
+          setStoryData(prev => {
+            if (!prev) return prev;
+            const newBeats = [...prev.beats];
+            newBeats[index] = { ...newBeats[index], drafted_background: reusableBg.drafted_background };
+            return { ...prev, beats: newBeats };
+          });
+          addLog("[REUSED] ✓ Environment rig reused from earlier scene.");
+        } else if (workingBeat.image_data) {
+          addLog("> Starting Set Designer AI...");
+          addLog("> Extracting 3-layer parallax environment...");
 
-        setStoryData(prev => {
-          if (!prev) return prev;
-          const newBeats = [...prev.beats];
-          newBeats[index] = { ...newBeats[index], drafted_background: result.data };
-          return { ...prev, beats: newBeats };
-        });
+          apiCalls++;
+          const result = await processSetDesignerPrompt(workingBeat.image_data, workingBeat.narrative, stageOrientation);
 
-        addLog("[PAID] ✓ Environment vector rig compiled.");
-        logUsage(result.usage, "Set Designer");
-        workingBeat = { ...workingBeat, drafted_background: result.data };
+          setStoryData(prev => {
+            if (!prev) return prev;
+            const newBeats = [...prev.beats];
+            newBeats[index] = { ...newBeats[index], drafted_background: result.data };
+            return { ...prev, beats: newBeats };
+          });
+
+          addLog("[PAID] ✓ Environment vector rig compiled.");
+          logUsage(result.usage, "Set Designer");
+          workingBeat = { ...workingBeat, drafted_background: result.data };
+        } else {
+          addLog("[BLOCKED] No image data and no prior background to reuse.");
+        }
       } else {
         addLog("[REUSED] ✓ Environment rig found in cache.");
       }
@@ -3250,11 +3269,6 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="p-4 border-t border-neutral-200/50 dark:border-neutral-800/50">
-            <button className="w-full py-2 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-xs font-semibold text-neutral-700 dark:text-neutral-300 rounded-lg transition-colors flex items-center justify-center gap-2">
-              + Import Asset
-            </button>
-          </div>
         </aside>
 
         <PanelGroup direction="horizontal" className="flex-1 w-full h-full">
@@ -3274,25 +3288,10 @@ export default function Home() {
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
                       className="w-full h-28 bg-transparent p-5 pb-2 text-sm resize-none focus:outline-none placeholder-neutral-400 dark:placeholder-neutral-600 text-neutral-800 dark:text-neutral-200"
-                      placeholder={generateMode === 'single' ? "Describe a single scene... e.g., 'A robot cat stares at a vacuum cleaner suspiciously.'" : "Describe a sequence... e.g., 'A robot cat runs in panic from a loud vacuum cleaner. Then it hides under the couch.'"}
+                      placeholder="Describe a scene... e.g., 'A robot cat stares at a vacuum cleaner suspiciously.'"
                       disabled={isGenerating}
                     />
-                    <div className="flex items-center justify-between px-3 pb-3 pt-1">
-                      {/* Mode Toggle */}
-                      <div className="flex items-center bg-neutral-100 dark:bg-neutral-800/80 rounded-lg p-0.5 border border-neutral-200/80 dark:border-neutral-700/50">
-                        <button
-                          onClick={() => setGenerateMode('single')}
-                          className={`px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all duration-200 ${generateMode === 'single' ? 'bg-white dark:bg-neutral-700 text-cyan-700 dark:text-cyan-300 shadow-sm' : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'}`}
-                        >
-                          Single Scene
-                        </button>
-                        <button
-                          onClick={() => setGenerateMode('sequence')}
-                          className={`px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all duration-200 ${generateMode === 'sequence' ? 'bg-white dark:bg-neutral-700 text-cyan-700 dark:text-cyan-300 shadow-sm' : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'}`}
-                        >
-                          Sequence
-                        </button>
-                      </div>
+                    <div className="flex items-center justify-end px-3 pb-3 pt-1">
                       <button
                         onClick={handleGenerate}
                         disabled={isGenerating || !prompt.trim()}
@@ -3301,7 +3300,7 @@ export default function Home() {
                         {isGenerating ? (
                           <><Loader2 size={14} className="animate-spin" /> <span>Directing...</span></>
                         ) : (
-                          <><span>{generateMode === 'single' ? 'Generate Scene' : 'Generate Sequence'}</span><Send size={14} /></>
+                          <><span>Generate Scene</span><Send size={14} /></>
                         )}
                       </button>
                       {(isGenerating || animatingSceneIndex !== null) && (
@@ -3624,48 +3623,20 @@ export default function Home() {
                                               });
                                             }}
                                         >
-                                           <optgroup label="English (US)">
-                                             <option value="en-US-Standard-F">Standard Female</option>
-                                             <option value="en-US-Standard-D">Standard Male</option>
-                                             <option value="en-US-Studio-O">Studio Female</option>
-                                             <option value="en-US-Studio-Q">Studio Male</option>
-                                             <option value="en-US-Journey-F">Journey Female</option>
-                                             <option value="en-US-Journey-D">Journey Male</option>
-                                           </optgroup>
-                                           <optgroup label="English (UK)">
-                                             <option value="en-GB-Standard-A">Standard Female</option>
-                                             <option value="en-GB-Standard-B">Standard Male</option>
-                                             <option value="en-GB-Studio-B">Studio Male</option>
-                                             <option value="en-GB-Studio-C">Studio Female</option>
-                                           </optgroup>
-                                           <optgroup label="Spanish">
-                                             <option value="es-ES-Standard-C">ES Female</option>
-                                             <option value="es-ES-Standard-B">ES Male</option>
-                                             <option value="es-US-Studio-B">US-ES Male</option>
-                                           </optgroup>
-                                           <optgroup label="French">
-                                             <option value="fr-FR-Standard-A">FR Female</option>
-                                             <option value="fr-FR-Standard-D">FR Male</option>
-                                             <option value="fr-FR-Studio-A">Studio Female</option>
-                                             <option value="fr-FR-Studio-D">Studio Male</option>
-                                           </optgroup>
-                                           <optgroup label="German">
-                                             <option value="de-DE-Standard-A">DE Female</option>
-                                             <option value="de-DE-Standard-B">DE Male</option>
-                                             <option value="de-DE-Studio-B">Studio Male</option>
-                                             <option value="de-DE-Studio-C">Studio Female</option>
-                                           </optgroup>
-                                           <optgroup label="Japanese">
-                                             <option value="ja-JP-Standard-A">JP Female</option>
-                                             <option value="ja-JP-Standard-C">JP Male</option>
-                                           </optgroup>
-                                           <optgroup label="Estonian">
-                                             <option value="et-EE-Chirp3-HD-Aoede">Chirp F (Aoede)</option>
-                                             <option value="et-EE-Chirp3-HD-Achernar">Chirp F (Achernar)</option>
-                                             <option value="et-EE-Chirp3-HD-Achird">Chirp M (Achird)</option>
-                                             <option value="et-EE-Chirp3-HD-Alnilam">Chirp M (Alnilam)</option>
-                                             <option value="et-EE-Standard-A">Standard Male</option>
-                                           </optgroup>
+                                           {Object.entries(
+                                             (VOICE_POOL as readonly VoiceEntry[]).reduce<Record<string, VoiceEntry[]>>((groups, v) => {
+                                               const lang = v.lang;
+                                               if (!groups[lang]) groups[lang] = [];
+                                               groups[lang].push(v);
+                                               return groups;
+                                             }, {})
+                                           ).map(([lang, voices]) => (
+                                             <optgroup key={lang} label={lang}>
+                                               {voices.map(v => (
+                                                 <option key={v.id} value={v.id}>{v.timbre}</option>
+                                               ))}
+                                             </optgroup>
+                                           ))}
                                         </select>
                                       )}
                                       <button

@@ -380,7 +380,7 @@ describe('findActorReferenceTransform', () => {
     const beat: StoryBeatData = {
       scene_number: 1,
       narrative: '',
-      camera: { zoom: 1, x: 960, y: 540, rotation: 0 },
+      cameras: [{ start_time: 0, zoom: 1, x: 960, y: 540, rotation: 0 }],
       audio: [],
       actions: [],
       comic_panel_prompt: '',
@@ -392,13 +392,14 @@ describe('findActorReferenceTransform', () => {
     const beat: StoryBeatData = {
       scene_number: 1,
       narrative: '',
-      camera: { zoom: 1, x: 960, y: 540, rotation: 0 },
+      cameras: [{ start_time: 0, zoom: 1, x: 960, y: 540, rotation: 0 }],
       audio: [],
       actions: [
         {
           actor_id: 'actor_1',
           motion: 'idle',
           style: '',
+          start_time: 0,
           duration_seconds: 2,
           spatial_transform: { x: 500, y: 800, scale: 0.6, z_index: 10 },
         },
@@ -419,7 +420,7 @@ describe('collectActorReferenceSamples', () => {
     const beat: StoryBeatData = {
       scene_number: 1,
       narrative: '',
-      camera: { zoom: 1, x: 960, y: 540, rotation: 0 },
+      cameras: [{ start_time: 0, zoom: 1, x: 960, y: 540, rotation: 0 }],
       audio: [],
       actions: [],
       comic_panel_prompt: '',
@@ -434,6 +435,7 @@ describe('collectActorReferenceSamples', () => {
         actor_id: 'actor_1',
         motion: 'walk',
         style: '',
+        start_time: 0,
         duration_seconds: 2,
         spatial_transform: { x: 100, y: 200, scale: 0.5, z_index: 10 },
         target_spatial_transform: { x: 400, y: 300, scale: 0.7 },
@@ -442,7 +444,7 @@ describe('collectActorReferenceSamples', () => {
     const beat: StoryBeatData = {
       scene_number: 1,
       narrative: '',
-      camera: { zoom: 1, x: 960, y: 540, rotation: 0 },
+      cameras: [{ start_time: 0, zoom: 1, x: 960, y: 540, rotation: 0 }],
       audio: [],
       actions,
       comic_panel_prompt: '',
@@ -490,7 +492,7 @@ describe('getBeatImageGenerationCost', () => {
     const beat: StoryBeatData = {
       scene_number: 1,
       narrative: '',
-      camera: { zoom: 1, x: 960, y: 540, rotation: 0 },
+      cameras: [{ start_time: 0, zoom: 1, x: 960, y: 540, rotation: 0 }],
       audio: [],
       actions: [],
       comic_panel_prompt: '',
@@ -503,7 +505,7 @@ describe('getBeatImageGenerationCost', () => {
     const beat: StoryBeatData = {
       scene_number: 1,
       narrative: '',
-      camera: { zoom: 1, x: 960, y: 540, rotation: 0 },
+      cameras: [{ start_time: 0, zoom: 1, x: 960, y: 540, rotation: 0 }],
       audio: [],
       actions: [],
       comic_panel_prompt: '',
@@ -516,7 +518,7 @@ describe('getBeatImageGenerationCost', () => {
     const beat = {
       scene_number: 1,
       narrative: '',
-      camera: { zoom: 1, x: 960, y: 540, rotation: 0 },
+      cameras: [{ start_time: 0, zoom: 1, x: 960, y: 540, rotation: 0 }],
       audio: [],
       actions: [],
       comic_panel_prompt: '',

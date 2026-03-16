@@ -282,7 +282,7 @@ function baseWaveAmplitudeForSpec(
 ): number {
   const amplitude = clamp(motionSpec.amplitude || 1, 0.02, 2);
   const intensity = clamp(motionSpec.intensity || 0.5, 0, 1);
-  return 0.25 + (amplitude * 3.4) + (intensity * 1.8 * locomotionEnergy(motionSpec.locomotion.mode));
+  return 0.15 + (amplitude * 1.8) + (intensity * 1.2 * locomotionEnergy(motionSpec.locomotion.mode));
 }
 
 function waveFrequencyForSpec(
