@@ -13,6 +13,7 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
+RUN apk add --no-cache ffmpeg
 
 # Copy standalone output
 COPY --from=builder /app/.next/standalone ./
