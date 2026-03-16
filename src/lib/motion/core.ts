@@ -630,16 +630,20 @@ export function buildTimeline(context: AnimationContext): gsap.core.Timeline {
             }
           }
         } else {
-          // SFX / Music — play audio synced to timeline without visemes
+          // SFX / Music — play audio synced to timeline at correct start_time
+          const sfxStart = audioItem.start_time ?? 0;
+          const sfxDuration = audioItem.duration_seconds ?? 5;
+          const sfxEnd = sfxStart + sfxDuration;
+
           tl.add(() => {
             if (tl.isActive() && !tl.paused()) {
               audioEl!.currentTime = 0;
               audioEl!.play().catch(() => {});
             }
-          }, 0);
+          }, sfxStart);
           tl.add(() => {
             audioEl?.pause();
-          }, tl.duration());
+          }, sfxEnd);
           
           if (!(tl as any).audioElements) (tl as any).audioElements = [];
           (tl as any).audioElements.push(audioEl);

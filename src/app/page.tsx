@@ -2920,7 +2920,7 @@ export default function Home() {
       const blob = await response.blob();
       const suggestedName = response.headers.get("x-export-filename") || `${storyData.title || "cartoon"}-${playbackScope}.mp4`;
       downloadBlob(blob, suggestedName);
-      setExportProgress(`Export complete: ${suggestedName}`);
+      setExportProgress(`Export ✓: ${suggestedName}`);
     } catch (err) {
       console.error("Export failed", err);
       setError(err instanceof Error ? err.message : "Export failed.");
@@ -2945,7 +2945,7 @@ export default function Home() {
       <header className="h-16 border-b border-neutral-200/60 dark:border-neutral-800/60 bg-white/70 dark:bg-[#0a0a0a]/70 backdrop-blur-xl flex items-center px-6 shrink-0 z-10 sticky top-0 shadow-[0_4px_30px_rgba(0,0,0,0.05)] dark:shadow-[0_4px_30px_rgba(0,0,0,0.1)] transition-colors duration-300">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-400 to-blue-600 flex items-center justify-center shadow-[0_0_15px_rgba(34,211,238,0.3)]">
-            <Sparkles size={16} className="text-white" />
+            <Play size={16} className="text-white fill-white ml-0.5" />
           </div>
           <h1 className="text-xl font-bold tracking-tight bg-gradient-to-br from-neutral-800 dark:from-white via-neutral-600 dark:via-neutral-200 to-neutral-500 dark:to-neutral-400 bg-clip-text text-transparent">
             Cartoon 2D
@@ -3154,94 +3154,94 @@ export default function Home() {
                 </div>
               )}
               {/* Empty Scene button */}
-            <button
-              onClick={() => {
-                setStoryData(prev => {
-                  const beats = prev?.beats || [];
-                  const emptyBeat = {
-                    scene_number: beats.length + 1,
-                    narrative: "",
-                    mood: "neutral",
-                    actions: [],
-                    dialogues: [],
-                    cameras: [{ start_time: 0, zoom: 1, x: 0, y: 0, rotation: 0 }],
-                    audio: [],
-                    comic_panel_prompt: "",
-                    duration_seconds: 5.0,
-                  } satisfies Record<string, unknown> as unknown as typeof beats[number];
-                  const newBeats = [...beats, emptyBeat];
-                  const newData = prev
-                    ? { ...prev, beats: newBeats }
-                    : { title: "", actors_detected: [], beats: newBeats };
-                  setSelectedSceneIndex(newBeats.length - 1);
-                  return newData;
-                });
-              }}
-              className="w-full mt-1 py-1 border border-dashed border-neutral-300/60 dark:border-neutral-700/40 hover:border-cyan-400 dark:hover:border-cyan-600 rounded-lg text-[10px] font-medium text-neutral-400 dark:text-neutral-600 hover:text-cyan-600 dark:hover:text-cyan-400 transition-all flex items-center justify-center gap-1.5 hover:bg-cyan-50/50 dark:hover:bg-cyan-950/20"
-            >
-              <Plus size={10} /> Empty Scene
-            </button>
-            {/* Backgrounds Section */}
-            <div>
-              <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
-                <Mountain size={14} /> <span className="flex-1">Backgrounds</span>
-                <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">
-                  {storyData?.beats.filter(b => b.drafted_background).length || 0}
-                </span>
-              </div>
-              {storyData && storyData.beats.some(b => b.drafted_background) && (
-                <div className="mt-1 space-y-1 pl-2 pr-1">
-                  {storyData.beats.map((beat, bIdx) => {
-                    if (!beat.drafted_background) return null;
-                    return (
-                      <div
-                        key={`bg-${bIdx}`}
-                        className="px-2 py-1.5 rounded-md cursor-pointer transition-colors group hover:bg-neutral-100 dark:hover:bg-neutral-800/50"
-                      >
-                        <div className="flex items-center gap-2">
-                          <div className="w-10 h-6 rounded overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
-                            {beat.image_data ? (
-                              <img src={beat.image_data} alt={`Scene ${bIdx + 1} bg`} className="w-full h-full object-cover" />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
-                                <Mountain size={10} />
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-[10px] font-semibold text-neutral-700 dark:text-neutral-200 truncate">
-                              {beat.narrative?.slice(0, 30) || `Scene ${bIdx + 1} BG`}
-                            </div>
-                          </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setStoryData(prev => {
-                                if (!prev || !prev.beats[selectedSceneIndex]) return prev;
-                                const newBeats = [...prev.beats];
-                                const currentBeat = newBeats[selectedSceneIndex];
-                                newBeats[selectedSceneIndex] = {
-                                  ...currentBeat,
-                                  drafted_background: JSON.parse(JSON.stringify(beat.drafted_background)),
-                                  image_data: beat.image_data,
-                                };
-                                return { ...prev, beats: newBeats };
-                              });
-                            }}
-                            className="p-1 rounded text-neutral-400 hover:text-cyan-500 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors opacity-0 group-hover:opacity-100"
-                            title={`Use this background in Scene ${selectedSceneIndex + 1}`}
-                          >
-                            <Plus size={12} />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+              <button
+                onClick={() => {
+                  setStoryData(prev => {
+                    const beats = prev?.beats || [];
+                    const emptyBeat = {
+                      scene_number: beats.length + 1,
+                      narrative: "",
+                      mood: "neutral",
+                      actions: [],
+                      dialogues: [],
+                      cameras: [{ start_time: 0, zoom: 1, x: 0, y: 0, rotation: 0 }],
+                      audio: [],
+                      comic_panel_prompt: "",
+                      duration_seconds: 5.0,
+                    } satisfies Record<string, unknown> as unknown as typeof beats[number];
+                    const newBeats = [...beats, emptyBeat];
+                    const newData = prev
+                      ? { ...prev, beats: newBeats }
+                      : { title: "", actors_detected: [], beats: newBeats };
+                    setSelectedSceneIndex(newBeats.length - 1);
+                    return newData;
+                  });
+                }}
+                className="w-full mt-1 py-1 border border-dashed border-neutral-300/60 dark:border-neutral-700/40 hover:border-cyan-400 dark:hover:border-cyan-600 rounded-lg text-[10px] font-medium text-neutral-400 dark:text-neutral-600 hover:text-cyan-600 dark:hover:text-cyan-400 transition-all flex items-center justify-center gap-1.5 hover:bg-cyan-50/50 dark:hover:bg-cyan-950/20"
+              >
+                <Plus size={10} /> Empty Scene
+              </button>
+              {/* Backgrounds Section */}
+              <div>
+                <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
+                  <Mountain size={14} /> <span className="flex-1">Backgrounds</span>
+                  <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">
+                    {storyData?.beats.filter(b => b.drafted_background).length || 0}
+                  </span>
                 </div>
-              )}
-            </div>
-            {/* Actors Section */}
-            <div>
+                {storyData && storyData.beats.some(b => b.drafted_background) && (
+                  <div className="mt-1 space-y-1 pl-2 pr-1">
+                    {storyData.beats.map((beat, bIdx) => {
+                      if (!beat.drafted_background) return null;
+                      return (
+                        <div
+                          key={`bg-${bIdx}`}
+                          className="px-2 py-1.5 rounded-md cursor-pointer transition-colors group hover:bg-neutral-100 dark:hover:bg-neutral-800/50"
+                        >
+                          <div className="flex items-center gap-2">
+                            <div className="w-10 h-6 rounded overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
+                              {beat.image_data ? (
+                                <img src={beat.image_data} alt={`Scene ${bIdx + 1} bg`} className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
+                                  <Mountain size={10} />
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[10px] font-semibold text-neutral-700 dark:text-neutral-200 truncate">
+                                {beat.narrative?.slice(0, 30) || `Scene ${bIdx + 1} BG`}
+                              </div>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setStoryData(prev => {
+                                  if (!prev || !prev.beats[selectedSceneIndex]) return prev;
+                                  const newBeats = [...prev.beats];
+                                  const currentBeat = newBeats[selectedSceneIndex];
+                                  newBeats[selectedSceneIndex] = {
+                                    ...currentBeat,
+                                    drafted_background: JSON.parse(JSON.stringify(beat.drafted_background)),
+                                    image_data: beat.image_data,
+                                  };
+                                  return { ...prev, beats: newBeats };
+                                });
+                              }}
+                              className="p-1 rounded text-neutral-400 hover:text-cyan-500 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors opacity-0 group-hover:opacity-100"
+                              title={`Use this background in Scene ${selectedSceneIndex + 1}`}
+                            >
+                              <Plus size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              {/* Actors Section */}
+              <div>
                 <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
                   <ImageIcon size={14} /> <span className="flex-1">Actors</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">{storyData?.actors_detected.length || 0}</span>
                 </div>
@@ -3328,8 +3328,8 @@ export default function Home() {
                                   <button
                                     onClick={(e) => handleDeleteActor(actor.id, e)}
                                     className={`p-1.5 rounded transition-all group-hover:opacity-100 ${confirmDeleteActorId === actor.id
-                                        ? "text-red-500 bg-red-100 dark:bg-red-950/30 opacity-100 cursor-pointer"
-                                        : "text-neutral-400 hover:text-red-500 opacity-0 bg-transparent hover:bg-red-50 dark:hover:bg-950/20"
+                                      ? "text-red-500 bg-red-100 dark:bg-red-950/30 opacity-100 cursor-pointer"
+                                      : "text-neutral-400 hover:text-red-500 opacity-0 bg-transparent hover:bg-red-50 dark:hover:bg-950/20"
                                       }`}
                                     title={confirmDeleteActorId === actor.id ? "Click again to delete" : "Delete Actor"}
                                   >
