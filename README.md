@@ -1,36 +1,108 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🎬 Cartoon 2D
 
-## Getting Started
+**AI-powered 2D cartoon creation tool** — describe a story, get animated scenes with rigged characters, backgrounds, dialogue, sound effects, and exportable MP4 video.
 
-First, run the development server:
+> Built for the [Gemini Live Agent Challenge](https://geminiliveagentchallenge.devpost.com/) — Creative Storyteller category.
+
+![Architecture](docs/devpost-architecture.png)
+
+## ✨ Features
+
+- **Prompt-to-Animation** — Describe a story in natural language. Gemini generates structured scene beats, comic panel images, character rigs, motion clips, dialogue, and sound effects.
+- **SVG Character Rigging** — AI-generated characters with full bone hierarchies, IK constraints, rotation limits, and multiple animation views (front/side/back).
+- **Deterministic Animation Engine** — AI returns motion *intent*; a TypeScript runtime compiles it into validated, reusable animation clips with GSAP-powered playback.
+- **Timeline Editor** — Multi-track timeline with draggable action pills, voice tracks, SFX tracks, keyframe editing, and real-time preview.
+- **Lip Sync** — Google Cloud TTS with viseme timing drives SVG mouth shapes or jaw bone rotation for speech animation.
+- **Sound Effects** — AI-generated sound effects placed on the timeline.
+- **Camera System** — Pan, zoom, rotate with start/end keyframe interpolation and actor tracking.
+- **MP4 Export** — Frame-by-frame capture with server-side FFmpeg muxing into download-ready H.264 video.
+- **Project Persistence** — Auto-save to browser IndexedDB with project management.
+
+## 🛠️ Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4 |
+| Animation | GSAP, custom IK solver, SVG manipulation |
+| AI Generation | **Gemini 2.5 Flash** (scenes, images), **Gemini 2.5 Pro** (character rigging) via `@google/genai` SDK |
+| Voice | **Google Cloud Text-to-Speech** with viseme timing |
+| Sound Effects | Stable Audio via external microservice |
+| Export | FFmpeg (server-side H.264 muxing) |
+| Hosting | **Google Cloud Run** |
+| Storage | Browser IndexedDB (local) |
+
+## 🚀 Quick Start (Local Development)
+
+### Prerequisites
+- Node.js 22+
+- A [Gemini API key](https://aistudio.google.com/apikey)
+
+### Setup
 
 ```bash
+# Clone the repo
+git clone https://github.com/ksvslk/cartoon2d.git
+cd cartoon2d
+
+# Install dependencies
+npm install --legacy-peer-deps
+
+# Set your API key
+echo "GEMINI_API_KEY=your-key-here" > .env.local
+
+# Start dev server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Usage
+1. Type a story prompt (e.g., "A fox meets a rabbit in a forest")
+2. Click **Generate** — Gemini creates scene beats with inline comic panels
+3. Click a scene → rigs are generated for each character
+4. Preview animation on the Stage, edit timing in the Timeline
+5. Export to MP4
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## ☁️ Google Cloud Deployment
 
-## Learn More
+The app is deployed on **Google Cloud Run**:
 
-To learn more about Next.js, take a look at the following resources:
+**Live URL:** https://cartoon2d-243022700959.us-central1.run.app
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Deploy from source
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+gcloud run deploy cartoon2d \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars "GEMINI_API_KEY=your-key" \
+  --memory 1Gi \
+  --port 3000 \
+  --project your-project-id
+```
 
-## Deploy on Vercel
+### Google Cloud Services Used
+- **Cloud Run** — Hosts the Next.js application (frontend + backend server actions)
+- **Cloud Text-to-Speech** — Generates dialogue audio with phoneme timing for lip sync
+- **Generative Language API** — Gemini models for multimodal content generation
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## 🏗️ Architecture
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+User → Next.js React App → Next.js Server Actions → Gemini API
+                                                   → Cloud TTS
+                                                   → SFX Service
+         ↓                        ↓
+   Browser IndexedDB    Deterministic Animation Engine
+   (project storage)    (IK graph, motion compiler,
+                         validation, GSAP playback)
+                                   ↓
+                           /api/export + FFmpeg → MP4
+```
+
+Key design principle: **AI produces intent, deterministic code produces animation.** The Gemini model returns structured motion specifications; the TypeScript runtime compiles, validates, and plays them using a canonical IK graph — no anatomy-specific heuristics.
+
+## 📄 License
+
+MIT
