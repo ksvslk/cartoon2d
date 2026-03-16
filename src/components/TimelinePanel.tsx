@@ -717,8 +717,65 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                     </div>
                   );
                 })}
-              </>
-            );
+                {/* SFX / Music Tracks Row */}
+                {beat.audio.some(a => a.type !== 'dialogue') && (
+                  <div className="h-8 flex shrink-0 group/sfxtrack hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors border-t border-dashed border-neutral-200 dark:border-neutral-800/40 relative z-10 bg-teal-50/20 dark:bg-teal-900/5">
+                    {/* Left Panel */}
+                    <div className="w-48 h-full flex flex-col justify-center px-4 border-r border-neutral-200 dark:border-neutral-800/60 shrink-0">
+                      <span className="text-[9px] text-teal-600/70 dark:text-teal-500/70 font-mono uppercase tracking-wider flex items-center gap-1.5"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg> SFX</span>
+                    </div>
+                    {/* Right Panel (Pills) */}
+                    <div className="flex-1 h-full relative overflow-visible px-1.5">
+                      {beat.audio.map((audio, audioIdx) => {
+                        if (audio.type === 'dialogue') return null;
+
+                        const startTime = audio.start_time || 0;
+                        const durationSeconds = audio.duration_seconds || 2.0;
+                        const isGenerated = !!audio.audio_data_url;
+
+                        const clipStartPct = displayDuration > 0 ? (startTime / displayDuration) * 100 : 0;
+                        const clipWidthPct = displayDuration > 0 ? (durationSeconds / displayDuration) * 100 : 10;
+
+                        return (
+                          <div
+                            key={`sfx-${audioIdx}`}
+                            className={`absolute top-1/2 -translate-y-1/2 h-5 rounded flex items-center px-2 cursor-pointer transition-all z-20 pointer-events-auto border ${
+                              selectedAudioIndex === audioIdx
+                                ? 'ring-2 ring-teal-500 shadow-md !z-30'
+                                : 'shadow-sm'
+                            }`}
+                            style={{
+                              left: `${clipStartPct}%`,
+                              width: `${clipWidthPct}%`,
+                              minWidth: '24px',
+                              backgroundColor: isGenerated ? 'rgba(20, 184, 166, 0.15)' : 'rgba(20, 184, 166, 0.05)',
+                              borderColor: isGenerated ? 'rgba(20, 184, 166, 0.4)' : 'rgba(20, 184, 166, 0.2)',
+                              color: isGenerated ? 'rgb(13, 148, 136)' : 'rgba(13, 148, 136, 0.6)'
+                            }}
+                            onMouseDown={(e) => {
+                              if (e.button !== 0) return;
+                              onSelectKeyframe(null);
+                              onDialoguePillMouseDown(e, audio.actor_id || 'scene', audioIdx, startTime, durationSeconds, 'move');
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectAudio(audioIdx);
+                              onSetPlayheadPos(displayDuration > 0 ? (startTime / displayDuration) * 100 : 0);
+                            }}
+                          >
+                            {isGenerated && <div className="mr-1.5 shrink-0 opacity-80"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg></div>}
+                            <span className="text-[9px] font-medium truncate pointer-events-none drop-shadow-sm flex-1 leading-none mt-px">
+                              {audio.description || audio.text || `SFX ${audioIdx + 1}`}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {/* Right Placeholder Spacer */}
+                    <div className="w-10 shrink-0 border-l border-neutral-200 dark:border-neutral-800/40 bg-neutral-50/30 dark:bg-neutral-900/10 pointer-events-none" />
+                  </div>
+                )}
+              </>            );
           })()}
           </div>
         </div>
