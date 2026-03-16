@@ -315,8 +315,7 @@ export default function Stage({
                 rotHandle.setAttribute('display', '');
             }
             if (rotIcon) {
-                rotIcon.setAttribute('x', String(centerX));
-                rotIcon.setAttribute('y', String(rotY));
+                rotIcon.setAttribute('transform', `translate(${centerX}, ${rotY})`);
                 rotIcon.setAttribute('display', '');
             }
 
@@ -516,24 +515,25 @@ export default function Stage({
 
         const rotHandle = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "circle");
         rotHandle.setAttribute("id", "__sel_rotate");
-        rotHandle.setAttribute("r", "10");
-        rotHandle.setAttribute("fill", "white");
-        rotHandle.setAttribute("stroke", "#f472b6");
+        rotHandle.setAttribute("r", "16");
+        rotHandle.setAttribute("fill", "#fce7f3");
+        rotHandle.setAttribute("stroke", "#ec4899");
         rotHandle.setAttribute("stroke-width", "3");
         rotHandle.setAttribute("cursor", "grab");
         rotHandle.setAttribute("display", "none");
         overlayGroup.appendChild(rotHandle);
 
-        // Rotate icon inside the handle (↻ symbol)
-        const rotIcon = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "text");
+        // Small rotation arc icon inside the handle (SVG path, no text)
+        const rotIcon = masterSvgElement.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "path");
         rotIcon.setAttribute("id", "__sel_rotate_icon");
-        rotIcon.setAttribute("text-anchor", "middle");
-        rotIcon.setAttribute("dominant-baseline", "central");
-        rotIcon.setAttribute("fill", "#f472b6");
-        rotIcon.setAttribute("font-size", "12");
+        rotIcon.setAttribute("d", "M-5,-6 A8,8 0 1,1 5,-6 L3,-3 L5,-6 L2,-5");
+        rotIcon.setAttribute("fill", "none");
+        rotIcon.setAttribute("stroke", "#ec4899");
+        rotIcon.setAttribute("stroke-width", "2");
+        rotIcon.setAttribute("stroke-linecap", "round");
+        rotIcon.setAttribute("stroke-linejoin", "round");
         rotIcon.setAttribute("pointer-events", "none");
         rotIcon.setAttribute("display", "none");
-        rotIcon.textContent = "↻";
         overlayGroup.appendChild(rotIcon);
 
         // Flip button — horizontal flip icon below bottom-center
@@ -973,7 +973,7 @@ export default function Stage({
             actorIdToDrag = selectedActorId;
             mode = 'scale';
             actorGroup = containerRef.current?.querySelector(`#actor_group_${selectedActorId}`) as SVGGElement | null;
-        } else if (target.id === '__sel_rotate') {
+        } else if (target.id === '__sel_rotate' || target.id === '__sel_rotate_icon') {
             if (!selectedActorId) return;
             actorIdToDrag = selectedActorId;
             mode = 'rotate';
