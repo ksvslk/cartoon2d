@@ -123,6 +123,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [newCartoonName, setNewCartoonName] = useState<string | null>(null);
 
   const abortRef = useRef(false);
 
@@ -1150,14 +1151,16 @@ export default function Home() {
 
   // --- Project Management Handlers ---
 
-  const handleCreateProject = async () => {
+  const handleCreateProject = async (name?: string) => {
     try {
-      const newProj = await createProject(`New Cartoon ${projects.length + 1}`);
+      const title = (name || '').trim() || `New Cartoon ${projects.length + 1}`;
+      const newProj = await createProject(title);
       setProjects(prev => [...prev, newProj]);
       setCurrentProjectId(newProj.id);
       setStoryData({ title: "", actors_detected: [], beats: [] });
       setActorReferences({});
       setIsProjectDropdownOpen(false);
+      setNewCartoonName(null);
     } catch (err) {
       console.error("Failed to create project", err);
     }
@@ -3041,12 +3044,38 @@ export default function Home() {
                   ))}
                 </div>
                 <div className="p-2 border-t border-neutral-100 dark:border-neutral-800">
-                  <button
-                    onClick={handleCreateProject}
-                    className="w-full py-1.5 flex items-center justify-center gap-1.5 text-xs font-semibold text-neutral-600 dark:text-neutral-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 rounded transition-colors"
-                  >
-                    <Plus size={12} /> New Cartoon
-                  </button>
+                  {newCartoonName !== null ? (
+                    <div className="flex items-center gap-1">
+                      <input
+                        autoFocus
+                        value={newCartoonName}
+                        onChange={(e) => setNewCartoonName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleCreateProject(newCartoonName);
+                          if (e.key === 'Escape') setNewCartoonName(null);
+                        }}
+                        placeholder={`New Cartoon ${projects.length + 1}`}
+                        className="flex-1 min-w-0 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-cyan-500 text-neutral-800 dark:text-neutral-200 placeholder-neutral-400"
+                      />
+                      <button
+                        onClick={() => handleCreateProject(newCartoonName)}
+                        className="shrink-0 w-6 h-6 rounded flex items-center justify-center text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors"
+                        title="Create"
+                      >✓</button>
+                      <button
+                        onClick={() => setNewCartoonName(null)}
+                        className="shrink-0 w-6 h-6 rounded flex items-center justify-center text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+                        title="Cancel"
+                      >✕</button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setNewCartoonName('')}
+                      className="w-full py-1.5 flex items-center justify-center gap-1.5 text-xs font-semibold text-neutral-600 dark:text-neutral-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 rounded transition-colors"
+                    >
+                      <Plus size={12} /> New Cartoon
+                    </button>
+                  )}
                 </div>
               </div>
             )}
