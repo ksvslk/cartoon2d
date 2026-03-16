@@ -3668,6 +3668,12 @@ export default function Home() {
                                     <ImageIcon className="text-neutral-400 dark:text-neutral-700 mb-2" size={32} />
                                     <span className="text-xs text-neutral-500 uppercase font-mono tracking-widest text-center px-1">Drawing Scene {beat.scene_number}...</span>
                                   </div>
+                                ) : !beat.comic_panel_prompt ? (
+                                  <div className="w-full h-full flex flex-col items-center justify-center bg-neutral-100/50 dark:bg-neutral-900/40 text-neutral-400 dark:text-neutral-600">
+                                    <Mountain className="mb-2 opacity-40" size={32} />
+                                    <span className="text-xs font-medium text-center px-1">Empty Scene</span>
+                                    <span className="text-[10px] mt-1 px-4 text-center opacity-60">Add a background and actors from the sidebar</span>
+                                  </div>
                                 ) : (
                                   <div className="w-full h-full flex flex-col items-center justify-center bg-red-50/50 dark:bg-red-950/20 text-red-500 border border-red-100 dark:border-red-900/50">
                                     <ImageOff className="text-red-400 dark:text-red-600 mb-2" size={32} />
