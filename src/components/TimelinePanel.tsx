@@ -144,9 +144,9 @@ export default function TimelinePanel(props: TimelinePanelProps) {
       <div className="flex-1 rounded-2xl border border-neutral-200 dark:border-neutral-800/60 bg-white/90 dark:bg-[#0a0a0a]/90 backdrop-blur-xl shadow-lg dark:shadow-2xl mx-6 mb-6 flex flex-col overflow-hidden transition-colors duration-300">
 
         {/* 1. Timeline Toolbar (Global Transport Controls) */}
-        <div className="min-h-12 border-b border-neutral-200 dark:border-neutral-800/60 bg-neutral-50 dark:bg-[#0a0a0a] flex flex-wrap items-center gap-3 px-4 py-2 shrink-0 shadow-sm z-30 relative transition-colors duration-300">
+        <div className="min-h-12 border-b border-neutral-200 dark:border-neutral-800/60 bg-neutral-50 dark:bg-[#0a0a0a] flex items-center gap-3 px-4 py-2 shrink-0 shadow-sm z-30 relative transition-colors duration-300 overflow-hidden">
           {/* Left Side: Scene info + FPS */}
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2 shrink-0">
             <div className="text-[10px] font-bold text-neutral-600 dark:text-neutral-300 uppercase tracking-widest bg-white dark:bg-neutral-900 px-2 py-1.5 rounded border border-neutral-200 dark:border-neutral-800 shadow-sm dark:shadow-none transition-colors">
               Scene {selectedSceneIndex + 1}
             </div>
@@ -161,9 +161,9 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                         ? "border-cyan-400 bg-cyan-500 text-white"
                         : "border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
                       }`}
-                    title={`Switch to Scene ${b.scene_number}`}
+                    title={`Switch to Scene ${index + 1}`}
                   >
-                    {b.scene_number}
+                    {index + 1}
                   </button>
                 ))}
               </div>
