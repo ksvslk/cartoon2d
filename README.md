@@ -24,7 +24,7 @@
 |-------|-----------|
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4 |
 | Animation | GSAP, custom IK solver, SVG manipulation |
-| AI Generation | **Gemini 2.5 Flash** (scenes, images), **Gemini 2.5 Pro** (character rigging) via `@google/genai` SDK |
+| AI Generation | **Gemini 3.1 Flash Image Preview** (scenes, panels), **Gemini 3.1 Pro Preview** (rigging, motion) via `@google/genai` SDK |
 | Voice | **Google Cloud Text-to-Speech** with viseme timing |
 | Sound Effects | Stable Audio via external microservice |
 | Export | FFmpeg (server-side H.264 muxing) |
