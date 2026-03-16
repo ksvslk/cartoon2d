@@ -718,17 +718,20 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                   );
                 })}
                 {/* SFX / Music Tracks Row */}
-                {beat.audio.some(a => a.type !== 'dialogue') && (
-                  <div className="h-8 flex shrink-0 group/sfxtrack hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors border-t border-dashed border-neutral-200 dark:border-neutral-800/40 relative z-10 bg-teal-50/20 dark:bg-teal-900/5">
+                {(() => {
+                  const sfxItems = beat.audio.map((a, i) => ({ ...a, _idx: i })).filter(a => a.type !== 'dialogue');
+                  if (sfxItems.length === 0) return null;
+                  const rowHeight = Math.max(8, sfxItems.length * 7 + 2); // 7px per sub-row + 2px padding
+                  return (
+                  <div className={`flex shrink-0 group/sfxtrack hover:bg-neutral-50 dark:hover:bg-neutral-900/50 transition-colors border-t border-dashed border-neutral-200 dark:border-neutral-800/40 relative z-10 bg-teal-50/20 dark:bg-teal-900/5`} style={{ height: `${rowHeight * 4}px` }}>
                     {/* Left Panel */}
                     <div className="w-48 h-full flex flex-col justify-center px-4 border-r border-neutral-200 dark:border-neutral-800/60 shrink-0">
                       <span className="text-[9px] text-teal-600/70 dark:text-teal-500/70 font-mono uppercase tracking-wider flex items-center gap-1.5"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg> SFX</span>
                     </div>
                     {/* Right Panel (Pills) */}
                     <div className="flex-1 h-full relative overflow-visible px-1.5">
-                      {beat.audio.map((audio, audioIdx) => {
-                        if (audio.type === 'dialogue') return null;
-
+                      {sfxItems.map((audio, subIdx) => {
+                        const audioIdx = audio._idx;
                         const startTime = audio.start_time || 0;
                         const durationSeconds = audio.duration_seconds || 2.0;
                         const isGenerated = !!audio.audio_data_url;
@@ -736,10 +739,12 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                         const clipStartPct = displayDuration > 0 ? (startTime / displayDuration) * 100 : 0;
                         const clipWidthPct = displayDuration > 0 ? (durationSeconds / displayDuration) * 100 : 10;
 
+                        const topOffset = 4 + subIdx * 28; // stack each pill below the previous
+
                         return (
                           <div
                             key={`sfx-${audioIdx}`}
-                            className={`absolute top-1/2 -translate-y-1/2 h-5 rounded flex items-center px-2 cursor-pointer transition-all z-20 pointer-events-auto border ${
+                            className={`absolute h-5 rounded flex items-center px-2 cursor-pointer transition-all z-20 pointer-events-auto border ${
                               selectedAudioIndex === audioIdx
                                 ? 'ring-2 ring-teal-500 shadow-md !z-30'
                                 : 'shadow-sm'
@@ -747,6 +752,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                             style={{
                               left: `${clipStartPct}%`,
                               width: `${clipWidthPct}%`,
+                              top: `${topOffset}px`,
                               minWidth: '24px',
                               backgroundColor: isGenerated ? 'rgba(20, 184, 166, 0.15)' : 'rgba(20, 184, 166, 0.05)',
                               borderColor: isGenerated ? 'rgba(20, 184, 166, 0.4)' : 'rgba(20, 184, 166, 0.2)',
@@ -774,7 +780,8 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                     {/* Right Placeholder Spacer */}
                     <div className="w-10 shrink-0 border-l border-neutral-200 dark:border-neutral-800/40 bg-neutral-50/30 dark:bg-neutral-900/10 pointer-events-none" />
                   </div>
-                )}
+                  );
+                })()}
               </>            );
           })()}
           </div>
