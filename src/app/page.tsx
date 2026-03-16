@@ -1267,7 +1267,11 @@ export default function Home() {
     }
 
     try {
-      const stream = await processScenePromptStream(prompt, contextBeats, { singleBeat: true, orientation: stageOrientation }, actorReferences);
+      // Auto-detect screenplay-style prompts that need multiple beats
+      const dialogueLineCount = (prompt.match(/^[A-Z][a-zA-Z\s]+:/gm) || []).length;
+      const cameraDirectionCount = (prompt.match(/\[Camera[:\s]/gi) || []).length;
+      const isLongScript = dialogueLineCount >= 5 || cameraDirectionCount >= 3;
+      const stream = await processScenePromptStream(prompt, contextBeats, { singleBeat: !isLongScript, orientation: stageOrientation }, actorReferences);
       for await (const chunk of stream) {
         if (abortRef.current) break;
         if (chunk.type === 'error') {
