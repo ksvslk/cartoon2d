@@ -2964,7 +2964,7 @@ export default function Home() {
           {/* Collapse toggle */}
           <button
             onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            className="absolute top-2 right-1 z-50 w-5 h-5 rounded flex items-center justify-center text-neutral-400 hover:text-cyan-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+            className="absolute top-2 right-1 z-[60] w-5 h-5 rounded flex items-center justify-center text-neutral-400 hover:text-cyan-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
             title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
             <ChevronDown size={12} className={`transform transition-transform ${sidebarCollapsed ? '-rotate-90' : 'rotate-90'}`} />
