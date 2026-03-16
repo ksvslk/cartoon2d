@@ -4111,7 +4111,7 @@ export default function Home() {
                 <Panel defaultSize={60} minSize={30}>
                   <div className="w-full h-full flex flex-col p-6 min-h-0">
                     <div className="flex items-center justify-between mb-6 shrink-0 z-20">
-                      <h2 className="text-sm font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest flex items-center gap-2.5">
+                      <h2 className="text-sm font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest flex items-center gap-2.5 whitespace-nowrap shrink-0">
                         <Play size={16} className="text-emerald-500 dark:text-emerald-400" /> Performance Stage
                       </h2>
 
@@ -4122,7 +4122,7 @@ export default function Home() {
                           <div className="relative group/dropdown">
                             <button
                               onClick={() => setIsExportDropdownOpen(prev => !prev)}
-                              className="flex items-center gap-2 px-3 py-1.5 text-[11px] font-semibold text-neutral-700 dark:text-neutral-300 hover:text-black dark:hover:text-white bg-neutral-100 dark:bg-neutral-800/50 hover:bg-neutral-200 dark:hover:bg-neutral-800 rounded transition-colors group"
+                              className="flex items-center gap-2 px-3 py-1.5 text-[11px] font-semibold text-neutral-700 dark:text-neutral-300 hover:text-black dark:hover:text-white bg-neutral-100 dark:bg-neutral-800/50 hover:bg-neutral-200 dark:hover:bg-neutral-800 rounded transition-colors group whitespace-nowrap"
                             >
                               {EXPORT_RESOLUTIONS[exportResolution].label} <span className="text-[9px] font-mono text-neutral-500 group-hover:text-neutral-600 dark:group-hover:text-neutral-400">({EXPORT_RESOLUTIONS[exportResolution].width}x{EXPORT_RESOLUTIONS[exportResolution].height})</span> <ChevronDown size={14} className="text-neutral-400 dark:text-neutral-500 group-hover/dropdown:text-neutral-600 dark:group-hover/dropdown:text-neutral-300" />
                             </button>
