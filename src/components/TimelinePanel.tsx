@@ -145,7 +145,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
 
         {/* 1. Timeline Toolbar (Global Transport Controls) */}
         <div className="border-b border-neutral-200 dark:border-neutral-800/60 bg-neutral-50 dark:bg-[#0a0a0a] shrink-0 shadow-sm z-30 relative transition-colors duration-300">
-          <div className="flex items-center justify-between gap-2 px-3 py-1.5">
+          <div className="flex items-center justify-between gap-2 px-3 py-1.5 overflow-hidden">
             {/* Left: Scene tabs */}
             <div className="flex items-center gap-1.5 shrink-0">
               <div className="text-[10px] font-bold text-neutral-600 dark:text-neutral-300 uppercase tracking-wider bg-white dark:bg-neutral-900 px-2 py-1 rounded border border-neutral-200 dark:border-neutral-800 shadow-sm dark:shadow-none">
@@ -199,7 +199,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
             </div>
 
             {/* Right: Scope + Zoom + Frame counter */}
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
               <div className="flex items-center gap-0.5 bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-800/80 rounded p-0.5 shadow-sm">
                 <button onClick={() => onSetPlaybackScope("scene")}
                   className={`px-2 py-0.5 text-[9px] font-bold uppercase rounded transition-colors ${playbackScope === 'scene' ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700'}`}
@@ -214,7 +214,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
               </div>
               <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-700" />
               {exportProgress && (
-                <span className="max-w-32 truncate text-[9px] font-mono text-cyan-600 dark:text-cyan-400" title={exportProgress}>{exportProgress}</span>
+                <span className="max-w-24 truncate text-[9px] font-mono text-cyan-600 dark:text-cyan-400" title={exportProgress}>{exportProgress}</span>
               )}
               <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-500 font-bold bg-emerald-50 dark:bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-500/20 whitespace-nowrap">
                 {String(currentFrame).padStart(3, '0')}/{String(totalFrames).padStart(3, '0')}
