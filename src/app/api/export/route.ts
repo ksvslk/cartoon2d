@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // 5 minutes for large exports
 
 function sanitizeFileName(fileName: string) {
   return fileName
