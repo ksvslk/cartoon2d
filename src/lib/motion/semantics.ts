@@ -38,6 +38,7 @@ export function suggestMotionAliases(motion: string): string[] {
   if (/stare|look|watch|glance|peek/.test(key)) aliases.add("idle");
   if (/swim|glide|drift/.test(key)) aliases.add("idle");
   if (/talk|speak|announce|narrate|say|tell|chat|present/.test(key)) aliases.add("idle");
+  if (/sit|rest|perch|lounge/.test(key)) aliases.add("idle");
   if (/crawl|creep|sneak|tiptoe|march/.test(key)) aliases.add("walk");
   if (/sprint|dash|charge|chase|race/.test(key)) aliases.add("run");
   if (/hop|leap|bounce/.test(key)) aliases.add("jump");

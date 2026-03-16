@@ -1898,6 +1898,7 @@ export default function Home() {
                   actorName: actor.name,
                   actorDescription: actor.visual_description,
                   sceneNarrative: workingBeat.narrative,
+                  referenceImage: workingBeat.image_data,
                 });
               } catch (error: unknown) {
                 const message = error instanceof Error ? error.message : String(error);

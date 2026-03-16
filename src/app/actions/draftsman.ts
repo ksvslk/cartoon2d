@@ -1257,6 +1257,7 @@ export async function generateMotionClipForRig(params: {
     actorName?: string;
     actorDescription?: string;
     sceneNarrative?: string;
+    referenceImage?: string;
 }): Promise<MotionClipResponse> {
     const { normalizedRig } = buildIKPromptContext(params.rig);
     const durationSeconds = params.durationSeconds || 2;
@@ -1269,6 +1270,7 @@ export async function generateMotionClipForRig(params: {
         actorName: params.actorName,
         actorDescription: params.actorDescription,
         sceneNarrative: params.sceneNarrative,
+        referenceImage: params.referenceImage,
     });
     const inferredSpec = inferMotionSpecForRig({
         motion: params.motion,
@@ -1541,6 +1543,7 @@ export async function generateMotionSpecForRig(params: {
     actorName?: string;
     actorDescription?: string;
     sceneNarrative?: string;
+    referenceImage?: string;
 }): Promise<MotionSpecResponse> {
     const { normalizedRig, nodeLookup, ikNodeSummary, ikConstraintSummary } = buildIKPromptContext(params.rig);
     const boneSummary = buildMotionBoneSummary(normalizedRig, nodeLookup);
@@ -1601,6 +1604,7 @@ Rules:
    - Use 'axialWaves' ONLY for procedural flowing motions (spines, tentacles, snakes).
    - Provide 'rootMotion' for whole-body translation (bobbing, swaying, breathing up/down).
    - Provide 'wholeObjectMotion' anchors for weight-shifts and travel realism.
+5. REFERENCE IMAGE POSE MATCHING (CRITICAL): If a reference image is provided below, use it to infer the character's EXACT target pose relative to A-pose. Match visible joint angles from the image — do not guess from the motion name alone. If the character is sitting, output hip/knee rotations that match the visible leg bend. If leaning, match the torso angle. The A-pose is the base; your rotation tracks define offsets FROM A-pose to reach the target pose. Layer subtle secondary motion (breathing, small sway) on top of the held pose.
 
 JSON shape:
 {
@@ -1693,7 +1697,15 @@ Return a revised JSON motion spec only. Output ONLY one JSON object, nothing els
             `Draftsman motion-spec request pass ${pass}/${maxGenerationPasses}`,
             () => ai.models.generateContent({
                 model: motionSpecModel,
-                contents: [{ role: "user", parts: [{ text: attemptPrompt }] }],
+                contents: [{ role: "user", parts: [
+                    { text: attemptPrompt },
+                    ...(params.referenceImage ? [{
+                        inlineData: {
+                            data: params.referenceImage.replace(/^data:image\/(png|jpeg|webp);base64,/, ""),
+                            mimeType: "image/jpeg" as const,
+                        },
+                    }] : []),
+                ] }],
                 config: {
                     temperature: pass === 1 ? 0.2 : 0.4,
                 }
