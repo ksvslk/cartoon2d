@@ -3374,10 +3374,9 @@ export default function Home() {
                       <LayoutList size={16} className="text-blue-500 dark:text-blue-400" /> Storyboard Timeline
                     </h2>
                     <div className="flex items-center gap-3 flex-wrap">
-                      <div className="flex items-center gap-2 rounded-full border border-amber-200/70 bg-amber-50/80 px-3 py-1 text-[10px] font-mono text-amber-800 shadow-sm dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300">
+                      <div className="flex items-center gap-2 rounded-full border border-amber-200/70 bg-amber-50/80 px-3 py-1 text-[10px] font-mono text-amber-800 shadow-sm dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300 whitespace-nowrap shrink-0">
                         <span className="uppercase tracking-wider text-amber-600 dark:text-amber-400">Project</span>
                         <span className="font-semibold">~${projectCostSummary.cost.toFixed(4)}</span>
-                        <span className="text-amber-500/80 dark:text-amber-400/80">{projectCostSummary.tokens.toLocaleString()}</span>
                         <span className="text-emerald-600 dark:text-emerald-400">{projectCostSummary.compiledScenes}/{storyData?.beats.length || 0}</span>
                       </div>
                       {(isGenerating || animatingSceneIndex !== null) && (

@@ -144,134 +144,93 @@ export default function TimelinePanel(props: TimelinePanelProps) {
       <div className="flex-1 rounded-2xl border border-neutral-200 dark:border-neutral-800/60 bg-white/90 dark:bg-[#0a0a0a]/90 backdrop-blur-xl shadow-lg dark:shadow-2xl mx-6 mb-6 flex flex-col overflow-hidden transition-colors duration-300">
 
         {/* 1. Timeline Toolbar (Global Transport Controls) */}
-        <div className="min-h-12 border-b border-neutral-200 dark:border-neutral-800/60 bg-neutral-50 dark:bg-[#0a0a0a] flex items-center gap-3 px-4 py-2 shrink-0 shadow-sm z-30 relative transition-colors duration-300 overflow-hidden">
-          {/* Left Side: Scene info + FPS */}
-            <div className="flex min-w-0 items-center gap-2 shrink-0">
-            <div className="text-[10px] font-bold text-neutral-600 dark:text-neutral-300 uppercase tracking-widest bg-white dark:bg-neutral-900 px-2 py-1.5 rounded border border-neutral-200 dark:border-neutral-800 shadow-sm dark:shadow-none transition-colors">
-              Scene {selectedSceneIndex + 1}
-            </div>
-            {storyData && storyData.beats.length > 1 && (
-              <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar max-w-40">
-                {storyData.beats.map((b, index) => (
+        <div className="border-b border-neutral-200 dark:border-neutral-800/60 bg-neutral-50 dark:bg-[#0a0a0a] shrink-0 shadow-sm z-30 relative transition-colors duration-300">
+          <div className="flex items-center justify-between gap-2 px-3 py-1.5">
+            {/* Left: Scene + FPS */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <div className="text-[10px] font-bold text-neutral-600 dark:text-neutral-300 uppercase tracking-wider bg-white dark:bg-neutral-900 px-2 py-1 rounded border border-neutral-200 dark:border-neutral-800 shadow-sm dark:shadow-none">
+                Scene {selectedSceneIndex + 1}
+              </div>
+              {storyData && storyData.beats.length > 1 && (
+                <div className="flex items-center gap-0.5">
+                  {storyData.beats.map((b, index) => (
+                    <button
+                      key={`timeline-scene-tab-${b.scene_number}-${index}`}
+                      type="button"
+                      onClick={() => onSceneSelect(index)}
+                      className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-bold transition-colors ${selectedSceneIndex === index
+                          ? "border-cyan-400 bg-cyan-500 text-white"
+                          : "border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                        }`}
+                      title={`Switch to Scene ${index + 1}`}
+                    >
+                      {index + 1}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-700" />
+              <div className="flex items-center bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded overflow-hidden shadow-sm">
+                {([12, 24, 30, 60] as const).map(f => (
                   <button
-                    key={`timeline-scene-tab-${b.scene_number}-${index}`}
-                    type="button"
-                    onClick={() => onSceneSelect(index)}
-                    className={`shrink-0 rounded border px-1.5 py-1 text-[9px] font-bold transition-colors ${selectedSceneIndex === index
-                        ? "border-cyan-400 bg-cyan-500 text-white"
-                        : "border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-                      }`}
-                    title={`Switch to Scene ${index + 1}`}
-                  >
-                    {index + 1}
-                  </button>
+                    key={f}
+                    onClick={() => onSetFps(f)}
+                    className={`px-1.5 py-0.5 text-[9px] font-bold transition-colors ${fps === f ? 'bg-cyan-500 text-white' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}`}
+                  >{f}</button>
                 ))}
               </div>
-            )}
-            {/* FPS selector */}
-            <div className="flex items-center bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded overflow-hidden shadow-sm">
-              {([12, 24, 30, 60] as const).map(f => (
-                <button
-                  key={f}
-                  onClick={() => onSetFps(f)}
-                  className={`px-1.5 py-1 text-[9px] font-bold transition-colors ${fps === f ? 'bg-cyan-500 text-white' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}`}
-                >{f}</button>
-              ))}
             </div>
 
-            <div className="flex items-center gap-2 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded px-2 py-1 shadow-sm h-6">
-              <span className="text-[8px] font-bold text-neutral-400">ZOOM</span>
-              <input type="range" min="0.5" max="4" step="0.1" value={timelineZoom} onChange={(e) => onSetTimelineZoom(parseFloat(e.target.value))} className="w-16 h-1 scale-75 transform origin-left bg-neutral-200 dark:bg-neutral-700 rounded appearance-none" />
-            </div>
-            <button
-              type="button"
-              onClick={onToggleObstacleDebug}
-              className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-[9px] font-bold transition-colors ${showObstacleDebug
-                  ? "border-amber-400 bg-amber-500 text-black"
-                  : "border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-                }`}
-              title="Toggle obstacle debug overlay"
-            >
-              <Bug size={10} />
-              Collision
-            </button>
-          </div>
-
-          {/* Center: Transport Controls */}
-          <div className="flex min-w-0 flex-1 items-center justify-center gap-4">
+            {/* Center: Transport */}
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onJumpToStart}
-                className="w-7 h-7 rounded flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors group"
-                title="Jump to start"
-              >
-                <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current" xmlns="http://www.w3.org/2000/svg"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={onJumpToStart} className="w-6 h-6 rounded flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors" title="Jump to start">
+                  <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-current" xmlns="http://www.w3.org/2000/svg"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
+                </button>
+                <button type="button" onClick={onTogglePlayback}
+                  className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all group ${isPlaying ? 'bg-amber-500 hover:bg-amber-400 text-[#0a0a0a] shadow-[0_0_10px_rgba(245,158,11,0.3)]' : 'bg-emerald-500 hover:bg-emerald-400 text-white dark:text-[#0a0a0a] shadow-[0_0_10px_rgba(16,185,129,0.3)]'}`}
+                  title={isPlaying ? "Pause" : "Play"} disabled={!selectedBeat}>
+                  {isPlaying ? <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> : <Play size={15} className="fill-current ml-0.5 group-hover:scale-110 transition-transform" />}
+                </button>
+                <button type="button" onClick={onJumpToEnd} className="w-6 h-6 rounded flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors" title="Jump to end">
+                  <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-current" xmlns="http://www.w3.org/2000/svg"><path d="M4 18l8.5-6L4 6v12zm13-12v12h2V6h-2z" /></svg>
+                </button>
+              </div>
+              <button type="button" onClick={onToggleLoop}
+                className={`p-1 rounded ${loopPlayback ? "text-emerald-500 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20" : "text-neutral-400 dark:text-neutral-600 hover:text-emerald-500"}`}
+                title={loopPlayback ? "Loop enabled" : "Enable loop"}>
+                <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12A9 9 0 0 0 6 5.3L3 8" /><path d="M21 3v5h-5" /><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7" /><path d="M3 21v-5h5" /></svg>
               </button>
-              <button
-                type="button"
-                onClick={onTogglePlayback}
-                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all group ${isPlaying ? 'bg-amber-500 hover:bg-amber-400 text-[#0a0a0a] shadow-[0_0_10px_rgba(245,158,11,0.3)]' : 'bg-emerald-500 hover:bg-emerald-400 text-white dark:text-[#0a0a0a] shadow-[0_0_10px_rgba(16,185,129,0.3)] hover:shadow-[0_0_15px_rgba(16,185,129,0.4)]'}`}
-                title={isPlaying ? "Pause" : "Play"}
-                disabled={!selectedBeat}
-              >
-                {isPlaying ? <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> : <Play size={15} className="fill-current ml-0.5 group-hover:scale-110 transition-transform" />}
-              </button>
-              <button
-                type="button"
-                onClick={onJumpToEnd}
-                className="w-7 h-7 rounded flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors group"
-                title="Jump to end"
-              >
-                <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current" xmlns="http://www.w3.org/2000/svg"><path d="M4 18l8.5-6L4 6v12zm13-12v12h2V6h-2z" /></svg>
+              <button type="button" onClick={onToggleObstacleDebug}
+                className={`p-1 rounded ${showObstacleDebug ? "text-amber-500 bg-amber-100 dark:bg-amber-900/30" : "text-neutral-400 dark:text-neutral-600 hover:text-amber-500"}`}
+                title="Toggle collision debug">
+                <Bug size={12} />
               </button>
             </div>
 
-            <div className="w-px h-6 bg-neutral-200 dark:bg-neutral-800/60" />
-
-            {/* Playback Modes */}
-            <div className="flex items-center gap-1 bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-800/80 rounded p-1 shadow-sm dark:shadow-none transition-colors">
-              <button
-                onClick={() => onSetPlaybackScope("scene")}
-                className={`px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded transition-colors ${playbackScope === 'scene' ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 shadow-sm' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800/50'}`}
-                title="Export or operate on this scene only"
-              >
-                Scene
-              </button>
-              <button
-                onClick={() => onSetPlaybackScope("all")}
-                className={`px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded transition-colors ${playbackScope === 'all' ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 shadow-sm' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800/50'}`}
-                title="Export all compiled scenes sequentially"
-              >
-                All
-              </button>
-            </div>
-
-            <button
-              type="button"
-              onClick={onToggleLoop}
-              className={`transition-colors p-1.5 rounded ${loopPlayback
-                  ? "text-emerald-500 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20"
-                  : "text-neutral-400 dark:text-neutral-600 hover:text-emerald-500 dark:hover:text-emerald-400 hover:bg-neutral-100 dark:hover:bg-neutral-900"
-                }`}
-              title={loopPlayback ? "Loop playback enabled" : "Enable loop playback"}
-            >
-              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12A9 9 0 0 0 6 5.3L3 8" /><path d="M21 3v5h-5" /><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7" /><path d="M3 21v-5h5" /></svg>
-            </button>
-          </div>
-
-          {/* Right Side: frame counter */}
-          <div className="ml-auto flex items-center gap-3 shrink-0">
-            {exportProgress && (
-              <span className="max-w-40 truncate text-[9px] font-mono text-cyan-600 dark:text-cyan-400" title={exportProgress}>
-                {exportProgress}
+            {/* Right: Scope + Zoom + Frame counter */}
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-0.5 bg-white dark:bg-[#111] border border-neutral-200 dark:border-neutral-800/80 rounded p-0.5 shadow-sm">
+                <button onClick={() => onSetPlaybackScope("scene")}
+                  className={`px-2 py-0.5 text-[9px] font-bold uppercase rounded transition-colors ${playbackScope === 'scene' ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700'}`}
+                  title="Scene scope">Scene</button>
+                <button onClick={() => onSetPlaybackScope("all")}
+                  className={`px-2 py-0.5 text-[9px] font-bold uppercase rounded transition-colors ${playbackScope === 'all' ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700'}`}
+                  title="All scenes">All</button>
+              </div>
+              <div className="flex items-center gap-1 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded px-1.5 py-0.5 shadow-sm">
+                <span className="text-[7px] font-bold text-neutral-400 uppercase">Zm</span>
+                <input type="range" min="0.5" max="4" step="0.1" value={timelineZoom} onChange={(e) => onSetTimelineZoom(parseFloat(e.target.value))} className="w-12 h-1 bg-neutral-200 dark:bg-neutral-700 rounded appearance-none [&::-webkit-slider-thumb]:w-2 [&::-webkit-slider-thumb]:h-2 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-cyan-500 [&::-webkit-slider-thumb]:appearance-none" />
+              </div>
+              <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-700" />
+              {exportProgress && (
+                <span className="max-w-32 truncate text-[9px] font-mono text-cyan-600 dark:text-cyan-400" title={exportProgress}>{exportProgress}</span>
+              )}
+              <span className="text-[9px] font-mono text-neutral-500 whitespace-nowrap">{fps}fps</span>
+              <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-500 font-bold bg-emerald-50 dark:bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-500/20 whitespace-nowrap">
+                {String(currentFrame).padStart(3, '0')}/{String(totalFrames).padStart(3, '0')}
               </span>
-            )}
-            <span className="text-[10px] font-mono text-neutral-500 dark:text-neutral-500 whitespace-nowrap">{fps} fps</span>
-            <div className="w-px h-4 bg-neutral-200 dark:bg-neutral-700 shrink-0" />
-            <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-500 font-bold bg-emerald-50 dark:bg-emerald-500/10 px-2.5 py-1 rounded border border-emerald-200 dark:border-emerald-500/20 shadow-sm dark:shadow-none transition-colors whitespace-nowrap">
-              {String(currentFrame).padStart(3, '0')} / {String(totalFrames).padStart(3, '0')}
-            </span>
+            </div>
           </div>
         </div>
 
