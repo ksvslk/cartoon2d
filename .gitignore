@@ -39,3 +39,18 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# Test files
+test-*.ts
+test-*.json
+
+# Generated audio
+public/audio/sfx/*.wav
+*.wav
+
+# Test files
+test-*.ts
+test-*.json
+
+# Generated audio
+public/audio/sfx/*.wav
+*.wav
