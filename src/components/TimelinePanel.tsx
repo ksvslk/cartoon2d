@@ -146,7 +146,7 @@ export default function TimelinePanel(props: TimelinePanelProps) {
         {/* 1. Timeline Toolbar (Global Transport Controls) */}
         <div className="border-b border-neutral-200 dark:border-neutral-800/60 bg-neutral-50 dark:bg-[#0a0a0a] shrink-0 shadow-sm z-30 relative transition-colors duration-300">
           <div className="flex items-center justify-between gap-2 px-3 py-1.5">
-            {/* Left: Scene + FPS */}
+            {/* Left: Scene tabs */}
             <div className="flex items-center gap-1.5 shrink-0">
               <div className="text-[10px] font-bold text-neutral-600 dark:text-neutral-300 uppercase tracking-wider bg-white dark:bg-neutral-900 px-2 py-1 rounded border border-neutral-200 dark:border-neutral-800 shadow-sm dark:shadow-none">
                 Scene {selectedSceneIndex + 1}
@@ -169,16 +169,6 @@ export default function TimelinePanel(props: TimelinePanelProps) {
                   ))}
                 </div>
               )}
-              <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-700" />
-              <div className="flex items-center bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded overflow-hidden shadow-sm">
-                {([12, 24, 30, 60] as const).map(f => (
-                  <button
-                    key={f}
-                    onClick={() => onSetFps(f)}
-                    className={`px-1.5 py-0.5 text-[9px] font-bold transition-colors ${fps === f ? 'bg-cyan-500 text-white' : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}`}
-                  >{f}</button>
-                ))}
-              </div>
             </div>
 
             {/* Center: Transport */}
@@ -226,7 +216,6 @@ export default function TimelinePanel(props: TimelinePanelProps) {
               {exportProgress && (
                 <span className="max-w-32 truncate text-[9px] font-mono text-cyan-600 dark:text-cyan-400" title={exportProgress}>{exportProgress}</span>
               )}
-              <span className="text-[9px] font-mono text-neutral-500 whitespace-nowrap">{fps}fps</span>
               <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-500 font-bold bg-emerald-50 dark:bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-500/20 whitespace-nowrap">
                 {String(currentFrame).padStart(3, '0')}/{String(totalFrames).padStart(3, '0')}
               </span>
@@ -234,67 +223,60 @@ export default function TimelinePanel(props: TimelinePanelProps) {
           </div>
         </div>
 
-        {/* 2. Timeline Ruler Header (Track Labels & Time Ticks) */}
-        <div className="h-8 border-b border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#111] shrink-0 z-30 relative transition-colors duration-300 overflow-x-auto overflow-y-hidden [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]" ref={timelineRef} onScroll={(e) => {
-          if (tracksRef.current && tracksRef.current.scrollLeft !== e.currentTarget.scrollLeft) {
-            tracksRef.current.scrollLeft = e.currentTarget.scrollLeft;
-          }
+        {/* 2+3. Timeline Ruler + Tracks (single scroll container) */}
+        <div className="flex-1 overflow-y-auto overflow-x-auto custom-scrollbar flex flex-col relative pb-8" ref={(el) => {
+          // Assign both refs to the same element so scroll is unified
+          (tracksRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+          (timelineRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
         }}>
-          <div className="flex h-full" style={{ minWidth: `${Math.max(100, (displayDuration / 15) * 100 * timelineZoom)}%` }}>
-            <div className="w-48 border-r border-neutral-200 dark:border-neutral-800/60 h-full flex items-center px-4 bg-neutral-50 dark:bg-[#0a0a0a] shrink-0 transition-colors z-40 sticky left-0">
-              <span className="text-[10px] text-neutral-500 dark:text-neutral-600 font-bold uppercase tracking-wider">Layers</span>
-            </div>
-            <div className="flex-1 h-full relative transition-colors pointer-events-none">
-              {/* Playhead line + knob */}
-            <div className="absolute top-0 bottom-0 w-[2px] bg-emerald-500/80 z-50 pointer-events-none dark:mix-blend-screen shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.8)]" style={{ left: `${playheadPos}%` }}>
-              <div
-                className={`absolute top-0 left-1/2 -translate-x-1/2 w-4 h-5 bg-gradient-to-b from-emerald-400 to-emerald-600 rounded-b-[4px] cursor-grab active:cursor-grabbing border-b border-l border-r border-emerald-300 shadow-[0_2px_10px_rgba(16,185,129,0.5)] pointer-events-auto flex items-center justify-center flex-col gap-[2px] ${isDraggingPlayhead ? 'scale-110' : ''}`}
-                onMouseDown={() => onSetDraggingPlayhead(true)}
-              >
-                <span className="w-2 h-px bg-emerald-200/80"></span>
-                <span className="w-2 h-px bg-emerald-200/80"></span>
-                <span className="w-2 h-px bg-emerald-200/80"></span>
+          <div className="flex flex-col relative" style={{ minWidth: `${Math.max(100, (displayDuration / 15) * 100 * timelineZoom)}%` }}>
+
+            {/* Ruler Header (sticky at top) */}
+            <div className="h-8 border-b border-neutral-200 dark:border-neutral-800/60 bg-white dark:bg-[#111] shrink-0 z-30 sticky top-0 flex transition-colors duration-300">
+              <div className="w-48 border-r border-neutral-200 dark:border-neutral-800/60 h-full flex items-center px-4 bg-neutral-50 dark:bg-[#0a0a0a] shrink-0 transition-colors z-40 sticky left-0">
+                <span className="text-[10px] text-neutral-500 dark:text-neutral-600 font-bold uppercase tracking-wider">Layers</span>
+              </div>
+              <div className="flex-1 h-full relative transition-colors pointer-events-none">
+                {/* Playhead line + knob */}
+                <div className="absolute top-0 bottom-0 w-[2px] bg-emerald-500/80 z-50 pointer-events-none dark:mix-blend-screen shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.8)]" style={{ left: `${playheadPos}%` }}>
+                  <div
+                    className={`absolute top-0 left-1/2 -translate-x-1/2 w-4 h-5 bg-gradient-to-b from-emerald-400 to-emerald-600 rounded-b-[4px] cursor-grab active:cursor-grabbing border-b border-l border-r border-emerald-300 shadow-[0_2px_10px_rgba(16,185,129,0.5)] pointer-events-auto flex items-center justify-center flex-col gap-[2px] ${isDraggingPlayhead ? 'scale-110' : ''}`}
+                    onMouseDown={() => onSetDraggingPlayhead(true)}
+                  >
+                    <span className="w-2 h-px bg-emerald-200/80"></span>
+                    <span className="w-2 h-px bg-emerald-200/80"></span>
+                    <span className="w-2 h-px bg-emerald-200/80"></span>
+                  </div>
+                </div>
+
+                {/* Frame grid + second labels */}
+                <div className="absolute inset-0 flex items-end pb-1 pointer-events-none select-none overflow-hidden">
+                  {Array.from({ length: Math.ceil(displayDuration) + 1 }).map((_, s) => {
+                    const pct = (s / displayDuration) * 100;
+                    return (
+                      <div key={s} className="absolute top-0 bottom-0 flex flex-col items-center" style={{ left: `${pct}%` }}>
+                        <div className="w-px h-3 bg-neutral-300 dark:bg-neutral-700 mt-auto" />
+                        <span className="text-[8px] font-mono text-neutral-400 dark:text-neutral-600 mt-0.5 -translate-x-1/2">{s}s</span>
+                      </div>
+                    );
+                  })}
+                  {Array.from({ length: totalFrames + 1 }).map((_, f) => {
+                    if (f % fps === 0) return null;
+                    const tickInterval = fps <= 12 ? 1 : fps <= 24 ? 4 : 6;
+                    if (f % tickInterval !== 0) return null;
+                    const pct = (f / totalFrames) * 100;
+                    return (
+                      <div key={`f${f}`} className="absolute bottom-1" style={{ left: `${pct}%` }}>
+                        <div className="w-px h-1.5 bg-neutral-200 dark:bg-neutral-800" />
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 
-            {/* Frame grid + second labels */}
-            <div className="absolute inset-0 flex items-end pb-1 pointer-events-none select-none overflow-hidden">
-              {Array.from({ length: Math.ceil(displayDuration) + 1 }).map((_, s) => {
-                const pct = (s / displayDuration) * 100;
-                return (
-                  <div key={s} className="absolute top-0 bottom-0 flex flex-col items-center" style={{ left: `${pct}%` }}>
-                    <div className="w-px h-3 bg-neutral-300 dark:bg-neutral-700 mt-auto" />
-                    <span className="text-[8px] font-mono text-neutral-400 dark:text-neutral-600 mt-0.5 -translate-x-1/2">{s}s</span>
-                  </div>
-                );
-              })}
-              {/* Minor frame ticks (every N frames based on fps) */}
-              {Array.from({ length: totalFrames + 1 }).map((_, f) => {
-                if (f % fps === 0) return null; // skip second marks (already drawn)
-                const tickInterval = fps <= 12 ? 1 : fps <= 24 ? 4 : 6;
-                if (f % tickInterval !== 0) return null;
-                const pct = (f / totalFrames) * 100;
-                return (
-                  <div key={`f${f}`} className="absolute bottom-1" style={{ left: `${pct}%` }}>
-                    <div className="w-px h-1.5 bg-neutral-200 dark:bg-neutral-800" />
-                  </div>
-                );
-              })}
-            </div>
-            </div>
-          </div>
-        </div>
-
-        {/* 3. Timeline Tracks */}
-        <div className="flex-1 overflow-y-auto overflow-x-auto custom-scrollbar flex flex-col relative pb-8" ref={tracksRef} onScroll={(e) => {
-          if (timelineRef.current && timelineRef.current.scrollLeft !== e.currentTarget.scrollLeft) {
-            timelineRef.current.scrollLeft = e.currentTarget.scrollLeft;
-          }
-        }}>
-          <div className="flex flex-col relative" style={{ minWidth: `${Math.max(100, (displayDuration / 15) * 100 * timelineZoom)}%` }}>
-            
             {/* Playhead line extension correctly overlaying all tracks */}
-            <div className="absolute inset-0 flex pointer-events-none z-[100]">
+            <div className="absolute inset-0 flex pointer-events-none z-[100]" style={{ top: '2rem' }}>
               <div className="w-48 shrink-0" />
               <div className="flex-1 relative overflow-hidden">
                 <div className="absolute top-0 bottom-0 w-[2px] bg-emerald-500/90 dark:mix-blend-screen shadow-[0_2px_10px_rgba(16,185,129,0.4)] dark:shadow-[0_0_10px_rgba(16,185,129,0.8)] pointer-events-none transition-none" style={{ left: `${playheadPos}%` }} />

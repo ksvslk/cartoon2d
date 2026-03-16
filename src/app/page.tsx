@@ -122,6 +122,7 @@ export default function Home() {
   const [storyData, setStoryData] = useState<StoryGenerationData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const abortRef = useRef(false);
 
@@ -2959,7 +2960,16 @@ export default function Home() {
       <main className="flex-1 flex overflow-hidden z-10 w-full">
 
         {/* Far Left Column: Project Assets Sidebar */}
-        <aside className="w-16 md:w-48 lg:w-64 border-r border-neutral-200/50 dark:border-neutral-800/50 bg-white/60 dark:bg-[#070707]/60 backdrop-blur-md flex flex-col pt-4 hidden sm:flex shrink-0 transition-colors duration-300">
+        <aside className={`${sidebarCollapsed ? 'w-12' : 'w-16 md:w-48 lg:w-64'} border-r border-neutral-200/50 dark:border-neutral-800/50 bg-white/60 dark:bg-[#070707]/60 backdrop-blur-md flex flex-col pt-4 hidden sm:flex shrink-0 transition-all duration-300 relative`}>
+          {/* Collapse toggle */}
+          <button
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            className="absolute top-2 right-1 z-50 w-5 h-5 rounded flex items-center justify-center text-neutral-400 hover:text-cyan-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <ChevronDown size={12} className={`transform transition-transform ${sidebarCollapsed ? '-rotate-90' : 'rotate-90'}`} />
+          </button>
+          {!sidebarCollapsed && (<>
           {/* Project Switcher Dropdown */}
           <div className="px-3 mb-4 relative z-50">
             <button
@@ -3314,7 +3324,7 @@ export default function Home() {
               <Volume2 size={14} /> <span className="flex-1">Audio</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">0</span>
             </div>
           </div>
-
+          </>)}
         </aside>
 
         <PanelGroup direction="horizontal" className="flex-1 w-full h-full">
