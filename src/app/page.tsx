@@ -61,11 +61,11 @@ async function getExactAudioDuration(dataUrl: string): Promise<number | null> {
   try {
     const response = await fetch(dataUrl);
     const arrayBuffer = await response.arrayBuffer();
-    
+
     // Use an offline AudioContext so it doesn't require user interaction or hold audio devices
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
     const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-    
+
     return audioBuffer.duration;
   } catch (err) {
     console.error(`[Audio Duration] Failed to exact decode track:`, err);
@@ -563,7 +563,7 @@ export default function Home() {
 
       const firstCam = beat.cameras?.[0];
       const camDur = (firstCam?.start_time || 0) + (firstCam?.duration ?? totalDuration);
-      
+
       endTimeSnapTargets.push(camDur);
       durationSnapTargets.push(camDur);
 
@@ -590,7 +590,7 @@ export default function Home() {
     const handleWindowMouseMove = (eMouse: MouseEvent) => {
       const deltaX = eMouse.clientX - startX;
       const deltaSec = (deltaX / parentWidthPx) * capturedDisplayDuration;
-      
+
       if (mode === 'resize') {
         let newDuration = Math.max(0.5, initialDuration + deltaSec);
 
@@ -626,10 +626,10 @@ export default function Home() {
         if (!prev) return prev;
         const newBeats = [...prev.beats];
         const currentBeat = { ...newBeats[selectedSceneIndex] };
-        
+
         const updatedBeats = newBeats.map(b => {
           let maxTime = 0;
-          
+
           b.actions?.forEach(action => {
             const end = (action.start_time || 0) + (action.duration_seconds || 0);
             if (end > maxTime) maxTime = end;
@@ -651,7 +651,7 @@ export default function Home() {
 
         if (!currentBeat.cameras) currentBeat.cameras = [];
         const newCameras = [...currentBeat.cameras];
-        
+
         if (newCameras.length > index) {
           const camToUpdate = { ...newCameras[index] };
           if (mode === 'resize') {
@@ -663,7 +663,7 @@ export default function Home() {
         } else {
           newCameras[0] = { start_time: mode === 'move' ? finalValue : 0, zoom: 1, x: 960, y: 540, rotation: 0, duration: mode === 'resize' ? finalValue : undefined };
         }
-        
+
         currentBeat.cameras = newCameras;
 
         if (currentBeat.compiled_scene && index === 0 && mode === 'resize') {
@@ -2352,11 +2352,11 @@ export default function Home() {
       const newBeats = [...prev.beats];
       const currentBeat = newBeats[selectedSceneIndex];
       const newCameras = [...(currentBeat.cameras || [])];
-      
+
       // Calculate start time based on previous cameras
       const lastCam = newCameras[newCameras.length - 1];
       const startTime = lastCam ? (lastCam.start_time || 0) + (lastCam.duration ?? 2.0) : 0;
-      
+
       newCameras.push({
         start_time: startTime,
         zoom: 1,
@@ -2849,13 +2849,13 @@ export default function Home() {
 
         if (beat.audio) {
           beat.audio.forEach((track, i) => {
-             if (track.audio_data_url) {
-                audioTracks.push({
-                   url: track.audio_data_url,
-                   startTime: globalTimeOffset + (track.start_time ?? 0),
-                   id: `t${sceneOffset}_${i}`
-                });
-             }
+            if (track.audio_data_url) {
+              audioTracks.push({
+                url: track.audio_data_url,
+                startTime: globalTimeOffset + (track.start_time ?? 0),
+                id: `t${sceneOffset}_${i}`
+              });
+            }
           });
         }
 
@@ -2973,386 +2973,472 @@ export default function Home() {
             <ChevronDown size={12} className={`transform transition-transform ${sidebarCollapsed ? '-rotate-90' : 'rotate-90'}`} />
           </button>
           {!sidebarCollapsed && (<>
-          {/* Project Switcher Dropdown */}
-          <div className="px-3 mb-4 relative z-50">
-            <button
-              onClick={() => setIsProjectDropdownOpen(!isProjectDropdownOpen)}
-              className="w-full bg-white dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700/50 rounded-lg px-3 py-2 flex items-center justify-between shadow-sm hover:border-cyan-500/50 transition-colors group"
-            >
-              <div className="flex flex-col items-start truncate">
-                <span className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest mb-0.5">Current Draft</span>
-                <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 truncate pr-2">
-                  {projects.find(p => p.id === currentProjectId)?.title || "Loading..."}
-                </span>
-              </div>
-              <ChevronDown size={14} className="text-neutral-400 group-hover:text-cyan-500 transition-colors" />
-            </button>
+            {/* Project Switcher Dropdown */}
+            <div className="px-3 mb-4 relative z-50">
+              <button
+                onClick={() => setIsProjectDropdownOpen(!isProjectDropdownOpen)}
+                className="w-full bg-white dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700/50 rounded-lg px-3 py-2 flex items-center justify-between shadow-sm hover:border-cyan-500/50 transition-colors group"
+              >
+                <div className="flex flex-col items-start truncate">
+                  <span className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest mb-0.5">Current Draft</span>
+                  <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 truncate pr-2">
+                    {projects.find(p => p.id === currentProjectId)?.title || "Loading..."}
+                  </span>
+                </div>
+                <ChevronDown size={14} className="text-neutral-400 group-hover:text-cyan-500 transition-colors" />
+              </button>
 
-            {isProjectDropdownOpen && (
-              <div className="absolute top-full left-3 right-3 mt-1 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200 z-50">
-                <div className="max-h-60 overflow-y-auto custom-scrollbar">
-                  {projects.map(proj => (
-                    <div
-                      key={proj.id}
-                      className={`group flex items-center justify-between px-3 py-2 text-sm cursor-pointer transition-colors border-l-2 ${proj.id === currentProjectId ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/10' : 'border-transparent hover:bg-neutral-50 dark:hover:bg-neutral-800/50'}`}
-                      onClick={() => handleSwitchProject(proj.id)}
-                    >
-                      {editingProjectId === proj.id ? (
+              {isProjectDropdownOpen && (
+                <div className="absolute top-full left-3 right-3 mt-1 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200 z-50">
+                  <div className="max-h-60 overflow-y-auto custom-scrollbar">
+                    {projects.map(proj => (
+                      <div
+                        key={proj.id}
+                        className={`group flex items-center justify-between px-3 py-2 text-sm cursor-pointer transition-colors border-l-2 ${proj.id === currentProjectId ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/10' : 'border-transparent hover:bg-neutral-50 dark:hover:bg-neutral-800/50'}`}
+                        onClick={() => handleSwitchProject(proj.id)}
+                      >
+                        {editingProjectId === proj.id ? (
+                          <input
+                            autoFocus
+                            value={editProjectTitle}
+                            onChange={(e) => setEditProjectTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleUpdateProjectTitle(proj.id, editProjectTitle);
+                              if (e.key === 'Escape') setEditingProjectId(null);
+                            }}
+                            onBlur={() => handleUpdateProjectTitle(proj.id, editProjectTitle)}
+                            className="flex-1 bg-white dark:bg-neutral-800 border-b border-cyan-500 focus:outline-none text-xs px-1 py-0.5"
+                            onClick={e => e.stopPropagation()}
+                          />
+                        ) : (
+                          <span className="truncate text-xs font-medium text-neutral-700 dark:text-neutral-300 pr-2">
+                            {proj.title}
+                          </span>
+                        )}
+
+                        <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingProjectId(proj.id);
+                              setEditProjectTitle(proj.title);
+                              setConfirmDeleteId(null);
+                            }}
+                            className="p-1 hover:text-cyan-600 dark:hover:text-cyan-400 text-neutral-400"
+                            title="Rename Cartoon"
+                          >
+                            <Pencil size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => handleDeleteProject(proj.id, e)}
+                            className={`p-1 transition-all ${confirmDeleteId === proj.id
+                              ? 'text-red-500 scale-110 animate-pulse'
+                              : 'text-neutral-400 hover:text-red-400'
+                              }`}
+                            title={confirmDeleteId === proj.id ? "Click again to delete" : "Delete Cartoon"}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="p-2 border-t border-neutral-100 dark:border-neutral-800">
+                    {newCartoonName !== null ? (
+                      <div className="flex items-center gap-1">
                         <input
                           autoFocus
-                          value={editProjectTitle}
-                          onChange={(e) => setEditProjectTitle(e.target.value)}
+                          value={newCartoonName}
+                          onChange={(e) => setNewCartoonName(e.target.value)}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleUpdateProjectTitle(proj.id, editProjectTitle);
-                            if (e.key === 'Escape') setEditingProjectId(null);
+                            if (e.key === 'Enter') handleCreateProject(newCartoonName);
+                            if (e.key === 'Escape') setNewCartoonName(null);
                           }}
-                          onBlur={() => handleUpdateProjectTitle(proj.id, editProjectTitle)}
-                          className="flex-1 bg-white dark:bg-neutral-800 border-b border-cyan-500 focus:outline-none text-xs px-1 py-0.5"
-                          onClick={e => e.stopPropagation()}
+                          placeholder={`New Cartoon ${projects.length + 1}`}
+                          className="flex-1 min-w-0 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-cyan-500 text-neutral-800 dark:text-neutral-200 placeholder-neutral-400"
                         />
-                      ) : (
-                        <span className="truncate text-xs font-medium text-neutral-700 dark:text-neutral-300 pr-2">
-                          {proj.title}
-                        </span>
-                      )}
-
-                      <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
+                          onClick={() => handleCreateProject(newCartoonName)}
+                          className="shrink-0 w-6 h-6 rounded flex items-center justify-center text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors"
+                          title="Create"
+                        >✓</button>
+                        <button
+                          onClick={() => setNewCartoonName(null)}
+                          className="shrink-0 w-6 h-6 rounded flex items-center justify-center text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+                          title="Cancel"
+                        >✕</button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setNewCartoonName('')}
+                        className="w-full py-1.5 flex items-center justify-center gap-1.5 text-xs font-semibold text-neutral-600 dark:text-neutral-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 rounded transition-colors"
+                      >
+                        <Plus size={12} /> New Cartoon
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="flex-1 overflow-y-auto px-3 space-y-1 custom-scrollbar">
+              {/* Asset Categories */}
+              <div className="px-2 py-2 flex items-center gap-3 text-sm text-cyan-700 dark:text-cyan-400 font-medium bg-cyan-100/60 dark:bg-cyan-900/10 rounded-lg cursor-pointer hover:bg-cyan-200/60 dark:hover:bg-cyan-900/20 transition-colors group">
+                <LayoutList size={14} /> <span className="flex-1">Scenes</span>
+                {storyData && (
+                  <button
+                    title={confirmClearStory ? "Click again to confirm" : "Clear Story Database"}
+                    className={`focus:outline-none transition-all ${confirmClearStory ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirmClearStory) {
+                        if (currentProjectId) clearStoryStorage(currentProjectId);
+                        setStoryData(null);
+                        setConfirmClearStory(false);
+                      } else {
+                        setConfirmClearStory(true);
+                        setTimeout(() => setConfirmClearStory(false), 3000);
+                      }
+                    }}
+                  >
+                    <Trash2
+                      size={12}
+                      className={`transition-colors ${confirmClearStory ? 'text-red-500 animate-pulse' : 'text-cyan-700/50 hover:text-red-500'}`}
+                    />
+                  </button>
+                )}
+                <span className="min-w-[1.5rem] text-center text-xs bg-cyan-200/60 dark:bg-cyan-900/40 px-1.5 py-0.5 rounded-md text-cyan-800 dark:text-cyan-300">{storyData?.beats.length || 0}</span>
+              </div>
+              {storyData && storyData.beats.length > 0 && (
+                <div className="mt-1 space-y-1 pl-2 pr-1">
+                  {storyData.beats.map((beat, index) => (
+                    <div
+                      key={`scene-nav-${index}`}
+                      onClick={() => setSelectedSceneIndex(index)}
+                      className={`px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${selectedSceneIndex === index ? 'bg-cyan-100 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : 'hover:bg-neutral-100 dark:hover:bg-neutral-800/50'}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-md overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
+                          {beat.image_data ? (
+                            <img
+                              src={beat.image_data}
+                              alt={`Scene ${index + 1}`}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
+                              <LayoutList size={12} />
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">Scene {index + 1}</div>
+                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
+                            {beat.narrative}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setEditingProjectId(proj.id);
-                            setEditProjectTitle(proj.title);
-                            setConfirmDeleteId(null);
+                            setScenePreviewIndex(index);
+                            setEditPrompt("");
                           }}
-                          className="p-1 hover:text-cyan-600 dark:hover:text-cyan-400 text-neutral-400"
-                          title="Rename Cartoon"
+                          className="p-1.5 rounded text-neutral-400 hover:text-cyan-500 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors opacity-0 group-hover:opacity-100"
+                          title="Inspect scene"
                         >
-                          <Pencil size={12} />
-                        </button>
-                        <button
-                          onClick={(e) => handleDeleteProject(proj.id, e)}
-                          className={`p-1 transition-all ${confirmDeleteId === proj.id
-                            ? 'text-red-500 scale-110 animate-pulse'
-                            : 'text-neutral-400 hover:text-red-400'
-                            }`}
-                          title={confirmDeleteId === proj.id ? "Click again to delete" : "Delete Cartoon"}
-                        >
-                          <Trash2 size={12} />
+                          <LayoutList size={14} />
                         </button>
                       </div>
                     </div>
                   ))}
                 </div>
-                <div className="p-2 border-t border-neutral-100 dark:border-neutral-800">
-                  {newCartoonName !== null ? (
-                    <div className="flex items-center gap-1">
-                      <input
-                        autoFocus
-                        value={newCartoonName}
-                        onChange={(e) => setNewCartoonName(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') handleCreateProject(newCartoonName);
-                          if (e.key === 'Escape') setNewCartoonName(null);
-                        }}
-                        placeholder={`New Cartoon ${projects.length + 1}`}
-                        className="flex-1 min-w-0 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-cyan-500 text-neutral-800 dark:text-neutral-200 placeholder-neutral-400"
-                      />
-                      <button
-                        onClick={() => handleCreateProject(newCartoonName)}
-                        className="shrink-0 w-6 h-6 rounded flex items-center justify-center text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors"
-                        title="Create"
-                      >✓</button>
-                      <button
-                        onClick={() => setNewCartoonName(null)}
-                        className="shrink-0 w-6 h-6 rounded flex items-center justify-center text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-                        title="Cancel"
-                      >✕</button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setNewCartoonName('')}
-                      className="w-full py-1.5 flex items-center justify-center gap-1.5 text-xs font-semibold text-neutral-600 dark:text-neutral-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 rounded transition-colors"
-                    >
-                      <Plus size={12} /> New Cartoon
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="flex-1 overflow-y-auto px-3 space-y-1 custom-scrollbar">
-            {/* Asset Categories */}
-            <div className="px-2 py-2 flex items-center gap-3 text-sm text-cyan-700 dark:text-cyan-400 font-medium bg-cyan-100/60 dark:bg-cyan-900/10 rounded-lg cursor-pointer hover:bg-cyan-200/60 dark:hover:bg-cyan-900/20 transition-colors group">
-              <LayoutList size={14} /> <span className="flex-1">Scenes</span>
-              {storyData && (
-                <button
-                  title={confirmClearStory ? "Click again to confirm" : "Clear Story Database"}
-                  className={`focus:outline-none transition-all ${confirmClearStory ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (confirmClearStory) {
-                      if (currentProjectId) clearStoryStorage(currentProjectId);
-                      setStoryData(null);
-                      setConfirmClearStory(false);
-                    } else {
-                      setConfirmClearStory(true);
-                      setTimeout(() => setConfirmClearStory(false), 3000);
-                    }
-                  }}
-                >
-                  <Trash2
-                    size={12}
-                    className={`transition-colors ${confirmClearStory ? 'text-red-500 animate-pulse' : 'text-cyan-700/50 hover:text-red-500'}`}
-                  />
-                </button>
               )}
-              <span className="min-w-[1.5rem] text-center text-xs bg-cyan-200/60 dark:bg-cyan-900/40 px-1.5 py-0.5 rounded-md text-cyan-800 dark:text-cyan-300">{storyData?.beats.length || 0}</span>
-            </div>
-            {storyData && storyData.beats.length > 0 && (
-              <div className="mt-1 space-y-1 pl-2 pr-1">
-                {storyData.beats.map((beat, index) => (
-                  <div
-                    key={`scene-nav-${index}`}
-                    onClick={() => setSelectedSceneIndex(index)}
-                    className={`px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${selectedSceneIndex === index ? 'bg-cyan-100 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : 'hover:bg-neutral-100 dark:hover:bg-neutral-800/50'}`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-md overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
-                        {beat.image_data ? (
-                          <img
-                            src={beat.image_data}
-                            alt={`Scene ${index + 1}`}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
-                            <LayoutList size={12} />
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">Scene {index + 1}</div>
-                        <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
-                          {beat.narrative}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setScenePreviewIndex(index);
-                          setEditPrompt("");
-                        }}
-                        className="p-1.5 rounded text-neutral-400 hover:text-cyan-500 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors opacity-0 group-hover:opacity-100"
-                        title="Inspect scene"
-                      >
-                        <LayoutList size={14} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* Actors Section */}
+              {/* Empty Scene button */}
+            <button
+              onClick={() => {
+                setStoryData(prev => {
+                  const beats = prev?.beats || [];
+                  const emptyBeat = {
+                    scene_number: beats.length + 1,
+                    narrative: "",
+                    mood: "neutral",
+                    actions: [],
+                    dialogues: [],
+                    cameras: [{ start_time: 0, zoom: 1, x: 0, y: 0, rotation: 0 }],
+                    audio: [],
+                    comic_panel_prompt: "",
+                    duration_seconds: 5.0,
+                  } satisfies Record<string, unknown> as unknown as typeof beats[number];
+                  const newBeats = [...beats, emptyBeat];
+                  const newData = prev
+                    ? { ...prev, beats: newBeats }
+                    : { title: "", actors_detected: [], beats: newBeats };
+                  setSelectedSceneIndex(newBeats.length - 1);
+                  return newData;
+                });
+              }}
+              className="w-full mt-1 py-1 border border-dashed border-neutral-300/60 dark:border-neutral-700/40 hover:border-cyan-400 dark:hover:border-cyan-600 rounded-lg text-[10px] font-medium text-neutral-400 dark:text-neutral-600 hover:text-cyan-600 dark:hover:text-cyan-400 transition-all flex items-center justify-center gap-1.5 hover:bg-cyan-50/50 dark:hover:bg-cyan-950/20"
+            >
+              <Plus size={10} /> Empty Scene
+            </button>
+            {/* Backgrounds Section */}
             <div>
               <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
-                <ImageIcon size={14} /> <span className="flex-1">Actors</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">{storyData?.actors_detected.length || 0}</span>
+                <Mountain size={14} /> <span className="flex-1">Backgrounds</span>
+                <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">
+                  {storyData?.beats.filter(b => b.drafted_background).length || 0}
+                </span>
               </div>
-              {storyData && storyData.actors_detected.length > 0 && (
+              {storyData && storyData.beats.some(b => b.drafted_background) && (
                 <div className="mt-1 space-y-1 pl-2 pr-1">
-                  {storyData.actors_detected.map(actor => (
-                    (() => {
-                      const hasRig = !!actor.drafted_rig;
-                      const clipNames = Array.from(new Set([
-                        ...Object.keys(actor.drafted_rig?.rig_data.motion_clips || {}),
-                        ...Object.keys(actor.drafted_rig?.rig_data.animation_clips || {}),
-                      ])).sort();
-                      return (
-                        <div
-                          key={actor.id}
-                          onClick={() => handleActorSelect(selectedActorId === actor.id ? null : actor.id)}
-                          className={`px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${selectedActorId === actor.id ? 'bg-cyan-100 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : 'hover:bg-neutral-100 dark:hover:bg-neutral-800/50'}`}
-                        >
-                          <div className="flex items-center gap-2">
-                            {/* Actor Thumbnail */}
-                            <div className="w-8 h-8 rounded-md overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
-                              {actorReferences[actor.id] ? (
-                                <img
-                                  src={actorReferences[actor.id]}
-                                  alt={actor.name}
-                                  className="w-full h-full object-cover"
-                                />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
-                                  <ImageIcon size={12} />
+                  {storyData.beats.map((beat, bIdx) => {
+                    if (!beat.drafted_background) return null;
+                    return (
+                      <div
+                        key={`bg-${bIdx}`}
+                        className="px-2 py-1.5 rounded-md cursor-pointer transition-colors group hover:bg-neutral-100 dark:hover:bg-neutral-800/50"
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className="w-10 h-6 rounded overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
+                            {beat.image_data ? (
+                              <img src={beat.image_data} alt={`Scene ${bIdx + 1} bg`} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
+                                <Mountain size={10} />
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[10px] font-semibold text-neutral-700 dark:text-neutral-200 truncate">
+                              {beat.narrative?.slice(0, 30) || `Scene ${bIdx + 1} BG`}
+                            </div>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setStoryData(prev => {
+                                if (!prev || !prev.beats[selectedSceneIndex]) return prev;
+                                const newBeats = [...prev.beats];
+                                const currentBeat = newBeats[selectedSceneIndex];
+                                newBeats[selectedSceneIndex] = {
+                                  ...currentBeat,
+                                  drafted_background: JSON.parse(JSON.stringify(beat.drafted_background)),
+                                  image_data: beat.image_data,
+                                };
+                                return { ...prev, beats: newBeats };
+                              });
+                            }}
+                            className="p-1 rounded text-neutral-400 hover:text-cyan-500 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors opacity-0 group-hover:opacity-100"
+                            title={`Use this background in Scene ${selectedSceneIndex + 1}`}
+                          >
+                            <Plus size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            {/* Actors Section */}
+            <div>
+                <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
+                  <ImageIcon size={14} /> <span className="flex-1">Actors</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">{storyData?.actors_detected.length || 0}</span>
+                </div>
+                {storyData && storyData.actors_detected.length > 0 && (
+                  <div className="mt-1 space-y-1 pl-2 pr-1">
+                    {storyData.actors_detected.map(actor => (
+                      (() => {
+                        const hasRig = !!actor.drafted_rig;
+                        const clipNames = Array.from(new Set([
+                          ...Object.keys(actor.drafted_rig?.rig_data.motion_clips || {}),
+                          ...Object.keys(actor.drafted_rig?.rig_data.animation_clips || {}),
+                        ])).sort();
+                        return (
+                          <div
+                            key={actor.id}
+                            onClick={() => handleActorSelect(selectedActorId === actor.id ? null : actor.id)}
+                            className={`px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${selectedActorId === actor.id ? 'bg-cyan-100 dark:bg-cyan-900/20 ring-1 ring-cyan-400 dark:ring-cyan-500/50' : 'hover:bg-neutral-100 dark:hover:bg-neutral-800/50'}`}
+                          >
+                            <div className="flex items-center gap-2">
+                              {/* Actor Thumbnail */}
+                              <div className="w-8 h-8 rounded-md overflow-hidden flex-shrink-0 bg-neutral-200 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600">
+                                {actorReferences[actor.id] ? (
+                                  <img
+                                    src={actorReferences[actor.id]}
+                                    alt={actor.name}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-neutral-400 dark:text-neutral-500">
+                                    <ImageIcon size={12} />
+                                  </div>
+                                )}
+                              </div>
+                              {/* Actor Info & Draft Button */}
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">{actor.name}</div>
+                                <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
+                                  {actor.species}
+                                  {hasRig && (
+                                    <span className="ml-1 text-cyan-600 dark:text-cyan-400">
+                                      • object{clipNames.length > 0 ? ` + ${clipNames.length} action${clipNames.length === 1 ? "" : "s"}` : ""}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Actor Toolbar */}
+                              {actorReferences[actor.id] && (
+                                <div className="flex items-center gap-1">
+                                  {/* Add to Timeline Button */}
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const actionIndex = storyData?.beats[selectedSceneIndex]?.actions.length ?? 0;
+                                      setSelectedActorId(actor.id);
+                                      setSelectedActionIndex(actionIndex);
+                                      setStoryData(prev => {
+                                        if (!prev || !prev.beats[selectedSceneIndex]) return prev;
+                                        const newBeats = [...prev.beats];
+                                        const currentBeat = newBeats[selectedSceneIndex];
+                                        const newActions = [...currentBeat.actions, {
+                                          actor_id: actor.id,
+                                          motion: "idle",
+                                          style: "neutral",
+                                          start_time: 0,
+                                          duration_seconds: 5.0,
+                                        }];
+                                        const nextBeat = { ...currentBeat, actions: newActions };
+                                        const previousCompiledScene = selectedSceneIndex > 0
+                                          ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
+                                          : null;
+                                        const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
+                                        newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
+                                        return { ...prev, beats: newBeats };
+                                      });
+                                    }}
+                                    className="p-1.5 rounded text-neutral-400 hover:text-cyan-500 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors opacity-0 group-hover:opacity-100"
+                                    title="Add to Timeline"
+                                  >
+                                    <Plus size={14} />
+                                  </button>
+
+                                  {/* Delete Actor Button */}
+                                  <button
+                                    onClick={(e) => handleDeleteActor(actor.id, e)}
+                                    className={`p-1.5 rounded transition-all group-hover:opacity-100 ${confirmDeleteActorId === actor.id
+                                        ? "text-red-500 bg-red-100 dark:bg-red-950/30 opacity-100 cursor-pointer"
+                                        : "text-neutral-400 hover:text-red-500 opacity-0 bg-transparent hover:bg-red-50 dark:hover:bg-950/20"
+                                      }`}
+                                    title={confirmDeleteActorId === actor.id ? "Click again to delete" : "Delete Actor"}
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+
+                                  {/* Draft Vector Rig Button */}
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDraftingActorId(actor.id);
+                                      // Load cached rig if it exists, otherwise prepare for new generation
+                                      setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                                      setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
+                                      setDraftReview(null);
+                                      setRigFixPrompt("");
+                                      setDraftError(null);
+                                    }}
+                                    className={`p-1.5 rounded transition-colors group-hover:opacity-100 ${actor.drafted_rig
+                                      ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 opacity-100 border border-emerald-200 dark:border-emerald-700/50"
+                                      : "text-neutral-400 hover:text-cyan-500 opacity-0 bg-transparent"
+                                      }`}
+                                    title={actor.drafted_rig ? "View Vector Rig" : "Generate SVG Vector Rig"}
+                                  >
+                                    {actor.drafted_rig ? (
+                                      <div className="relative">
+                                        <Sparkles size={14} />
+                                        <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border border-white dark:border-neutral-900"></div>
+                                      </div>
+                                    ) : (
+                                      <Sparkles size={14} />
+                                    )}
+                                  </button>
                                 </div>
                               )}
                             </div>
-                            {/* Actor Info & Draft Button */}
-                            <div className="flex-1 min-w-0">
-                              <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate">{actor.name}</div>
-                              <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
-                                {actor.species}
-                                {hasRig && (
-                                  <span className="ml-1 text-cyan-600 dark:text-cyan-400">
-                                    • object{clipNames.length > 0 ? ` + ${clipNames.length} action${clipNames.length === 1 ? "" : "s"}` : ""}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
 
-                            {/* Actor Toolbar */}
-                            {actorReferences[actor.id] && (
-                              <div className="flex items-center gap-1">
-                                {/* Add to Timeline Button */}
+                            {selectedActorId === actor.id && hasRig && (
+                              <div className="mt-2 flex flex-wrap gap-1 pl-10">
                                 <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const actionIndex = storyData?.beats[selectedSceneIndex]?.actions.length ?? 0;
-                                    setSelectedActorId(actor.id);
-                                    setSelectedActionIndex(actionIndex);
-                                    setStoryData(prev => {
-                                      if (!prev || !prev.beats[selectedSceneIndex]) return prev;
-                                      const newBeats = [...prev.beats];
-                                      const currentBeat = newBeats[selectedSceneIndex];
-                                      const newActions = [...currentBeat.actions, {
-                                        actor_id: actor.id,
-                                        motion: "idle",
-                                        style: "neutral",
-                                        start_time: 0,
-                                        duration_seconds: 5.0,
-                                      }];
-                                      const nextBeat = { ...currentBeat, actions: newActions };
-                                      const previousCompiledScene = selectedSceneIndex > 0
-                                        ? newBeats[selectedSceneIndex - 1]?.compiled_scene ?? null
-                                        : null;
-                                      const recompiled = compileBeatToScene(nextBeat, availableRigs, previousCompiledScene, stageOrientation);
-                                      newBeats[selectedSceneIndex] = { ...nextBeat, compiled_scene: recompiled };
-                                      return { ...prev, beats: newBeats };
-                                    });
-                                  }}
-                                  className="p-1.5 rounded text-neutral-400 hover:text-cyan-500 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors opacity-0 group-hover:opacity-100"
-                                  title="Add to Timeline"
-                                >
-                                  <Plus size={14} />
-                                </button>
-
-                                {/* Delete Actor Button */}
-                                <button
-                                  onClick={(e) => handleDeleteActor(actor.id, e)}
-                                  className={`p-1.5 rounded transition-all group-hover:opacity-100 ${
-                                    confirmDeleteActorId === actor.id
-                                      ? "text-red-500 bg-red-100 dark:bg-red-950/30 opacity-100 cursor-pointer"
-                                      : "text-neutral-400 hover:text-red-500 opacity-0 bg-transparent hover:bg-red-50 dark:hover:bg-950/20"
-                                    }`}
-                                  title={confirmDeleteActorId === actor.id ? "Click again to delete" : "Delete Actor"}
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-
-                                {/* Draft Vector Rig Button */}
-                                <button
+                                  key={`${actor.id}-base-object`}
+                                  type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setDraftingActorId(actor.id);
-                                    // Load cached rig if it exists, otherwise prepare for new generation
                                     setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
                                     setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
                                     setDraftReview(null);
                                     setRigFixPrompt("");
                                     setDraftError(null);
                                   }}
-                                  className={`p-1.5 rounded transition-colors group-hover:opacity-100 ${actor.drafted_rig
-                                    ? "text-emerald-500 hover:text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 opacity-100 border border-emerald-200 dark:border-emerald-700/50"
-                                    : "text-neutral-400 hover:text-cyan-500 opacity-0 bg-transparent"
-                                    }`}
-                                  title={actor.drafted_rig ? "View Vector Rig" : "Generate SVG Vector Rig"}
+                                  className="inline-flex items-center rounded-full border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-0.5 text-[9px] font-mono text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
+                                  title={`Open the base SVG rig for ${actor.name}`}
                                 >
-                                  {actor.drafted_rig ? (
-                                    <div className="relative">
-                                      <Sparkles size={14} />
-                                      <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border border-white dark:border-neutral-900"></div>
-                                    </div>
-                                  ) : (
-                                    <Sparkles size={14} />
-                                  )}
+                                  object
                                 </button>
+                                {clipNames.map(clipName => (
+                                  <button
+                                    key={`${actor.id}-${clipName}`}
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setClipPreviewState({ actorId: actor.id, clipName });
+                                      clipPreviewPlayheadRef.current = 0;
+                                      setClipPreviewPlayhead(0);
+                                      setClipPreviewPlaying(true);
+                                    }}
+                                    className="inline-flex items-center rounded-full border border-cyan-200 dark:border-cyan-800/50 bg-cyan-50 dark:bg-cyan-900/20 px-2 py-0.5 text-[9px] font-mono text-cyan-700 dark:text-cyan-300 hover:bg-cyan-100 dark:hover:bg-cyan-900/30 transition-colors"
+                                    title={`Preview reusable motion clip on ${actor.name}`}
+                                  >
+                                    {clipName}
+                                  </button>
+                                ))}
                               </div>
                             )}
                           </div>
-
-                          {selectedActorId === actor.id && hasRig && (
-                            <div className="mt-2 flex flex-wrap gap-1 pl-10">
-                              <button
-                                key={`${actor.id}-base-object`}
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setDraftingActorId(actor.id);
-                                  setDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
-                                  setOriginalDraftedRig(actor.drafted_rig ? JSON.parse(JSON.stringify(actor.drafted_rig)) : null);
-                                  setDraftReview(null);
-                                  setRigFixPrompt("");
-                                  setDraftError(null);
-                                }}
-                                className="inline-flex items-center rounded-full border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-0.5 text-[9px] font-mono text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
-                                title={`Open the base SVG rig for ${actor.name}`}
-                              >
-                                object
-                              </button>
-                              {clipNames.map(clipName => (
-                                <button
-                                  key={`${actor.id}-${clipName}`}
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setClipPreviewState({ actorId: actor.id, clipName });
-                                    clipPreviewPlayheadRef.current = 0;
-                                    setClipPreviewPlayhead(0);
-                                    setClipPreviewPlaying(true);
-                                  }}
-                                  className="inline-flex items-center rounded-full border border-cyan-200 dark:border-cyan-800/50 bg-cyan-50 dark:bg-cyan-900/20 px-2 py-0.5 text-[9px] font-mono text-cyan-700 dark:text-cyan-300 hover:bg-cyan-100 dark:hover:bg-cyan-900/30 transition-colors"
-                                  title={`Preview reusable motion clip on ${actor.name}`}
-                                >
-                                  {clipName}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()
-                  ))}
-                </div>
-              )}
-            </div>
-            {/* Background Props subsection */}
-            {(() => {
-              const beatProps = storyData?.beats[selectedSceneIndex]?.drafted_background?.rig_data?.interactionNulls;
-              if (!beatProps || beatProps.length === 0) return null;
-              return (
-                <div>
-                  <div className="px-2 py-1.5 text-[10px] font-bold text-neutral-400 uppercase tracking-wider flex items-center gap-2">
-                    <Mountain size={12} /> Props
-                  </div>
-                  <div className="mt-0.5 space-y-0.5 pl-2 pr-1">
-                    {beatProps.map(propId => (
-                      <div
-                        key={propId}
-                        className="flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-800/50 transition-colors"
-                      >
-                        <div className="w-2 h-2 rounded-sm bg-neutral-300 dark:bg-neutral-600 shrink-0" />
-                        <span className="text-[10px] text-neutral-600 dark:text-neutral-400 truncate">{propId}</span>
-                      </div>
+                        );
+                      })()
                     ))}
                   </div>
-                </div>
-              );
-            })()}
-            <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
-              <Volume2 size={14} /> <span className="flex-1">Audio</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">0</span>
+                )}
+              </div>
+              {/* Background Props subsection */}
+              {(() => {
+                const beatProps = storyData?.beats[selectedSceneIndex]?.drafted_background?.rig_data?.interactionNulls;
+                if (!beatProps || beatProps.length === 0) return null;
+                return (
+                  <div>
+                    <div className="px-2 py-1.5 text-[10px] font-bold text-neutral-400 uppercase tracking-wider flex items-center gap-2">
+                      <Mountain size={12} /> Props
+                    </div>
+                    <div className="mt-0.5 space-y-0.5 pl-2 pr-1">
+                      {beatProps.map(propId => (
+                        <div
+                          key={propId}
+                          className="flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-800/50 transition-colors"
+                        >
+                          <div className="w-2 h-2 rounded-sm bg-neutral-300 dark:bg-neutral-600 shrink-0" />
+                          <span className="text-[10px] text-neutral-600 dark:text-neutral-400 truncate">{propId}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+              <div className="px-2 py-2 flex items-center gap-3 text-sm text-neutral-600 dark:text-neutral-400 font-medium hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/50 rounded-lg cursor-pointer transition-colors">
+                <Volume2 size={14} /> <span className="flex-1">Audio</span> <span className="min-w-[1.5rem] text-center text-xs bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded-md text-neutral-700 dark:text-neutral-300">0</span>
+              </div>
             </div>
-          </div>
           </>)}
         </aside>
 
@@ -3410,7 +3496,7 @@ export default function Home() {
                 <div className="mt-10 flex-1 flex flex-col min-h-0 overflow-hidden">
                   <div className="mb-4 flex items-center justify-between gap-3 shrink-0">
                     <h2 className="text-sm font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest flex items-center gap-2.5">
-                      <LayoutList size={16} className="text-blue-500 dark:text-blue-400" /> Storyboard Timeline
+                      <LayoutList size={16} className="text-blue-500 dark:text-blue-400" /> Storyboard
                     </h2>
                     <div className="flex items-center gap-3 flex-wrap">
                       <div className="flex items-center gap-2 rounded-full border border-amber-200/70 bg-amber-50/80 px-3 py-1 text-[10px] font-mono text-amber-800 shadow-sm dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300 whitespace-nowrap shrink-0">
@@ -3530,7 +3616,7 @@ export default function Home() {
                                       <div className="relative">
                                         <Mountain size={12} />
                                         <div className="absolute -top-0.5 -right-0.5 w-[5px] h-[5px] bg-emerald-500 rounded-full"></div>
-                                    </div>
+                                      </div>
                                     ) : (
                                       <Mountain size={12} />
                                     )}
@@ -3723,35 +3809,35 @@ export default function Home() {
                                       />
                                       {audio.type === 'dialogue' && (
                                         <select
-                                            className="bg-transparent border-none outline-none text-[8.5px] cursor-pointer ml-1 text-amber-900/60 hover:text-amber-900 dark:text-amber-400/60 dark:hover:text-amber-400"
-                                            value={audio.voice_id || 'en-US-Standard-F'}
-                                            onClick={(e) => e.stopPropagation()}
-                                            onChange={(e) => {
-                                              const val = e.target.value;
-                                              setStoryData(prev => {
-                                                if (!prev) return prev;
-                                                const newBeats = [...prev.beats];
-                                                const newAudio = [...newBeats[index].audio];
-                                                newAudio[i] = { ...newAudio[i], voice_id: val as any };
-                                                newBeats[index] = { ...newBeats[index], audio: newAudio };
-                                                return { ...prev, beats: newBeats };
-                                              });
-                                            }}
+                                          className="bg-transparent border-none outline-none text-[8.5px] cursor-pointer ml-1 text-amber-900/60 hover:text-amber-900 dark:text-amber-400/60 dark:hover:text-amber-400"
+                                          value={audio.voice_id || 'en-US-Standard-F'}
+                                          onClick={(e) => e.stopPropagation()}
+                                          onChange={(e) => {
+                                            const val = e.target.value;
+                                            setStoryData(prev => {
+                                              if (!prev) return prev;
+                                              const newBeats = [...prev.beats];
+                                              const newAudio = [...newBeats[index].audio];
+                                              newAudio[i] = { ...newAudio[i], voice_id: val as any };
+                                              newBeats[index] = { ...newBeats[index], audio: newAudio };
+                                              return { ...prev, beats: newBeats };
+                                            });
+                                          }}
                                         >
-                                           {Object.entries(
-                                             (VOICE_POOL as readonly VoiceEntry[]).reduce<Record<string, VoiceEntry[]>>((groups, v) => {
-                                               const lang = v.lang;
-                                               if (!groups[lang]) groups[lang] = [];
-                                               groups[lang].push(v);
-                                               return groups;
-                                             }, {})
-                                           ).map(([lang, voices]) => (
-                                             <optgroup key={lang} label={lang}>
-                                               {voices.map(v => (
-                                                 <option key={v.id} value={v.id}>{v.timbre}</option>
-                                               ))}
-                                             </optgroup>
-                                           ))}
+                                          {Object.entries(
+                                            (VOICE_POOL as readonly VoiceEntry[]).reduce<Record<string, VoiceEntry[]>>((groups, v) => {
+                                              const lang = v.lang;
+                                              if (!groups[lang]) groups[lang] = [];
+                                              groups[lang].push(v);
+                                              return groups;
+                                            }, {})
+                                          ).map(([lang, voices]) => (
+                                            <optgroup key={lang} label={lang}>
+                                              {voices.map(v => (
+                                                <option key={v.id} value={v.id}>{v.timbre}</option>
+                                              ))}
+                                            </optgroup>
+                                          ))}
                                         </select>
                                       )}
                                       <button
@@ -4202,10 +4288,10 @@ export default function Home() {
                       const newStory = { ...storyData };
                       const beat = newStory.beats[selectedSceneIndex];
                       if (!beat.audio) beat.audio = [];
-                      
+
                       // Default to first available voice or Journey-D
                       const firstVoiceId = storyData.actors_detected.find(a => a.id === actorId)?.attributes?.[0] === 'male' ? 'en-US-Journey-D' : 'en-US-Journey-F';
-                      
+
                       beat.audio.push({
                         type: 'dialogue',
                         actor_id: actorId,
@@ -4626,8 +4712,8 @@ export default function Home() {
                   type="button"
                   onClick={handleClipPreviewToggle}
                   className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${clipPreviewPlaying
-                      ? "bg-amber-500 text-[#0a0a0a] hover:bg-amber-400"
-                      : "bg-emerald-500 text-white hover:bg-emerald-400"
+                    ? "bg-amber-500 text-[#0a0a0a] hover:bg-amber-400"
+                    : "bg-emerald-500 text-white hover:bg-emerald-400"
                     }`}
                   title={clipPreviewPlaying ? "Pause preview" : "Play preview"}
                 >
