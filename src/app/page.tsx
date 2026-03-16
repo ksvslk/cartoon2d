@@ -3762,7 +3762,7 @@ export default function Home() {
                                 </p>
                                 <div className="flex flex-col gap-1.5">
                                   {beat.audio.map((audio, i) => (
-                                    <div key={`audio-${i}`} className={`group/tag flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[9px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
+                                    <div key={`audio-${i}`} className={`group/tag flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[9px] font-medium overflow-hidden max-w-full ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
                                       <Volume2 size={8} />
                                       {audio.type === 'dialogue' && (
                                         <select
@@ -3788,7 +3788,7 @@ export default function Home() {
                                       )}
                                       <input
                                         type="text"
-                                        className="bg-transparent border-none outline-none text-[9px] font-medium min-w-[60px] max-w-[200px] placeholder-current/40 cursor-text"
+                                        className="bg-transparent border-none outline-none text-[9px] font-medium min-w-0 flex-1 placeholder-current/40 cursor-text truncate"
                                         style={{ width: `${Math.max(60, (audio.type === 'dialogue' ? (audio.text?.length || 0) : (audio.description?.length || 0)) * 5.5 + 16)}px` }}
                                         value={audio.type === 'dialogue' ? (audio.text || '') : (audio.description || '')}
                                         placeholder={audio.type === 'dialogue' ? 'Type dialogue...' : 'Describe sound...'}
