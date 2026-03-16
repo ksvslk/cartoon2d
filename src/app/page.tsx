@@ -3584,6 +3584,28 @@ export default function Home() {
                                   {beat.audio.map((audio, i) => (
                                     <span key={`audio-${i}`} className={`group/tag inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[9px] font-medium ${audio.type === 'dialogue' ? 'bg-amber-100 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-cyan-100 dark:bg-cyan-500/10 border-cyan-200 dark:border-cyan-500/20 text-cyan-700 dark:text-cyan-400'}`}>
                                       <Volume2 size={8} />
+                                      {audio.type === 'dialogue' && (
+                                        <select
+                                          className="bg-transparent border-none outline-none text-[8.5px] cursor-pointer font-semibold text-amber-800 dark:text-amber-300 max-w-[70px]"
+                                          value={audio.actor_id || ''}
+                                          onClick={(e) => e.stopPropagation()}
+                                          onChange={(e) => {
+                                            const val = e.target.value;
+                                            setStoryData(prev => {
+                                              if (!prev) return prev;
+                                              const newBeats = [...prev.beats];
+                                              const newAudio = [...newBeats[index].audio];
+                                              newAudio[i] = { ...newAudio[i], actor_id: val };
+                                              newBeats[index] = { ...newBeats[index], audio: newAudio };
+                                              return { ...prev, beats: newBeats };
+                                            });
+                                          }}
+                                        >
+                                          {(storyData?.actors_detected || []).map(a => (
+                                            <option key={a.id} value={a.id}>{a.name || a.id}</option>
+                                          ))}
+                                        </select>
+                                      )}
                                       <input
                                         type="text"
                                         className="bg-transparent border-none outline-none text-[9px] font-medium min-w-[60px] max-w-[200px] placeholder-current/40 cursor-text"
