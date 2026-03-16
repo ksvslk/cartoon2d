@@ -2963,11 +2963,11 @@ export default function Home() {
       <main className="flex-1 flex overflow-hidden z-10 w-full">
 
         {/* Far Left Column: Project Assets Sidebar */}
-        <aside className={`${sidebarCollapsed ? 'w-12' : 'w-16 md:w-48 lg:w-64'} border-r border-neutral-200/50 dark:border-neutral-800/50 bg-white/60 dark:bg-[#070707]/60 backdrop-blur-md flex flex-col pt-4 hidden sm:flex shrink-0 transition-all duration-300 relative`}>
+        <aside className={`${sidebarCollapsed ? 'w-12' : 'w-16 md:w-48 lg:w-64'} border-r border-neutral-200/50 dark:border-neutral-800/50 bg-white/60 dark:bg-[#070707]/60 backdrop-blur-md flex flex-col pt-2 hidden sm:flex shrink-0 transition-all duration-300`}>
           {/* Collapse toggle */}
           <button
             onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            className="absolute top-2 right-1 z-[60] w-6 h-6 rounded-md flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-cyan-500 hover:bg-neutral-200/60 dark:hover:bg-neutral-700/60 transition-colors"
+            className={`w-6 h-6 rounded-md flex items-center justify-center text-neutral-400 dark:text-neutral-500 hover:text-cyan-500 hover:bg-neutral-200/60 dark:hover:bg-neutral-700/60 transition-colors mb-2 shrink-0 ${sidebarCollapsed ? 'mx-auto' : 'ml-auto mr-2'}`}
             title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
             <ChevronDown size={14} className={`transform transition-transform ${sidebarCollapsed ? '-rotate-90' : 'rotate-90'}`} />
