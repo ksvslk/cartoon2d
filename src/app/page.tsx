@@ -1369,6 +1369,20 @@ export default function Home() {
           });
         }
       }
+
+      // Multi-beat fallback: if some beats have no image, copy the first available image
+      setStoryData(prev => {
+        if (!prev) return prev;
+        const firstImageBeat = prev.beats.slice(initialBeatsLength).find(b => b.image_data);
+        if (!firstImageBeat?.image_data) return prev;
+        const newBeats = prev.beats.map((beat, i) => {
+          if (i >= initialBeatsLength && !beat.image_data) {
+            return { ...beat, image_data: firstImageBeat.image_data };
+          }
+          return beat;
+        });
+        return { ...prev, beats: newBeats };
+      });
     } catch (err: unknown) {
       console.error("Generation failed:", err);
       const errorMessage = err instanceof Error ? err.message : String(err);
