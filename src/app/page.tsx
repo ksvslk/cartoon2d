@@ -4112,7 +4112,7 @@ export default function Home() {
                   <div className="w-full h-full flex flex-col p-6 min-h-0">
                     <div className="flex items-center justify-between mb-6 shrink-0 z-20">
                       <h2 className="text-sm font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest flex items-center gap-2.5 whitespace-nowrap shrink-0">
-                        <Play size={16} className="text-emerald-500 dark:text-emerald-400" /> Performance Stage
+                        <Play size={16} className="text-emerald-500 dark:text-emerald-400" /> Stage
                       </h2>
 
                       {/* Stage Output Controls */}
