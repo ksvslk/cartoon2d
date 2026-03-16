@@ -1,0 +1,239 @@
+<svg width="1800" height="1100" viewBox="0 0 1800 1100" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Cartoon 2D Architecture Diagram</title>
+  <desc id="desc">Architecture diagram showing the Cartoon 2D Next.js frontend, IndexedDB storage, Next.js server actions, Gemini services, deterministic animation runtime, audio generation, and MP4 export pipeline.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1800" y2="1100" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F4FBFF"/>
+      <stop offset="1" stop-color="#EEF6FF"/>
+    </linearGradient>
+    <linearGradient id="frontGrad" x1="380" y1="120" x2="810" y2="380" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E0F2FE"/>
+      <stop offset="1" stop-color="#DBEAFE"/>
+    </linearGradient>
+    <linearGradient id="backGrad" x1="900" y1="120" x2="1330" y2="380" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#DCFCE7"/>
+      <stop offset="1" stop-color="#D1FAE5"/>
+    </linearGradient>
+    <linearGradient id="runtimeGrad" x1="430" y1="640" x2="1340" y2="940" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ECFCCB"/>
+      <stop offset="1" stop-color="#DCFCE7"/>
+    </linearGradient>
+    <linearGradient id="serviceGrad" x1="1450" y1="110" x2="1750" y2="870" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF7ED"/>
+      <stop offset="1" stop-color="#FEF3C7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto">
+      <path d="M0 0L14 7L0 14V0Z" fill="#2563EB"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto">
+      <path d="M0 0L14 7L0 14V0Z" fill="#059669"/>
+    </marker>
+    <style>
+      .title { font: 700 42px 'Avenir Next', 'Segoe UI', Arial, sans-serif; fill: #0F172A; }
+      .subtitle { font: 500 19px 'Avenir Next', 'Segoe UI', Arial, sans-serif; fill: #475569; }
+      .tag { font: 700 14px 'Avenir Next', 'Segoe UI', Arial, sans-serif; letter-spacing: 0.14em; fill: #0F172A; }
+      .cardTitle { font: 700 28px 'Avenir Next', 'Segoe UI', Arial, sans-serif; fill: #0F172A; }
+      .cardBody { font: 500 20px 'Avenir Next', 'Segoe UI', Arial, sans-serif; fill: #334155; }
+      .small { font: 500 17px 'Avenir Next', 'Segoe UI', Arial, sans-serif; fill: #475569; }
+      .label { font: 700 16px 'Avenir Next', 'Segoe UI', Arial, sans-serif; fill: #1D4ED8; }
+      .labelGreen { font: 700 16px 'Avenir Next', 'Segoe UI', Arial, sans-serif; fill: #047857; }
+      .chipTitle { font: 700 18px 'Avenir Next', 'Segoe UI', Arial, sans-serif; fill: #0F172A; }
+      .chipBody { font: 500 16px 'Avenir Next', 'Segoe UI', Arial, sans-serif; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1100" rx="36" fill="url(#bg)"/>
+
+  <g transform="translate(56 48)">
+    <text class="title">Cartoon 2D Architecture</text>
+    <text y="38" class="subtitle">Gemini-driven story generation feeding a deterministic, reusable long-form animation pipeline</text>
+    <g transform="translate(1430 -8)">
+      <rect width="258" height="42" rx="21" fill="#0F172A"/>
+      <text x="28" y="27" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" font-size="16" font-weight="700" fill="#F8FAFC">Upload-ready for Devpost</text>
+    </g>
+  </g>
+
+  <g transform="translate(50 180)">
+    <rect width="280" height="176" rx="28" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <rect x="24" y="22" width="96" height="28" rx="14" fill="#E2E8F0"/>
+    <text x="36" y="41" class="tag">CREATOR</text>
+    <text x="24" y="82" class="cardTitle">User / Judge</text>
+    <text x="24" y="114" class="cardBody">
+      <tspan x="24" dy="0">- enters prompt</tspan>
+      <tspan x="24" dy="28">- reviews storyboard</tspan>
+      <tspan x="24" dy="28">- edits rigs and timing</tspan>
+      <tspan x="24" dy="28">- exports final cartoon</tspan>
+    </text>
+  </g>
+
+  <g transform="translate(380 120)">
+    <rect width="430" height="262" rx="32" fill="url(#frontGrad)" stroke="#7DD3FC" stroke-width="2"/>
+    <rect x="28" y="24" width="106" height="30" rx="15" fill="#BAE6FD"/>
+    <text x="44" y="44" class="tag">FRONTEND</text>
+    <text x="28" y="90" class="cardTitle">Next.js / React App</text>
+    <text x="28" y="128" class="cardBody">
+      <tspan x="28" dy="0">- prompt + project workspace</tspan>
+      <tspan x="28" dy="30">- storyboard, stage, and timeline UI</tspan>
+      <tspan x="28" dy="30">- rig viewer + IK lab editors</tspan>
+      <tspan x="28" dy="30">- local compile preview + frame capture</tspan>
+    </text>
+    <text x="28" y="236" class="small">Primary UI entry: src/app/page.tsx</text>
+  </g>
+
+  <g transform="translate(430 426)">
+    <rect width="332" height="154" rx="28" fill="#FFFFFF" stroke="#C4B5FD" stroke-width="2"/>
+    <rect x="24" y="20" width="110" height="28" rx="14" fill="#EDE9FE"/>
+    <text x="38" y="39" class="tag">STORAGE</text>
+    <text x="24" y="82" class="cardTitle">Browser IndexedDB</text>
+    <text x="24" y="114" class="cardBody">
+      <tspan x="24" dy="0">- projects + titles</tspan>
+      <tspan x="24" dy="28">- story timeline + images</tspan>
+      <tspan x="24" dy="28">- actor identity locks / refs</tspan>
+    </text>
+  </g>
+
+  <g transform="translate(900 120)">
+    <rect width="430" height="262" rx="32" fill="url(#backGrad)" stroke="#86EFAC" stroke-width="2"/>
+    <rect x="28" y="24" width="98" height="30" rx="15" fill="#BBF7D0"/>
+    <text x="46" y="44" class="tag">BACKEND</text>
+    <text x="28" y="90" class="cardTitle">Next.js Server Actions</text>
+    <text x="28" y="128" class="cardBody">
+      <tspan x="28" dy="0">- scene.ts: stream story + panel images</tspan>
+      <tspan x="28" dy="30">- draftsman.ts: rig drafting + motion clips</tspan>
+      <tspan x="28" dy="30">- set_designer.ts: background SVG extraction</tspan>
+      <tspan x="28" dy="30">- tts.ts / sfx.ts: audio generation</tspan>
+    </text>
+    <text x="28" y="236" class="small">Returns structured assets, not final baked frames</text>
+  </g>
+
+  <g transform="translate(1450 110)">
+    <rect width="300" height="224" rx="28" fill="url(#serviceGrad)" stroke="#FDBA74" stroke-width="2"/>
+    <rect x="24" y="20" width="88" height="28" rx="14" fill="#FED7AA"/>
+    <text x="40" y="39" class="tag">GOOGLE</text>
+    <text x="24" y="82" class="cardTitle">Gemini</text>
+    <text x="24" y="118" class="cardBody">
+      <tspan x="24" dy="0">- story beats JSON</tspan>
+      <tspan x="24" dy="28">- inline comic panels</tspan>
+      <tspan x="24" dy="28">- rig / motion planning</tspan>
+      <tspan x="24" dy="28">- background vector guidance</tspan>
+    </text>
+    <text x="24" y="196" class="small">Models in code: Gemini 3.1 Flash Image + Pro</text>
+  </g>
+
+  <g transform="translate(1450 370)">
+    <rect width="300" height="136" rx="28" fill="#FFFFFF" stroke="#FBBF24" stroke-width="2"/>
+    <rect x="24" y="20" width="124" height="28" rx="14" fill="#FEF3C7"/>
+    <text x="38" y="39" class="tag">GOOGLE CLOUD</text>
+    <text x="24" y="82" class="cardTitle">Text-to-Speech</text>
+    <text x="24" y="116" class="cardBody">
+      <tspan x="24" dy="0">- speech audio</tspan>
+      <tspan x="24" dy="28">- timing marks + visemes</tspan>
+    </text>
+  </g>
+
+  <g transform="translate(1450 542)">
+    <rect width="300" height="136" rx="28" fill="#FFFFFF" stroke="#F59E0B" stroke-width="2"/>
+    <rect x="24" y="20" width="82" height="28" rx="14" fill="#FFEDD5"/>
+    <text x="40" y="39" class="tag">AUDIO</text>
+    <text x="24" y="82" class="cardTitle">SFX Microservice</text>
+    <text x="24" y="116" class="cardBody">
+      <tspan x="24" dy="0">- prompt to waveform</tspan>
+      <tspan x="24" dy="28">- saved to /public/audio/sfx</tspan>
+    </text>
+  </g>
+
+  <g transform="translate(1450 714)">
+    <rect width="300" height="170" rx="28" fill="#FFFFFF" stroke="#93C5FD" stroke-width="2"/>
+    <rect x="24" y="20" width="88" height="28" rx="14" fill="#DBEAFE"/>
+    <text x="42" y="39" class="tag">EXPORT</text>
+    <text x="24" y="82" class="cardTitle">/api/export + FFmpeg</text>
+    <text x="24" y="116" class="cardBody">
+      <tspan x="24" dy="0">- receives PNG frames + audio</tspan>
+      <tspan x="24" dy="28">- muxes H.264 MP4</tspan>
+      <tspan x="24" dy="28">- returns download-ready file</tspan>
+    </text>
+  </g>
+
+  <g transform="translate(430 640)">
+    <rect width="910" height="300" rx="34" fill="url(#runtimeGrad)" stroke="#4ADE80" stroke-width="2"/>
+    <rect x="28" y="24" width="168" height="30" rx="15" fill="#D9F99D"/>
+    <text x="44" y="44" class="tag">DETERMINISTIC RUNTIME</text>
+    <text x="28" y="88" class="cardTitle">Shared TypeScript Animation Engine</text>
+    <text x="28" y="124" class="cardBody">AI returns motion intent and structured assets. Deterministic code compiles, validates, reuses, and plays the cartoon.</text>
+
+    <g transform="translate(28 154)">
+      <rect width="200" height="112" rx="22" fill="#FFFFFF" stroke="#86EFAC"/>
+      <text x="18" y="34" class="chipTitle">Canonical IK graph</text>
+      <text x="18" y="60" class="chipBody">
+        <tspan x="18" dy="0">pose graph, views,</tspan>
+        <tspan x="18" dy="22">playback state</tspan>
+      </text>
+    </g>
+
+    <g transform="translate(252 154)">
+      <rect width="200" height="112" rx="22" fill="#FFFFFF" stroke="#86EFAC"/>
+      <text x="18" y="34" class="chipTitle">Motion compiler</text>
+      <text x="18" y="60" class="chipBody">
+        <tspan x="18" dy="0">intent synthesis,</tspan>
+        <tspan x="18" dy="22">clip generation</tspan>
+      </text>
+    </g>
+
+    <g transform="translate(476 154)">
+      <rect width="200" height="112" rx="22" fill="#FFFFFF" stroke="#86EFAC"/>
+      <text x="18" y="34" class="chipTitle">Validation</text>
+      <text x="18" y="60" class="chipBody">
+        <tspan x="18" dy="0">hard limits, pin drift,</tspan>
+        <tspan x="18" dy="22">blocked reasons</tspan>
+      </text>
+    </g>
+
+    <g transform="translate(700 154)">
+      <rect width="182" height="112" rx="22" fill="#FFFFFF" stroke="#86EFAC"/>
+      <text x="18" y="34" class="chipTitle">Reuse + playback</text>
+      <text x="18" y="60" class="chipBody">
+        <tspan x="18" dy="0">scene compile,</tspan>
+        <tspan x="18" dy="22">timeline, export</tspan>
+      </text>
+    </g>
+  </g>
+
+  <g>
+    <path d="M330 268H380" stroke="#2563EB" stroke-width="4" marker-end="url(#arrow)"/>
+    <text x="332" y="248" class="label">prompt / edit / review</text>
+
+    <path d="M594 382V426" stroke="#2563EB" stroke-width="4" marker-end="url(#arrow)"/>
+    <text x="454" y="406" class="label">autosave state</text>
+
+    <path d="M810 250H900" stroke="#2563EB" stroke-width="4" marker-end="url(#arrow)"/>
+    <text x="818" y="230" class="label">server actions</text>
+
+    <path d="M1116 382V640" stroke="#059669" stroke-width="4" marker-end="url(#arrowGreen)"/>
+
+    <path d="M646 382V640" stroke="#059669" stroke-width="4" marker-end="url(#arrowGreen)"/>
+
+    <path d="M1340 220H1450" stroke="#2563EB" stroke-width="4" marker-end="url(#arrow)"/>
+    <text x="1344" y="198" class="label">multimodal generation</text>
+
+    <path d="M1330 438H1450" stroke="#2563EB" stroke-width="4" marker-end="url(#arrow)"/>
+    <text x="1320" y="418" class="label">dialogue synthesis</text>
+
+    <path d="M1330 610H1450" stroke="#2563EB" stroke-width="4" marker-end="url(#arrow)"/>
+    <text x="1344" y="590" class="label">sound effects</text>
+
+    <path d="M810 836C972 836 1036 836 1450 798" stroke="#2563EB" stroke-width="4" marker-end="url(#arrow)"/>
+
+    <path d="M900 288C850 288 848 288 810 288" stroke="#059669" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  </g>
+
+  <g transform="translate(50 978)">
+    <rect width="1700" height="78" rx="24" fill="#0F172A"/>
+    <text x="28" y="32" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" font-size="18" font-weight="700" fill="#F8FAFC">Judge-facing takeaway</text>
+    <text x="28" y="58" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" font-size="17" font-weight="500" fill="#CBD5E1">
+      Current persistence is local IndexedDB, while Gemini and Cloud TTS provide multimodal generation. The key differentiator is that AI produces intent; deterministic code produces reusable animation.
+    </text>
+  </g>
+</svg>
