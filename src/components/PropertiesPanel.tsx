@@ -562,7 +562,7 @@ export default function PropertiesPanel({
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="flex flex-col gap-1">
-              <label className="text-[9px] text-neutral-400 font-mono tracking-widest">Delay (s)</label>
+              <label className="text-[9px] text-neutral-400 font-mono tracking-widest whitespace-nowrap">Delay (s)</label>
               <input
                 type="number"
                 step={0.1}
@@ -576,7 +576,7 @@ export default function PropertiesPanel({
               />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-[9px] text-neutral-400 font-mono tracking-widest">Duration (s)</label>
+              <label className="text-[9px] text-neutral-400 font-mono tracking-widest whitespace-nowrap">Dur (s)</label>
               <input
                 type="number"
                 step={0.1}
@@ -590,7 +590,7 @@ export default function PropertiesPanel({
               />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-[9px] text-amber-500 font-mono tracking-widest font-bold">Loop Speed (x)</label>
+              <label className="text-[9px] text-amber-500 font-mono tracking-widest font-bold whitespace-nowrap">Speed (x)</label>
               <input
                 type="number"
                 step={0.1}
