@@ -2967,10 +2967,10 @@ export default function Home() {
           {/* Collapse toggle */}
           <button
             onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            className="absolute top-2 right-1 z-[60] w-5 h-5 rounded flex items-center justify-center text-neutral-400 hover:text-cyan-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+            className="absolute top-2 right-1 z-[60] w-6 h-6 rounded-md flex items-center justify-center text-neutral-500 dark:text-neutral-400 hover:text-cyan-500 bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 hover:border-cyan-400 dark:hover:border-cyan-600 transition-colors shadow-sm"
             title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
-            <ChevronDown size={12} className={`transform transition-transform ${sidebarCollapsed ? '-rotate-90' : 'rotate-90'}`} />
+            <ChevronDown size={14} className={`transform transition-transform ${sidebarCollapsed ? '-rotate-90' : 'rotate-90'}`} />
           </button>
           {!sidebarCollapsed && (<>
             {/* Project Switcher Dropdown */}
