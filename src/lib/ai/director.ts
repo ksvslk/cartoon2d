@@ -171,7 +171,7 @@ CRITICAL: Your response MUST contain TWO things:
 - amplitude: how big/exaggerated the movement is. frantic/panic = 1.8, fast = 1.2, neutral = 1.0, gentle/calm = 0.5.
 - speed: how fast the animation cycles. frantic = 1.9, fast = 1.5, neutral = 1.0, slow/tired = 0.5.
 - delay: stagger actors in a scene (e.g., 0.0 for first actor, 0.3 for second, 0.6 for third).
-- ${options?.singleBeat ? "CRITICAL: Generate EXACTLY 1 beat based on the prompt." : "Generate 3-5 beats for a typical prompt."}`;
+- ${options?.singleBeat ? "CRITICAL: Generate EXACTLY 1 beat based on the prompt." : "Generate 3-5 beats for a typical prompt. If the prompt is a screenplay with explicit dialogue lines, preserve EVERY spoken line as a separate dialogue audio entry — do NOT summarize or skip any lines. Split beats at natural camera cut points or scene transitions."}`;
 
     const contentsParts: PromptContentPart[] = [];
 

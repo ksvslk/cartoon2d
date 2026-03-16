@@ -1271,7 +1271,11 @@ export default function Home() {
       const dialogueLineCount = (prompt.match(/^[A-Z][a-zA-Z\s]+:/gm) || []).length;
       const cameraDirectionCount = (prompt.match(/\[Camera[:\s]/gi) || []).length;
       const isLongScript = dialogueLineCount >= 5 || cameraDirectionCount >= 3;
-      const stream = await processScenePromptStream(prompt, contextBeats, { singleBeat: !isLongScript, orientation: stageOrientation }, actorReferences);
+      console.log(`[Director] Screenplay detection: ${dialogueLineCount} dialogue lines, ${cameraDirectionCount} camera dirs → ${isLongScript ? 'MULTI-BEAT' : 'single-beat'}`);
+      const finalPrompt = isLongScript
+        ? `${prompt}\n\n[SCREENPLAY MODE: This is a scripted dialogue. You MUST preserve EVERY spoken line as a separate audio dialogue entry. Split the script into multiple beats at natural camera cut points. Each beat should contain the dialogue lines that belong to that scene. Do NOT summarize or skip any dialogue.]`
+        : prompt;
+      const stream = await processScenePromptStream(finalPrompt, contextBeats, { singleBeat: !isLongScript, orientation: stageOrientation }, actorReferences);
       for await (const chunk of stream) {
         if (abortRef.current) break;
         if (chunk.type === 'error') {
