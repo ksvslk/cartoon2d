@@ -3337,7 +3337,7 @@ export default function Home() {
                       placeholder="Describe a scene... e.g., 'A robot cat stares at a vacuum cleaner suspiciously.'"
                       disabled={isGenerating}
                     />
-                    <div className="flex items-center justify-end px-3 pb-3 pt-1">
+                    <div className="flex items-center justify-end gap-2 px-3 pb-3 pt-1">
                       <button
                         onClick={handleGenerate}
                         disabled={isGenerating || !prompt.trim()}

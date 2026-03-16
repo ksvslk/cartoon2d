@@ -261,14 +261,15 @@ export default function TimelinePanel(props: TimelinePanelProps) {
           </div>
 
           {/* Right Side: frame counter */}
-          <div className="ml-auto flex items-center gap-2 shrink-0">
+          <div className="ml-auto flex items-center gap-3 shrink-0">
             {exportProgress && (
               <span className="max-w-40 truncate text-[9px] font-mono text-cyan-600 dark:text-cyan-400" title={exportProgress}>
                 {exportProgress}
               </span>
             )}
-            <span className="text-[10px] font-mono text-neutral-500 dark:text-neutral-500">{fps}fps</span>
-            <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-500 font-bold bg-emerald-50 dark:bg-emerald-500/10 px-2 py-1 rounded border border-emerald-200 dark:border-emerald-500/20 shadow-sm dark:shadow-none transition-colors">
+            <span className="text-[10px] font-mono text-neutral-500 dark:text-neutral-500 whitespace-nowrap">{fps} fps</span>
+            <div className="w-px h-4 bg-neutral-200 dark:bg-neutral-700 shrink-0" />
+            <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-500 font-bold bg-emerald-50 dark:bg-emerald-500/10 px-2.5 py-1 rounded border border-emerald-200 dark:border-emerald-500/20 shadow-sm dark:shadow-none transition-colors whitespace-nowrap">
               {String(currentFrame).padStart(3, '0')} / {String(totalFrames).padStart(3, '0')}
             </span>
           </div>
