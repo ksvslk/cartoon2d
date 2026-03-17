@@ -65,6 +65,10 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: "No PNG frames were provided for export." }, { status: 400 });
       }
 
+      const totalFrameBytes = frameFiles.reduce((sum, f) => sum + f.size, 0);
+      const totalAudioBytes = audioFiles.reduce((sum, f) => sum + f.size, 0);
+      console.log(`[Export] ${frameFiles.length} frames (${(totalFrameBytes / 1024 / 1024).toFixed(1)}MB), ${audioFiles.length} audio (${(totalAudioBytes / 1024 / 1024).toFixed(1)}MB), res=${width}x${height}@${fps}fps`);
+
       for (const frameFile of frameFiles) {
         const bytes = Buffer.from(await frameFile.arrayBuffer());
         await writeFile(join(tempDir, frameFile.name), bytes);
