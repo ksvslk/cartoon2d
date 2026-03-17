@@ -2914,7 +2914,11 @@ export default function Home() {
 
       if (!response.ok) {
         const payload = await response.json().catch(async () => ({ error: await response.text().catch(() => null) }));
-        throw new Error(payload?.error || `Export failed (${response.status}).`);
+        throw new Error(
+          response.status === 413
+            ? "Export payload too large. Try exporting a single scene or lower resolution (720p/1080p)."
+            : (payload?.error || `Export failed (${response.status}).`)
+        );
       }
 
       const blob = await response.blob();
