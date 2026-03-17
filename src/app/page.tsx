@@ -2833,11 +2833,7 @@ export default function Home() {
         throw new Error("Canvas export context could not be created.");
       }
 
-      const formData = new FormData();
-      formData.append("fileName", `${storyData.title || "cartoon"}-${playbackScope}-${resolution.label}.mp4`);
-      formData.append("fps", String(fps));
-      formData.append("width", String(resolution.width));
-      formData.append("height", String(resolution.height));
+      const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
       let frameSerial = 1;
       let globalTimeOffset = 0;
@@ -2882,43 +2878,59 @@ export default function Home() {
           ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
           const pngBlob = await canvasToPngBlob(canvas);
           const frameName = `frame-${String(frameSerial).padStart(6, "0")}.png`;
-          formData.append("frames", pngBlob, frameName);
+
+          // Upload frame individually (bypasses 1MB body limit)
+          const uploadResp = await fetch(`/api/export/upload?session=${sessionId}&name=${frameName}`, {
+            method: "POST",
+            body: pngBlob,
+          });
+          if (!uploadResp.ok) throw new Error(`Frame upload failed: ${uploadResp.status}`);
+
           frameSerial += 1;
         }
 
         globalTimeOffset += sceneDuration;
       }
 
-      setExportProgress("Packaging audio tracks...");
+      setExportProgress("Uploading audio tracks...");
       const audioMetadata: { filename: string; start: number }[] = [];
       for (let i = 0; i < audioTracks.length; i++) {
         const track = audioTracks[i];
         try {
           const r = await fetch(track.url);
-          const blob = await r.blob();
+          const audioBlob = await r.blob();
           const filename = `audio_${track.id}.mp3`;
-          formData.append("audio_files", blob, filename);
+
+          const uploadResp = await fetch(`/api/export/upload?session=${sessionId}&name=${filename}`, {
+            method: "POST",
+            body: audioBlob,
+          });
+          if (!uploadResp.ok) throw new Error(`Audio upload failed: ${uploadResp.status}`);
+
           audioMetadata.push({ filename, start: track.startTime });
         } catch (e) {
-          console.error("Failed to package audio track", e);
+          console.error("Failed to upload audio track", e);
         }
       }
-      formData.append("audio_metadata", JSON.stringify(audioMetadata));
 
       setExportProgress(`Encoding MP4 (${resolution.label})...`);
 
-      const response = await fetch("/api/export", {
+      const response = await fetch("/api/export/render", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session: sessionId,
+          fileName: `${storyData.title || "cartoon"}-${playbackScope}.mp4`,
+          fps,
+          width: resolution.width,
+          height: resolution.height,
+          audioMetadata,
+        }),
       });
 
       if (!response.ok) {
         const payload = await response.json().catch(async () => ({ error: await response.text().catch(() => null) }));
-        throw new Error(
-          response.status === 413
-            ? "Export too large for cloud hosting. Try a single scene at 720p or 1080p."
-            : (payload?.error || `Export failed (${response.status}).`)
-        );
+        throw new Error(payload?.error || `Export failed (${response.status}).`);
       }
 
       const blob = await response.blob();
