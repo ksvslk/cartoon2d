@@ -2907,20 +2907,22 @@ export default function Home() {
 
       setExportProgress(`Encoding MP4 (${resolution.label})...`);
 
-      const { exportVideo } = await import("@/app/actions/export");
-      const result = await exportVideo(formData);
+      const response = await fetch("/api/export", {
+        method: "POST",
+        body: formData,
+      });
 
-      if ("error" in result) {
-        throw new Error(result.error);
+      if (!response.ok) {
+        const payload = await response.json().catch(async () => ({ error: await response.text().catch(() => null) }));
+        throw new Error(
+          response.status === 413
+            ? "Export too large for cloud hosting. Try a single scene at 720p or 1080p."
+            : (payload?.error || `Export failed (${response.status}).`)
+        );
       }
 
-      const binaryString = atob(result.data);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      const blob = new Blob([bytes], { type: "video/mp4" });
-      const suggestedName = result.fileName || `${storyData.title || "cartoon"}-${playbackScope}.mp4`;
+      const blob = await response.blob();
+      const suggestedName = response.headers.get("x-export-filename") || `${storyData.title || "cartoon"}-${playbackScope}.mp4`;
       downloadBlob(blob, suggestedName);
       setExportProgress(`Export ✓: ${suggestedName}`);
     } catch (err) {
